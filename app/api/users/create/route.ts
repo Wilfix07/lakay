@@ -1,32 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
-
-if (!supabaseServiceRoleKey) {
-  console.error('❌ SUPABASE_SERVICE_ROLE_KEY manquante dans les variables d\'environnement')
-}
-
-// Client avec service_role (bypass RLS)
-const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false
-  }
-})
-
 export async function POST(request: NextRequest) {
   try {
-    // Vérifier que la clé service_role est disponible
-    if (!supabaseServiceRoleKey) {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+    // Vérifier que les variables d'environnement sont disponibles
+    if (!supabaseUrl || !supabaseServiceRoleKey) {
+      console.error('❌ Variables d\'environnement manquantes:', {
+        hasUrl: !!supabaseUrl,
+        hasServiceKey: !!supabaseServiceRoleKey
+      })
       return NextResponse.json(
-        { error: 'Configuration serveur manquante. SUPABASE_SERVICE_ROLE_KEY requise.' },
+        { 
+          error: 'Configuration serveur manquante. SUPABASE_SERVICE_ROLE_KEY et NEXT_PUBLIC_SUPABASE_URL sont requises dans .env.local' 
+        },
         { status: 500 }
       )
     }
 
-    const body = await request.json()
+    // Client avec service_role (bypass RLS)
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    })
+
+    let body
+    try {
+      body = await request.json()
+    } catch (error) {
+      return NextResponse.json(
+        { error: 'Corps de la requête invalide' },
+        { status: 400 }
+      )
+    }
+
     const { email, password, role, nom, prenom, agent_id } = body
 
     // Validation

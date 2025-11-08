@@ -108,7 +108,6 @@ function UtilisateursPageContent() {
 
       // Créer l'utilisateur dans Supabase Auth
       // Note: Cette opération nécessite la clé service_role côté serveur
-      // Pour l'instant, nous allons utiliser l'API REST directement
       const response = await fetch('/api/users/create', {
         method: 'POST',
         headers: {
@@ -123,6 +122,14 @@ function UtilisateursPageContent() {
           agent_id: formData.role === 'agent' ? formData.agent_id : null,
         }),
       })
+
+      // Vérifier le Content-Type avant de parser
+      const contentType = response.headers.get('content-type')
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text()
+        console.error('Réponse non-JSON reçue:', text.substring(0, 200))
+        throw new Error('Erreur serveur: La réponse n\'est pas au format JSON. Vérifiez que la route API existe et que SUPABASE_SERVICE_ROLE_KEY est configurée.')
+      }
 
       const result = await response.json()
 
