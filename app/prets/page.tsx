@@ -117,11 +117,14 @@ function PretsPageContent() {
         return
       }
 
-      // Calcul avec intérêt de 15%
-      // Montant du prêt + 15% d'intérêt = montant total à rembourser
-      const montantTotalAvecInteret = montantPret * 1.15
-      // Montant par remboursement (23 remboursements)
-      const montantRemboursement = Math.round((montantTotalAvecInteret / 23) * 100) / 100 // Arrondi à 2 décimales
+      // Calcul avec intérêt de 15% sur chaque remboursement quotidien
+      // Montant de base par jour (sans intérêt) = montant_pret / 23
+      const montantBaseParJour = montantPret / 23
+      // Ajouter 15% d'intérêt sur chaque remboursement quotidien
+      // Chaque jour, le membre rembourse : montant_base + 15% d'intérêt
+      const montantRemboursement = Math.round((montantBaseParJour * 1.15) * 100) / 100 // Arrondi à 2 décimales
+      
+      // Vérification : montant total remboursé = montantRemboursement * 23 = montantPret * 1.15
 
       // Générer le pret_id automatiquement
       const monthName = getMonthName(new Date(formData.date_decaissement))
@@ -287,9 +290,10 @@ function PretsPageContent() {
         return
       }
 
-      // Recalculer avec intérêt de 15%
-      const montantTotalAvecInteret = montantPret * 1.15
-      const montantRemboursement = Math.round((montantTotalAvecInteret / 23) * 100) / 100
+      // Recalculer avec intérêt de 15% sur chaque remboursement quotidien
+      const montantBaseParJour = montantPret / 23
+      // Ajouter 15% d'intérêt sur chaque remboursement quotidien
+      const montantRemboursement = Math.round((montantBaseParJour * 1.15) * 100) / 100
 
       // Calculer la nouvelle date du premier remboursement
       const dateDecaissement = new Date(formData.date_decaissement)
@@ -464,12 +468,30 @@ function PretsPageContent() {
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
-                  {formData.montant_pret && !isNaN(parseFloat(formData.montant_pret)) && parseFloat(formData.montant_pret) > 0 && (
-                    <p className="text-sm text-gray-600 mt-1">
-                      Montant avec intérêt (15%): {formatCurrency(Math.round((parseFloat(formData.montant_pret) * 1.15) * 100) / 100)}<br/>
-                      Montant par remboursement: {formatCurrency(Math.round((parseFloat(formData.montant_pret) * 1.15 / 23) * 100) / 100)} (23 remboursements)
-                    </p>
-                  )}
+                  {formData.montant_pret && !isNaN(parseFloat(formData.montant_pret)) && parseFloat(formData.montant_pret) > 0 && (() => {
+                    const montantPret = parseFloat(formData.montant_pret)
+                    const montantBaseParJour = montantPret / 23
+                    const montantRemboursementParJour = Math.round((montantBaseParJour * 1.15) * 100) / 100
+                    const montantTotalRembourse = montantRemboursementParJour * 23
+                    const interetTotal = montantTotalRembourse - montantPret
+                    
+                    return (
+                      <div className="text-sm text-gray-600 mt-1 space-y-1">
+                        <p>
+                          <strong>Montant de base par jour:</strong> {formatCurrency(Math.round(montantBaseParJour * 100) / 100)}
+                        </p>
+                        <p className="text-blue-600">
+                          <strong>Montant à rembourser par jour (avec 15% d'intérêt):</strong> {formatCurrency(montantRemboursementParJour)}
+                        </p>
+                        <p>
+                          <strong>Total à rembourser:</strong> {formatCurrency(Math.round(montantTotalRembourse * 100) / 100)} (23 remboursements)
+                        </p>
+                        <p className="text-green-600">
+                          <strong>Intérêt total:</strong> {formatCurrency(Math.round(interetTotal * 100) / 100)}
+                        </p>
+                      </div>
+                    )
+                  })()}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
