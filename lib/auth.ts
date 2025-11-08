@@ -63,6 +63,7 @@ export const PERMISSIONS = {
     canCreatePrets: true,
     canProcessRemboursements: true,
     canViewAll: true,
+    canCreateUsers: true, // Admin peut créer managers et agents
   },
   manager: {
     canCreateAgents: true,
@@ -70,6 +71,7 @@ export const PERMISSIONS = {
     canCreatePrets: false,
     canProcessRemboursements: false,
     canViewAll: true,
+    canCreateUsers: true, // Manager peut créer des agents
   },
   agent: {
     canCreateAgents: false,
@@ -77,6 +79,7 @@ export const PERMISSIONS = {
     canCreatePrets: true,
     canProcessRemboursements: true,
     canViewAll: false,
+    canCreateUsers: false,
   },
 } as const
 

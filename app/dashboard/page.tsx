@@ -179,14 +179,26 @@ export default function DashboardPage() {
           <h2 className="text-xl font-semibold mb-4">Actions rapides</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {(userProfile.role === 'admin' || userProfile.role === 'manager') && (
-              <Link
-                href="/agents"
-                className="p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
-              >
-                <div className="text-2xl mb-2">👥</div>
-                <div className="font-semibold">Gérer les Agents</div>
-                <div className="text-sm text-gray-600">Créer et modifier</div>
-              </Link>
+              <>
+                <Link
+                  href="/utilisateurs"
+                  className="p-4 border-2 border-gray-200 rounded-lg hover:border-purple-500 hover:bg-purple-50 transition"
+                >
+                  <div className="text-2xl mb-2">👤</div>
+                  <div className="font-semibold">Gérer les Utilisateurs</div>
+                  <div className="text-sm text-gray-600">
+                    {userProfile.role === 'admin' ? 'Créer managers et agents' : 'Créer des agents'}
+                  </div>
+                </Link>
+                <Link
+                  href="/agents"
+                  className="p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
+                >
+                  <div className="text-2xl mb-2">👥</div>
+                  <div className="font-semibold">Gérer les Agents</div>
+                  <div className="text-sm text-gray-600">Créer et modifier</div>
+                </Link>
+              </>
             )}
             {(userProfile.role === 'admin' || userProfile.role === 'agent') && (
               <>

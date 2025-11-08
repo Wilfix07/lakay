@@ -14,6 +14,8 @@ function PretsPageContent() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [editingPret, setEditingPret] = useState<Pret | null>(null)
+  const [userProfile, setUserProfile] = useState<any>(null)
   const [formData, setFormData] = useState({
     membre_id: '',
     agent_id: '',
@@ -101,6 +103,10 @@ function PretsPageContent() {
   }
 
   async function handleSubmit(e: React.FormEvent) {
+    if (editingPret) {
+      handleUpdatePret(e)
+      return
+    }
     e.preventDefault()
     try {
       const montantPret = parseFloat(formData.montant_pret)
@@ -111,13 +117,11 @@ function PretsPageContent() {
         return
       }
 
-      // Calcul automatique: montant_pret / 23 (ex: 5000 / 23 ≈ 217.39)
-      // Note: Selon les spécifications, pour 5000 HTG, le remboursement est de 250 HTG/jour
-      // Cela signifie que le total remboursé sera de 5750 HTG (250 * 23), incluant les intérêts
-      // Si vous voulez un montant fixe de 250 HTG par jour, décommentez la ligne suivante:
-      // const montantRemboursement = 250
-      // Sinon, utilisez le calcul proportionnel:
-      const montantRemboursement = Math.round((montantPret / 23) * 100) / 100 // Arrondi à 2 décimales
+      // Calcul avec intérêt de 15%
+      // Montant du prêt + 15% d'intérêt = montant total à rembourser
+      const montantTotalAvecInteret = montantPret * 1.15
+      // Montant par remboursement (23 remboursements)
+      const montantRemboursement = Math.round((montantTotalAvecInteret / 23) * 100) / 100 // Arrondi à 2 décimales
 
       // Générer le pret_id automatiquement
       const monthName = getMonthName(new Date(formData.date_decaissement))
@@ -227,6 +231,129 @@ function PretsPageContent() {
     }
   }
 
+  async function handleEditPret(pret: Pret) {
+    if (!confirm('Voulez-vous modifier ce décaissement ? Les remboursements associés seront également mis à jour.')) {
+      return
+    }
+    setEditingPret(pret)
+    setFormData({
+      membre_id: pret.membre_id,
+      agent_id: pret.agent_id,
+      montant_pret: pret.montant_pret.toString(),
+      date_decaissement: pret.date_decaissement,
+    })
+    setShowForm(true)
+  }
+
+  async function handleDeletePret(pret: Pret) {
+    if (!confirm(`Êtes-vous sûr de vouloir supprimer le décaissement ${pret.pret_id} ? Cette action supprimera également tous les remboursements associés et est irréversible.`)) {
+      return
+    }
+
+    try {
+      // Supprimer d'abord les remboursements associés
+      const { error: remboursementsError } = await supabase
+        .from('remboursements')
+        .delete()
+        .eq('pret_id', pret.pret_id)
+
+      if (remboursementsError) throw remboursementsError
+
+      // Ensuite supprimer le prêt
+      const { error: pretError } = await supabase
+        .from('prets')
+        .delete()
+        .eq('id', pret.id)
+
+      if (pretError) throw pretError
+
+      alert('Décaissement supprimé avec succès')
+      loadPrets()
+    } catch (error: any) {
+      console.error('Erreur lors de la suppression:', error)
+      alert('Erreur lors de la suppression: ' + (error.message || 'Erreur inconnue'))
+    }
+  }
+
+  async function handleUpdatePret(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editingPret) return
+
+    try {
+      const montantPret = parseFloat(formData.montant_pret)
+      
+      if (isNaN(montantPret) || montantPret <= 0) {
+        alert('Le montant du prêt doit être un nombre positif')
+        return
+      }
+
+      // Recalculer avec intérêt de 15%
+      const montantTotalAvecInteret = montantPret * 1.15
+      const montantRemboursement = Math.round((montantTotalAvecInteret / 23) * 100) / 100
+
+      // Calculer la nouvelle date du premier remboursement
+      const dateDecaissement = new Date(formData.date_decaissement)
+      function getNextBusinessDay(date: Date): Date {
+        let nextDay = new Date(date)
+        let dayOfWeek = getDay(nextDay)
+        if (dayOfWeek === 6) nextDay = addDays(nextDay, 2)
+        else if (dayOfWeek === 0) nextDay = addDays(nextDay, 1)
+        return nextDay
+      }
+      function getNextBusinessDayFrom(date: Date): Date {
+        let nextDay = addDays(date, 1)
+        return getNextBusinessDay(nextDay)
+      }
+      let datePremierRemboursement = addDays(dateDecaissement, 2)
+      datePremierRemboursement = getNextBusinessDay(datePremierRemboursement)
+
+      // Mettre à jour le prêt
+      const { error: pretError } = await supabase
+        .from('prets')
+        .update({
+          membre_id: formData.membre_id,
+          agent_id: formData.agent_id,
+          montant_pret: montantPret,
+          montant_remboursement: montantRemboursement,
+          date_decaissement: formData.date_decaissement,
+          date_premier_remboursement: datePremierRemboursement.toISOString().split('T')[0],
+        })
+        .eq('id', editingPret.id)
+
+      if (pretError) throw pretError
+
+      // Mettre à jour tous les remboursements
+      let currentDate = new Date(datePremierRemboursement)
+      
+      for (let i = 1; i <= 23; i++) {
+        currentDate = getNextBusinessDay(currentDate)
+        await supabase
+          .from('remboursements')
+          .update({
+            montant: montantRemboursement,
+            date_remboursement: currentDate.toISOString().split('T')[0],
+          })
+          .eq('pret_id', editingPret.pret_id)
+          .eq('numero_remboursement', i)
+        currentDate = getNextBusinessDayFrom(currentDate)
+      }
+
+      alert('Décaissement modifié avec succès')
+      setShowForm(false)
+      setEditingPret(null)
+      setFormData({
+        membre_id: '',
+        agent_id: '',
+        montant_pret: '',
+        date_decaissement: new Date().toISOString().split('T')[0],
+      })
+      loadPrets()
+    } catch (error: any) {
+      console.error('Erreur lors de la modification:', error)
+      alert('Erreur lors de la modification: ' + (error.message || 'Erreur inconnue'))
+    }
+  }
+
   const filteredMembres = formData.agent_id
     ? membres.filter(m => m.agent_id === formData.agent_id)
     : membres
@@ -255,7 +382,16 @@ function PretsPageContent() {
               Accueil
             </Link>
             <button
-              onClick={() => setShowForm(!showForm)}
+              onClick={() => {
+                setShowForm(!showForm)
+                setEditingPret(null)
+                setFormData({
+                  membre_id: '',
+                  agent_id: '',
+                  montant_pret: '',
+                  date_decaissement: new Date().toISOString().split('T')[0],
+                })
+              }}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
               {showForm ? 'Annuler' : '+ Nouveau Prêt'}
@@ -265,7 +401,9 @@ function PretsPageContent() {
 
         {showForm && (
           <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-            <h2 className="text-xl font-semibold mb-4">Créer un nouveau prêt</h2>
+            <h2 className="text-xl font-semibold mb-4">
+              {editingPret ? 'Modifier le décaissement' : 'Créer un nouveau prêt'}
+            </h2>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4">
                 <div>
@@ -328,7 +466,8 @@ function PretsPageContent() {
                   />
                   {formData.montant_pret && !isNaN(parseFloat(formData.montant_pret)) && parseFloat(formData.montant_pret) > 0 && (
                     <p className="text-sm text-gray-600 mt-1">
-                      Montant par remboursement: {formatCurrency(Math.round((parseFloat(formData.montant_pret) / 23) * 100) / 100)} (23 remboursements)
+                      Montant avec intérêt (15%): {formatCurrency(Math.round((parseFloat(formData.montant_pret) * 1.15) * 100) / 100)}<br/>
+                      Montant par remboursement: {formatCurrency(Math.round((parseFloat(formData.montant_pret) * 1.15 / 23) * 100) / 100)} (23 remboursements)
                     </p>
                   )}
                 </div>
@@ -368,7 +507,7 @@ function PretsPageContent() {
                 type="submit"
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
-                Créer le prêt
+                {editingPret ? 'Modifier le décaissement' : 'Créer le prêt'}
               </button>
             </form>
           </div>
@@ -396,12 +535,17 @@ function PretsPageContent() {
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Statut
                 </th>
+                {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {prets.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-4 text-center text-gray-500">
+                  <td colSpan={(userProfile?.role === 'admin' || userProfile?.role === 'manager') ? 7 : 6} className="px-6 py-4 text-center text-gray-500">
                     Aucun prêt enregistré
                   </td>
                 </tr>
@@ -432,6 +576,24 @@ function PretsPageContent() {
                         {pret.statut}
                       </span>
                     </td>
+                    {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleEditPret(pret)}
+                            className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                          >
+                            Modifier
+                          </button>
+                          <button
+                            onClick={() => handleDeletePret(pret)}
+                            className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                          >
+                            Supprimer
+                          </button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}

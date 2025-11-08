@@ -13,6 +13,7 @@ function RemboursementsPageContent() {
   const [loading, setLoading] = useState(true)
   const [filterPret, setFilterPret] = useState('')
   const [filterStatut, setFilterStatut] = useState('')
+  const [userProfile, setUserProfile] = useState<any>(null)
 
   useEffect(() => {
     loadUserProfile()
@@ -88,6 +89,74 @@ function RemboursementsPageContent() {
       alert('Erreur lors du chargement des remboursements')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleEditRemboursement(remboursement: Remboursement) {
+    const nouveauMontant = prompt(`Modifier le montant du remboursement #${remboursement.numero_remboursement}:\nMontant actuel: ${formatCurrency(remboursement.montant)}`, remboursement.montant.toString())
+    
+    if (!nouveauMontant || isNaN(parseFloat(nouveauMontant)) || parseFloat(nouveauMontant) <= 0) {
+      return
+    }
+
+    const nouvelleDate = prompt(`Modifier la date de remboursement:\nDate actuelle: ${formatDate(remboursement.date_remboursement)}\nFormat: YYYY-MM-DD`, remboursement.date_remboursement)
+    
+    if (!nouvelleDate) {
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from('remboursements')
+        .update({
+          montant: parseFloat(nouveauMontant),
+          date_remboursement: nouvelleDate,
+        })
+        .eq('id', remboursement.id)
+
+      if (error) throw error
+
+      alert('Remboursement modifié avec succès')
+      loadRemboursements()
+    } catch (error: any) {
+      console.error('Erreur lors de la modification:', error)
+      alert('Erreur lors de la modification: ' + (error.message || 'Erreur inconnue'))
+    }
+  }
+
+  async function handleDeleteRemboursement(remboursement: Remboursement) {
+    if (!confirm(`Êtes-vous sûr de vouloir supprimer le remboursement #${remboursement.numero_remboursement} de ${formatCurrency(remboursement.montant)} ? Cette action est irréversible.`)) {
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from('remboursements')
+        .delete()
+        .eq('id', remboursement.id)
+
+      if (error) throw error
+
+      // Vérifier si tous les remboursements sont payés pour mettre à jour le statut du prêt
+      const { data: allRemboursements } = await supabase
+        .from('remboursements')
+        .select('statut')
+        .eq('pret_id', remboursement.pret_id)
+
+      const allPaid = allRemboursements?.every(r => r.statut === 'paye')
+
+      if (allPaid && allRemboursements && allRemboursements.length > 0) {
+        await supabase
+          .from('prets')
+          .update({ statut: 'termine' })
+          .eq('pret_id', remboursement.pret_id)
+      }
+
+      alert('Remboursement supprimé avec succès')
+      loadRemboursements()
+    } catch (error: any) {
+      console.error('Erreur lors de la suppression:', error)
+      alert('Erreur lors de la suppression: ' + (error.message || 'Erreur inconnue'))
     }
   }
 
@@ -335,14 +404,32 @@ function RemboursementsPageContent() {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      {remboursement.statut !== 'paye' && (
-                        <button
-                          onClick={() => handlePaiement(remboursement)}
-                          className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
-                        >
-                          Marquer payé
-                        </button>
-                      )}
+                      <div className="flex gap-2">
+                        {remboursement.statut !== 'paye' && (
+                          <button
+                            onClick={() => handlePaiement(remboursement)}
+                            className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
+                          >
+                            Marquer payé
+                          </button>
+                        )}
+                        {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                          <>
+                            <button
+                              onClick={() => handleEditRemboursement(remboursement)}
+                              className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                            >
+                              Modifier
+                            </button>
+                            <button
+                              onClick={() => handleDeleteRemboursement(remboursement)}
+                              className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                            >
+                              Supprimer
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
