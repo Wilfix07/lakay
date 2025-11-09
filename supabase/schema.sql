@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS prets (
     date_decaissement DATE NOT NULL,
     date_premier_remboursement DATE NOT NULL, -- 2ème jour après décaissement
     statut VARCHAR(20) DEFAULT 'actif', -- actif, termine, annule
+    capital_restant DECIMAL(10, 2) NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

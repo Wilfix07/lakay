@@ -187,6 +187,7 @@ function PretsPageContent() {
           date_decaissement: formData.date_decaissement,
           date_premier_remboursement: datePremierRemboursement.toISOString().split('T')[0],
           statut: 'actif',
+          capital_restant: montantPret,
         }])
 
       if (pretError) throw pretError

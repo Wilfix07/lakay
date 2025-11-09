@@ -62,6 +62,7 @@ export interface Pret {
   date_decaissement: string
   date_premier_remboursement: string
   statut: 'actif' | 'termine' | 'annule'
+  capital_restant?: number
   created_at: string
   updated_at: string
 }

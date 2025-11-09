@@ -187,6 +187,15 @@ function RemboursementsPageContent() {
     }
 
     const datePaiement = new Date().toISOString().split('T')[0]
+    const pretRecord = prets.find((pret) => pret.pret_id === remboursement.pret_id)
+    const fallbackPrincipal =
+      pretRecord && pretRecord.nombre_remboursements
+        ? Number(pretRecord.montant_pret || 0) / Number(pretRecord.nombre_remboursements || 1)
+        : Number(remboursement.montant || 0) / 1.15
+    const principalValue =
+      remboursement.principal != null
+        ? Number(remboursement.principal)
+        : Math.round(fallbackPrincipal * 100) / 100
 
     try {
       const { error } = await supabase
@@ -194,10 +203,24 @@ function RemboursementsPageContent() {
         .update({
           statut: 'paye',
           date_paiement: datePaiement,
+          principal: principalValue,
+          interet: Math.max(Number(remboursement.montant || 0) - principalValue, 0),
         })
         .eq('id', remboursement.id)
 
       if (error) throw error
+
+      if (pretRecord) {
+        const nouveauCapital = Math.max(
+          (pretRecord.capital_restant ?? pretRecord.montant_pret ?? 0) - principalValue,
+          0,
+        )
+        const { error: capitalError } = await supabase
+          .from('prets')
+          .update({ capital_restant: nouveauCapital })
+          .eq('pret_id', remboursement.pret_id)
+        if (capitalError) throw capitalError
+      }
 
       // Vérifier si tous les remboursements sont payés pour mettre à jour le statut du prêt
       const { data: allRemboursements, error: checkError } = await supabase
