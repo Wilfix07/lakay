@@ -25,6 +25,13 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Plus, X, Loader2 } from 'lucide-react'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 function MembresPageContent() {
   const [membres, setMembres] = useState<Membre[]>([])
@@ -33,6 +40,11 @@ function MembresPageContent() {
   const [showForm, setShowForm] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const [transferMember, setTransferMember] = useState<Membre | null>(null)
+  const [transferAgentId, setTransferAgentId] = useState<string>('')
+  const [transferSaving, setTransferSaving] = useState(false)
+  const [transferError, setTransferError] = useState<string | null>(null)
   const [formData, setFormData] = useState({
     agent_id: '',
     nom: '',
@@ -137,6 +149,79 @@ function MembresPageContent() {
       alert('Erreur: ' + (error.message || 'Erreur inconnue'))
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  function openTransferDialog(member: Membre) {
+    setTransferMember(member)
+    setTransferAgentId(member.agent_id)
+    setTransferError(null)
+    setTransferDialogOpen(true)
+  }
+
+  async function handleTransferSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    if (!transferMember || !transferAgentId) {
+      setTransferError('Veuillez sélectionner un agent de destination.')
+      return
+    }
+
+    if (transferAgentId === transferMember.agent_id) {
+      setTransferError('Le membre est déjà assigné à cet agent.')
+      return
+    }
+
+    try {
+      setTransferSaving(true)
+      setTransferError(null)
+
+      const { error: memberError } = await supabase
+        .from('membres')
+        .update({ agent_id: transferAgentId })
+        .eq('id', transferMember.id)
+
+      if (memberError) throw memberError
+
+      const { error: pretsError } = await supabase
+        .from('prets')
+        .update({ agent_id: transferAgentId })
+        .eq('membre_id', transferMember.membre_id)
+
+      if (pretsError) {
+        await supabase
+          .from('membres')
+          .update({ agent_id: transferMember.agent_id })
+          .eq('id', transferMember.id)
+        throw new Error(pretsError.message)
+      }
+
+      const { error: remboursementsError } = await supabase
+        .from('remboursements')
+        .update({ agent_id: transferAgentId })
+        .eq('membre_id', transferMember.membre_id)
+
+      if (remboursementsError) {
+        await supabase
+          .from('membres')
+          .update({ agent_id: transferMember.agent_id })
+          .eq('id', transferMember.id)
+        await supabase
+          .from('prets')
+          .update({ agent_id: transferMember.agent_id })
+          .eq('membre_id', transferMember.membre_id)
+        throw new Error(remboursementsError.message)
+      }
+
+      setTransferDialogOpen(false)
+      setTransferMember(null)
+      setTransferAgentId('')
+      alert('Membre transféré avec succès.')
+      loadMembres()
+    } catch (error: any) {
+      console.error('Erreur lors du transfert du membre:', error)
+      setTransferError(error.message ?? 'Une erreur est survenue pendant le transfert.')
+    } finally {
+      setTransferSaving(false)
     }
   }
 
@@ -283,6 +368,9 @@ function MembresPageContent() {
                       <TableHead>Prénom</TableHead>
                       <TableHead>Téléphone</TableHead>
                       <TableHead>Date création</TableHead>
+                      {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                        <TableHead className="text-right">Actions</TableHead>
+                      )}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -296,6 +384,17 @@ function MembresPageContent() {
                         <TableCell>
                           {new Date(membre.created_at).toLocaleDateString('fr-FR')}
                         </TableCell>
+                        {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                          <TableCell className="text-right">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openTransferDialog(membre)}
+                            >
+                              Transférer
+                            </Button>
+                          </TableCell>
+                        )}
                       </TableRow>
                     ))}
                   </TableBody>
@@ -305,6 +404,68 @@ function MembresPageContent() {
           </CardContent>
         </Card>
       </div>
+
+      {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+        <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Transférer le membre</DialogTitle>
+              <DialogDescription>
+                Sélectionnez l’agent vers lequel transférer ce membre.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleTransferSubmit} className="space-y-4">
+              <div>
+                <Label>Membre</Label>
+                <div className="mt-1 rounded-lg border bg-muted/40 p-3 text-sm">
+                  {transferMember
+                    ? `${transferMember.prenom} ${transferMember.nom} • ${transferMember.membre_id}`
+                    : 'Aucun membre sélectionné'}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Nouvel agent</Label>
+                <Select value={transferAgentId} onValueChange={setTransferAgentId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Sélectionner un agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agents
+                      .filter((agent) => agent.agent_id !== transferMember?.agent_id)
+                      .map((agent) => (
+                        <SelectItem key={agent.agent_id} value={agent.agent_id}>
+                          {agent.agent_id} - {agent.prenom} {agent.nom}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {transferError && (
+                <p className="text-sm text-red-600">{transferError}</p>
+              )}
+              <div className="flex justify-end gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setTransferDialogOpen(false)}
+                >
+                  Annuler
+                </Button>
+                <Button type="submit" disabled={transferSaving}>
+                  {transferSaving ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Transfert...
+                    </>
+                  ) : (
+                    'Confirmer'
+                  )}
+                </Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
     </DashboardLayout>
   )
 }
