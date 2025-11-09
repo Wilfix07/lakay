@@ -23,9 +23,9 @@ export default function Home() {
         .eq('role', 'admin')
         .limit(1)
 
-      // Si aucun admin n'existe, rediriger vers setup
+      // Si aucun admin n'existe, rediriger vers la connexion
       if (!admins || admins.length === 0) {
-        router.push('/setup')
+        router.push('/login')
         return
       }
 
@@ -38,7 +38,7 @@ export default function Home() {
       }
     } catch (error) {
       console.error('Erreur:', error)
-      router.push('/setup')
+      router.push('/login')
     } finally {
       setChecking(false)
     }

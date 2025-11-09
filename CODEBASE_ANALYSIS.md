@@ -68,7 +68,6 @@ This document outlines all inconsistencies, bugs, and issues identified and fixe
 
 **Files Affected**:
 - `app/dashboard/page.tsx` - Removed unused `getUserRole` import
-- `app/setup/page.tsx` - Removed unused `userExists` state variable
 
 **Fix**: Removed unused imports and variables to keep code clean.
 
@@ -100,12 +99,7 @@ This document outlines all inconsistencies, bugs, and issues identified and fixe
 
 ## Remaining Considerations
 
-### 1. Hardcoded Supabase Project URL
-**File**: `app/setup/page.tsx` (line 182)  
-**Issue**: Hardcoded Supabase dashboard URL  
-**Recommendation**: Consider making this configurable via environment variable or removing it if not needed for production.
-
-### 2. Unused Function Definitions
+### 1. Unused Function Definitions
 **File**: `app/prets/page.tsx`  
 **Issue**: `getNextBusinessDayFrom()` function is defined but no longer used  
 **Recommendation**: Can be removed in a future cleanup, but doesn't affect functionality.
@@ -130,7 +124,6 @@ This document outlines all inconsistencies, bugs, and issues identified and fixe
 5. `app/remboursements/page.tsx`
 6. `app/membres/page.tsx`
 7. `app/utilisateurs/page.tsx`
-8. `app/setup/page.tsx`
 
 ---
 
