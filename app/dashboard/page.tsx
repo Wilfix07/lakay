@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import Link from 'next/link'
-import { 
+import {
   Users, 
   UserPlus, 
   CreditCard, 
@@ -20,6 +20,23 @@ import {
   ArrowDownRight
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip as RechartsTooltip,
+  CartesianGrid,
+} from 'recharts'
 
 export default function DashboardPage() {
   const router = useRouter()
@@ -33,6 +50,9 @@ export default function DashboardPage() {
     remboursementsPayes: 0,
     montantTotal: 0,
   })
+  const [agentCollections, setAgentCollections] = useState<
+    { agent_id: string; total_collected: number; displayName: string }[]
+  >([])
 
   useEffect(() => {
     loadUserProfile()
@@ -69,31 +89,63 @@ export default function DashboardPage() {
       // Stats pour Admin et Manager (tous les agents)
       if (userProfile.role === 'admin' || userProfile.role === 'manager') {
         const [agentsRes, membresRes, pretsRes, remboursementsRes] = await Promise.all([
-          supabase.from('agents').select('id', { count: 'exact', head: true }),
+          supabase.from('agents').select('agent_id, nom, prenom'),
           supabase.from('membres').select('id', { count: 'exact', head: true }),
-          supabase.from('prets').select('id, montant_pret', { count: 'exact' }),
-          supabase.from('remboursements').select('id, statut', { count: 'exact' }),
+          supabase.from('prets').select('id, montant_pret'),
+          supabase.from('remboursements').select('id, statut, agent_id, montant'),
         ])
 
-        const montantTotal = pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
-        const remboursementsPayes = remboursementsRes.data?.filter(r => r.statut === 'paye').length || 0
+        if (agentsRes.error) throw agentsRes.error
+        if (membresRes.error) throw membresRes.error
+        if (pretsRes.error) throw pretsRes.error
+        if (remboursementsRes.error) throw remboursementsRes.error
+
+        const agentsData = agentsRes.data || []
+        const montantTotal =
+          pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
+        const remboursementsPayes =
+          remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0
+
+        const collectionMap = (remboursementsRes.data || [])
+          .filter((item) => item.statut === 'paye' && item.agent_id)
+          .reduce<Map<string, number>>((acc, item) => {
+            const key = item.agent_id!
+            const current = acc.get(key) ?? 0
+            acc.set(key, current + Number(item.montant || 0))
+            return acc
+          }, new Map())
+
+        const collections = Array.from(collectionMap.entries()).map(([agentId, total]) => {
+          const agent = agentsData.find((a) => a.agent_id === agentId)
+          const displayName = agent
+            ? `${agent.prenom ?? ''} ${agent.nom ?? ''}`.trim() || agent.agent_id
+            : agentId
+          return { agent_id: agentId, total_collected: total, displayName }
+        })
 
         setStats({
-          agents: agentsRes.count || 0,
+          agents: agentsData.length || 0,
           membres: membresRes.count || 0,
-          prets: pretsRes.count || 0,
-          remboursements: remboursementsRes.count || 0,
+          prets: pretsRes.data?.length || 0,
+          remboursements: remboursementsRes.data?.length || 0,
           remboursementsPayes,
           montantTotal,
         })
+        setAgentCollections(
+          collections.sort((a, b) => b.total_collected - a.total_collected),
+        )
       } 
       // Stats pour Agent (seulement ses données)
       else if (userProfile.role === 'agent' && userProfile.agent_id) {
         const [membresRes, pretsRes, remboursementsRes] = await Promise.all([
           supabase.from('membres').select('id', { count: 'exact', head: true }).eq('agent_id', userProfile.agent_id),
           supabase.from('prets').select('id, montant_pret').eq('agent_id', userProfile.agent_id),
-          supabase.from('remboursements').select('id, statut').eq('agent_id', userProfile.agent_id),
+          supabase.from('remboursements').select('id, statut, agent_id, montant').eq('agent_id', userProfile.agent_id),
         ])
+
+        if (membresRes.error) throw membresRes.error
+        if (pretsRes.error) throw pretsRes.error
+        if (remboursementsRes.error) throw remboursementsRes.error
 
         const montantTotal = pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
         const remboursementsPayes = remboursementsRes.data?.filter(r => r.statut === 'paye').length || 0
@@ -106,6 +158,23 @@ export default function DashboardPage() {
           remboursementsPayes,
           montantTotal,
         })
+        const totalCollected =
+          remboursementsRes.data
+            ?.filter((item) => item.statut === 'paye')
+            .reduce((sum, item) => sum + Number(item.montant || 0), 0) || 0
+        const displayName =
+          `${userProfile.prenom ?? ''} ${userProfile.nom ?? ''}`.trim() || userProfile.agent_id || 'Vous'
+        const collections =
+          totalCollected > 0
+            ? [
+                {
+                  agent_id: userProfile.agent_id || 'self',
+                  total_collected: totalCollected,
+                  displayName,
+                },
+              ]
+            : []
+        setAgentCollections(collections)
       }
     } catch (error) {
       console.error('Erreur lors du chargement des stats:', error)
@@ -235,6 +304,8 @@ export default function DashboardPage() {
       : []),
   ]
 
+  const hasCollections = agentCollections.length > 0
+
   return (
     <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
       {/* Header */}
@@ -306,6 +377,84 @@ export default function DashboardPage() {
           })}
         </div>
       </div>
+
+      {/* Agent Collections */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between flex-wrap gap-3">
+            <div>
+              <CardTitle>Performance des agents</CardTitle>
+              <CardDescription>
+                Total collecté par agent de crédit (remboursements payés)
+              </CardDescription>
+            </div>
+            {hasCollections && (
+              <Badge variant="secondary" className="bg-primary/10 text-primary">
+                Total HTG collecté: {formatCurrency(agentCollections.reduce((sum, item) => sum + item.total_collected, 0))}
+              </Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-8 lg:grid-cols-2">
+            <div className="h-80">
+              {hasCollections ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={agentCollections}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis
+                      dataKey="displayName"
+                      tick={{ fontSize: 12 }}
+                      interval={0}
+                      angle={-20}
+                      textAnchor="end"
+                    />
+                    <YAxis tick={{ fontSize: 12 }} tickFormatter={(value) => `${Math.round(value / 1000)}k`} />
+                    <RechartsTooltip
+                      cursor={{ fill: 'rgba(0,0,0,0.05)' }}
+                      formatter={(value: number) => formatCurrency(Number(value))}
+                      labelFormatter={(label) => `Agent: ${label}`}
+                    />
+                    <Bar dataKey="total_collected" fill="var(--color-primary)" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground text-center">
+                  Aucune donnée de collecte disponible pour le moment.
+                </div>
+              )}
+            </div>
+            <div className="overflow-hidden rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Agent</TableHead>
+                    <TableHead className="text-right">Total collecté</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {hasCollections ? (
+                    agentCollections.map((item) => (
+                      <TableRow key={item.agent_id}>
+                        <TableCell className="font-medium">{item.displayName}</TableCell>
+                        <TableCell className="text-right text-sm">
+                          {formatCurrency(item.total_collected)}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={2} className="text-center text-sm text-muted-foreground py-6">
+                        Aucune donnée de collecte disponible.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     </DashboardLayout>
   )
 }
