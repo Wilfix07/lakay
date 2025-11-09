@@ -54,6 +54,11 @@ export default function DashboardPage() {
   const [agentCollections, setAgentCollections] = useState<
     { agent_id: string; total_collected: number; displayName: string }[]
   >([])
+  const [interestSummary, setInterestSummary] = useState<{
+    total: number
+    monthly: { key: string; label: string; interest: number }[]
+  }>({ total: 0, monthly: [] })
+  const [expensesSummary, setExpensesSummary] = useState<number>(0)
 
   useEffect(() => {
     loadUserProfile()
@@ -89,17 +94,25 @@ export default function DashboardPage() {
     try {
       // Stats pour Admin et Manager (tous les agents)
       if (userProfile.role === 'admin' || userProfile.role === 'manager') {
-        const [agentsRes, membresRes, pretsRes, remboursementsRes] = await Promise.all([
+        const [
+          agentsRes,
+          membresRes,
+          pretsRes,
+          remboursementsRes,
+          expensesRes,
+        ] = await Promise.all([
           supabase.from('agents').select('agent_id, nom, prenom'),
           supabase.from('membres').select('id', { count: 'exact', head: true }),
-          supabase.from('prets').select('id, montant_pret'),
-          supabase.from('remboursements').select('id, statut, agent_id, montant'),
+          supabase.from('prets').select('id, montant_pret, nombre_remboursements'),
+          supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement'),
+          supabase.from('agent_expenses').select('amount'),
         ])
 
         if (agentsRes.error) throw agentsRes.error
         if (membresRes.error) throw membresRes.error
         if (pretsRes.error) throw pretsRes.error
         if (remboursementsRes.error) throw remboursementsRes.error
+        if (expensesRes.error) throw expensesRes.error
 
         const agentsData = agentsRes.data || []
         const montantTotal =
@@ -115,6 +128,29 @@ export default function DashboardPage() {
             acc.set(key, current + Number(item.montant || 0))
             return acc
           }, new Map())
+
+        const pretMap = new Map(
+          (pretsRes.data || []).map((pret) => [pret.id, pret]),
+        )
+        const interestMap = new Map<string, number>()
+        let totalInterest = 0
+        for (const remboursement of remboursementsRes.data || []) {
+          if (remboursement.statut !== 'paye') continue
+          const pret = pretMap.get(remboursement.pret_id)
+          if (!pret || !pret.nombre_remboursements) continue
+          const principalPerPayment =
+            Number(pret.montant_pret || 0) / Number(pret.nombre_remboursements || 1)
+          const interestPortion =
+            Number(remboursement.montant || 0) - principalPerPayment
+          if (interestPortion <= 0) continue
+          totalInterest += interestPortion
+          const rawDate = remboursement.date_paiement || remboursement.date_remboursement
+          if (!rawDate) continue
+          const dateObj = new Date(rawDate)
+          if (Number.isNaN(dateObj.getTime())) continue
+          const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
+          interestMap.set(key, (interestMap.get(key) ?? 0) + interestPortion)
+        }
 
         const collections = Array.from(collectionMap.entries()).map(([agentId, total]) => {
           const agent = agentsData.find((a) => a.agent_id === agentId)
@@ -135,18 +171,34 @@ export default function DashboardPage() {
         setAgentCollections(
           collections.sort((a, b) => b.total_collected - a.total_collected),
         )
+        const expensesTotal =
+          expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
+        setExpensesSummary(expensesTotal)
+        const monthly = Array.from(interestMap.entries())
+          .map(([key, interest]) => {
+            const [year, month] = key.split('-').map((value) => Number(value))
+            const label = new Date(year, month - 1).toLocaleDateString('fr-FR', {
+              month: 'short',
+              year: 'numeric',
+            })
+            return { key, label, interest }
+          })
+          .sort((a, b) => a.key.localeCompare(b.key))
+        setInterestSummary({ total: totalInterest, monthly })
       } 
       // Stats pour Agent (seulement ses données)
       else if (userProfile.role === 'agent' && userProfile.agent_id) {
-        const [membresRes, pretsRes, remboursementsRes] = await Promise.all([
+        const [membresRes, pretsRes, remboursementsRes, expensesRes] = await Promise.all([
           supabase.from('membres').select('id', { count: 'exact', head: true }).eq('agent_id', userProfile.agent_id),
-          supabase.from('prets').select('id, montant_pret').eq('agent_id', userProfile.agent_id),
-          supabase.from('remboursements').select('id, statut, agent_id, montant').eq('agent_id', userProfile.agent_id),
+          supabase.from('prets').select('id, montant_pret, nombre_remboursements').eq('agent_id', userProfile.agent_id),
+          supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement').eq('agent_id', userProfile.agent_id),
+          supabase.from('agent_expenses').select('amount').eq('agent_id', userProfile.agent_id),
         ])
 
         if (membresRes.error) throw membresRes.error
         if (pretsRes.error) throw pretsRes.error
         if (remboursementsRes.error) throw remboursementsRes.error
+        if (expensesRes.error) throw expensesRes.error
 
         const montantTotal = pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
         const remboursementsPayes = remboursementsRes.data?.filter(r => r.statut === 'paye').length || 0
@@ -176,6 +228,42 @@ export default function DashboardPage() {
               ]
             : []
         setAgentCollections(collections)
+        const expensesTotal =
+          expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
+        setExpensesSummary(expensesTotal)
+        const pretMap = new Map(
+          (pretsRes.data || []).map((pret) => [pret.id, pret]),
+        )
+        const interestMap = new Map<string, number>()
+        let totalInterest = 0
+        for (const remboursement of remboursementsRes.data || []) {
+          if (remboursement.statut !== 'paye') continue
+          const pret = pretMap.get(remboursement.pret_id)
+          if (!pret || !pret.nombre_remboursements) continue
+          const principalPerPayment =
+            Number(pret.montant_pret || 0) / Number(pret.nombre_remboursements || 1)
+          const interestPortion =
+            Number(remboursement.montant || 0) - principalPerPayment
+          if (interestPortion <= 0) continue
+          totalInterest += interestPortion
+          const rawDate = remboursement.date_paiement || remboursement.date_remboursement
+          if (!rawDate) continue
+          const dateObj = new Date(rawDate)
+          if (Number.isNaN(dateObj.getTime())) continue
+          const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
+          interestMap.set(key, (interestMap.get(key) ?? 0) + interestPortion)
+        }
+        const monthly = Array.from(interestMap.entries())
+          .map(([key, interest]) => {
+            const [year, month] = key.split('-').map((value) => Number(value))
+            const label = new Date(year, month - 1).toLocaleDateString('fr-FR', {
+              month: 'short',
+              year: 'numeric',
+            })
+            return { key, label, interest }
+          })
+          .sort((a, b) => a.key.localeCompare(b.key))
+        setInterestSummary({ total: totalInterest, monthly })
       }
     } catch (error) {
       console.error('Erreur lors du chargement des stats:', error)
@@ -246,6 +334,22 @@ export default function DashboardPage() {
       description: 'Total prêté',
       color: 'text-indigo-600',
       bgColor: 'bg-indigo-50',
+    },
+    {
+      title: 'Intérêt brut',
+      value: formatCurrency(interestSummary.total),
+      icon: ArrowDownRight,
+      description: 'Intérêt (15%) collecté',
+      color: 'text-rose-600',
+      bgColor: 'bg-rose-50',
+    },
+    {
+      title: 'Total dépenses',
+      value: formatCurrency(expensesSummary),
+      icon: ArrowUpRight,
+      description: 'Dépenses opérationnelles',
+      color: 'text-slate-600',
+      bgColor: 'bg-slate-50',
     },
   ]
 
@@ -479,6 +583,54 @@ export default function DashboardPage() {
                 </TableBody>
               </Table>
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-8">
+        <CardHeader>
+          <div className="flex items-start justify-between flex-wrap gap-3">
+            <div>
+              <CardTitle>Intérêt perçu (15%)</CardTitle>
+              <CardDescription>
+                Total des intérêts collectés sur les remboursements payés
+              </CardDescription>
+            </div>
+            {interestSummary.total > 0 && (
+              <Badge variant="secondary" className="bg-rose-50 text-rose-600">
+                Total: {formatCurrency(interestSummary.total)}
+              </Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="h-80">
+            {interestSummary.monthly.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={interestSummary.monthly}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                  <YAxis
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={(value) => `${Math.round(value / 1000)}k`}
+                  />
+                  <RechartsTooltip
+                    cursor={{ fill: 'rgba(0,0,0,0.05)' }}
+                    formatter={(value: number) => formatCurrency(Number(value))}
+                    labelFormatter={(label) => `Mois: ${label}`}
+                  />
+                  <Bar
+                    dataKey="interest"
+                    fill="var(--color-chart-5)"
+                    radius={[6, 6, 0, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground text-center">
+                Aucune donnée d'intérêt disponible pour le moment.
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
