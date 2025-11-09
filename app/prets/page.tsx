@@ -121,9 +121,8 @@ function PretsPageContent() {
       // Calcul avec intérêt de 15% sur chaque remboursement quotidien
       // Montant de base par jour (sans intérêt) = montant_pret / 23
       const montantBaseParJour = montantPret / 23
-      // Ajouter 15% d'intérêt sur chaque remboursement quotidien
-      // Chaque jour, le membre rembourse : montant_base + 15% d'intérêt
-      const montantRemboursement = Math.round((montantBaseParJour * 1.15) * 100) / 100 // Arrondi à 2 décimales
+      const montantInteretParJour = Math.round((montantBaseParJour * 0.15) * 100) / 100
+      const montantRemboursement = Math.round((montantBaseParJour + montantInteretParJour) * 100) / 100 // Arrondi à 2 décimales
       
       // Vérification : montant total remboursé = montantRemboursement * 23 = montantPret * 1.15
 
@@ -206,6 +205,8 @@ function PretsPageContent() {
           agent_id: formData.agent_id,
           numero_remboursement: i,
           montant: montantRemboursement,
+          principal: Math.round(montantBaseParJour * 100) / 100,
+          interet: montantInteretParJour,
           date_remboursement: currentDate.toISOString().split('T')[0],
           statut: 'en_attente',
         })
@@ -332,10 +333,13 @@ function PretsPageContent() {
       
       for (let i = 1; i <= 23; i++) {
         currentDate = getNextBusinessDay(currentDate)
+        const montantInteretParJour = Math.round((montantBaseParJour * 0.15) * 100) / 100
         await supabase
           .from('remboursements')
           .update({
             montant: montantRemboursement,
+            principal: Math.round(montantBaseParJour * 100) / 100,
+            interet: montantInteretParJour,
             date_remboursement: currentDate.toISOString().split('T')[0],
           })
           .eq('pret_id', editingPret.pret_id)

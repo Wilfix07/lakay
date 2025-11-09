@@ -101,6 +101,18 @@ function RemboursementsPageContent() {
       return
     }
 
+    const nouveauPrincipal = prompt(
+      `Modifier la part de principal:\nActuelle: ${formatCurrency(remboursement.principal ?? 0)}`,
+      (remboursement.principal ?? 0).toString()
+    )
+    if (!nouveauPrincipal || isNaN(parseFloat(nouveauPrincipal)) || parseFloat(nouveauPrincipal) < 0) {
+      return
+    }
+
+    const newPrincipalValue = parseFloat(nouveauPrincipal)
+    const newMontantValue = parseFloat(nouveauMontant)
+    const newInterest = Math.max(newMontantValue - newPrincipalValue, 0)
+
     const nouvelleDate = prompt(`Modifier la date de remboursement:\nDate actuelle: ${formatDate(remboursement.date_remboursement)}\nFormat: YYYY-MM-DD`, remboursement.date_remboursement)
     
     if (!nouvelleDate) {
@@ -111,7 +123,9 @@ function RemboursementsPageContent() {
       const { error } = await supabase
         .from('remboursements')
         .update({
-          montant: parseFloat(nouveauMontant),
+          montant: newMontantValue,
+          principal: newPrincipalValue,
+          interet: newInterest,
           date_remboursement: nouvelleDate,
         })
         .eq('id', remboursement.id)
@@ -359,6 +373,12 @@ function RemboursementsPageContent() {
                   Montant
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Principal
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Intérêt
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Date prévue
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -375,7 +395,7 @@ function RemboursementsPageContent() {
             <tbody className="bg-white divide-y divide-gray-200">
               {remboursements.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-4 text-center text-gray-500">
+                  <td colSpan={10} className="px-6 py-4 text-center text-gray-500">
                     Aucun remboursement trouvé
                   </td>
                 </tr>
@@ -393,6 +413,12 @@ function RemboursementsPageContent() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {formatCurrency(remboursement.montant)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {formatCurrency(remboursement.principal ?? 0)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {formatCurrency(remboursement.interet ?? 0)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {formatDate(remboursement.date_remboursement)}

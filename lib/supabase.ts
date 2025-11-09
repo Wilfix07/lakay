@@ -73,6 +73,8 @@ export interface Remboursement {
   agent_id: string
   numero_remboursement: number
   montant: number
+  principal?: number
+  interet?: number
   date_remboursement: string
   date_paiement?: string
   statut: 'en_attente' | 'paye' | 'en_retard'

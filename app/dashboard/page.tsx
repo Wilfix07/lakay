@@ -104,7 +104,7 @@ export default function DashboardPage() {
           supabase.from('agents').select('agent_id, nom, prenom'),
           supabase.from('membres').select('id', { count: 'exact', head: true }),
           supabase.from('prets').select('id, montant_pret, nombre_remboursements'),
-          supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement'),
+          supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet'),
           supabase.from('agent_expenses').select('amount'),
         ])
 
@@ -137,19 +137,26 @@ export default function DashboardPage() {
         for (const remboursement of remboursementsRes.data || []) {
           if (remboursement.statut !== 'paye') continue
           const pret = pretMap.get(remboursement.pret_id)
-          if (!pret || !pret.nombre_remboursements) continue
-          const principalPerPayment =
-            Number(pret.montant_pret || 0) / Number(pret.nombre_remboursements || 1)
-          const interestPortion =
-            Number(remboursement.montant || 0) - principalPerPayment
-          if (interestPortion <= 0) continue
-          totalInterest += interestPortion
+          const fallbackPrincipal =
+            pret && pret.nombre_remboursements
+              ? Number(pret.montant_pret || 0) / Number(pret.nombre_remboursements || 1)
+              : Number(remboursement.montant || 0) / 1.15
+          const principalValue =
+            remboursement.principal != null
+              ? Number(remboursement.principal)
+              : Math.round(fallbackPrincipal * 100) / 100
+          const interestValue =
+            remboursement.interet != null
+              ? Number(remboursement.interet)
+              : Math.max(Number(remboursement.montant || 0) - principalValue, 0)
+          if (interestValue <= 0) continue
+          totalInterest += interestValue
           const rawDate = remboursement.date_paiement || remboursement.date_remboursement
           if (!rawDate) continue
           const dateObj = new Date(rawDate)
           if (Number.isNaN(dateObj.getTime())) continue
           const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
-          interestMap.set(key, (interestMap.get(key) ?? 0) + interestPortion)
+          interestMap.set(key, (interestMap.get(key) ?? 0) + interestValue)
         }
 
         const collections = Array.from(collectionMap.entries()).map(([agentId, total]) => {
@@ -191,7 +198,7 @@ export default function DashboardPage() {
         const [membresRes, pretsRes, remboursementsRes, expensesRes] = await Promise.all([
           supabase.from('membres').select('id', { count: 'exact', head: true }).eq('agent_id', userProfile.agent_id),
           supabase.from('prets').select('id, montant_pret, nombre_remboursements').eq('agent_id', userProfile.agent_id),
-          supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement').eq('agent_id', userProfile.agent_id),
+          supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet').eq('agent_id', userProfile.agent_id),
           supabase.from('agent_expenses').select('amount').eq('agent_id', userProfile.agent_id),
         ])
 
@@ -239,19 +246,26 @@ export default function DashboardPage() {
         for (const remboursement of remboursementsRes.data || []) {
           if (remboursement.statut !== 'paye') continue
           const pret = pretMap.get(remboursement.pret_id)
-          if (!pret || !pret.nombre_remboursements) continue
-          const principalPerPayment =
-            Number(pret.montant_pret || 0) / Number(pret.nombre_remboursements || 1)
-          const interestPortion =
-            Number(remboursement.montant || 0) - principalPerPayment
-          if (interestPortion <= 0) continue
-          totalInterest += interestPortion
+          const fallbackPrincipal =
+            pret && pret.nombre_remboursements
+              ? Number(pret.montant_pret || 0) / Number(pret.nombre_remboursements || 1)
+              : Number(remboursement.montant || 0) / 1.15
+          const principalValue =
+            remboursement.principal != null
+              ? Number(remboursement.principal)
+              : Math.round(fallbackPrincipal * 100) / 100
+          const interestValue =
+            remboursement.interet != null
+              ? Number(remboursement.interet)
+              : Math.max(Number(remboursement.montant || 0) - principalValue, 0)
+          if (interestValue <= 0) continue
+          totalInterest += interestValue
           const rawDate = remboursement.date_paiement || remboursement.date_remboursement
           if (!rawDate) continue
           const dateObj = new Date(rawDate)
           if (Number.isNaN(dateObj.getTime())) continue
           const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
-          interestMap.set(key, (interestMap.get(key) ?? 0) + interestPortion)
+          interestMap.set(key, (interestMap.get(key) ?? 0) + interestValue)
         }
         const monthly = Array.from(interestMap.entries())
           .map(([key, interest]) => {

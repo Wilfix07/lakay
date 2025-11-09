@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS remboursements (
     agent_id VARCHAR(2) NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
     numero_remboursement INTEGER NOT NULL, -- 1 à 23
     montant DECIMAL(10, 2) NOT NULL,
+    principal DECIMAL(10, 2) NOT NULL DEFAULT 0,
+    interet DECIMAL(10, 2) NOT NULL DEFAULT 0,
     date_remboursement DATE NOT NULL,
     date_paiement DATE, -- Date réelle du paiement (peut être différente de date_remboursement)
     statut VARCHAR(20) DEFAULT 'en_attente', -- en_attente, paye, en_retard
