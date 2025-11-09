@@ -10,7 +10,7 @@ import {
   DollarSign, 
   LogOut,
   Menu,
-  X
+  ArrowDownRight
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -71,6 +71,12 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       href: '/remboursements',
       icon: DollarSign,
       roles: ['admin', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Dépenses',
+      href: '/expenses',
+      icon: ArrowDownRight,
+      roles: ['manager', 'agent'] as UserRole[],
     },
   ].filter(item => item.roles.includes(userProfile.role))
 
