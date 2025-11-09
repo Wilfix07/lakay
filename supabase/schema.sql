@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS remboursements (
     UNIQUE(pret_id, numero_remboursement)
 );
 
+-- Table des dépenses des agents
+CREATE TABLE IF NOT EXISTS agent_expenses (
+    id SERIAL PRIMARY KEY,
+    agent_id VARCHAR(2) NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    amount DECIMAL(12, 2) NOT NULL,
+    category VARCHAR(100),
+    description TEXT,
+    expense_date DATE NOT NULL,
+    created_by UUID REFERENCES auth.users(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Index pour améliorer les performances
 CREATE INDEX IF NOT EXISTS idx_membres_agent_id ON membres(agent_id);
 CREATE INDEX IF NOT EXISTS idx_prets_membre_id ON prets(membre_id);
@@ -64,6 +76,8 @@ CREATE INDEX IF NOT EXISTS idx_prets_agent_id ON prets(agent_id);
 CREATE INDEX IF NOT EXISTS idx_remboursements_pret_id ON remboursements(pret_id);
 CREATE INDEX IF NOT EXISTS idx_remboursements_membre_id ON remboursements(membre_id);
 CREATE INDEX IF NOT EXISTS idx_remboursements_statut ON remboursements(statut);
+CREATE INDEX IF NOT EXISTS idx_agent_expenses_agent_id ON agent_expenses(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_expenses_date ON agent_expenses(expense_date);
 
 -- Fonction pour générer automatiquement l'agent_id
 CREATE OR REPLACE FUNCTION generate_agent_id()
