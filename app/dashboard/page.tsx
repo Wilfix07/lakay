@@ -2,10 +2,24 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { getUserProfile, getUserRole, signOut } from '@/lib/auth'
+import { getUserProfile, signOut } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
-import type { UserProfile as UserProfileType, UserRole } from '@/lib/supabase'
+import type { UserProfile as UserProfileType } from '@/lib/supabase'
+import { DashboardLayout } from '@/components/DashboardLayout'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import Link from 'next/link'
+import { 
+  Users, 
+  UserPlus, 
+  CreditCard, 
+  DollarSign, 
+  TrendingUp,
+  ArrowUpRight,
+  ArrowDownRight
+} from 'lucide-react'
+import { formatCurrency } from '@/lib/utils'
 
 export default function DashboardPage() {
   const router = useRouter()
@@ -22,12 +36,14 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadUserProfile()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router])
 
   useEffect(() => {
     if (userProfile) {
       loadStats()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
 
   async function loadUserProfile() {
@@ -113,125 +129,183 @@ export default function DashboardPage() {
     return null
   }
 
-  const roleLabels: Record<UserRole, string> = {
-    admin: 'Administrateur',
-    manager: 'Manager',
-    agent: 'Agent de Crédit',
-  }
+  const statCards = [
+    ...(userProfile.role === 'admin' || userProfile.role === 'manager' 
+      ? [{
+          title: 'Agents',
+          value: stats.agents,
+          icon: UserPlus,
+          description: 'Total agents',
+          color: 'text-blue-600',
+          bgColor: 'bg-blue-50',
+        }]
+      : []),
+    {
+      title: 'Membres',
+      value: stats.membres,
+      icon: Users,
+      description: 'Total membres',
+      color: 'text-purple-600',
+      bgColor: 'bg-purple-50',
+    },
+    {
+      title: 'Prêts',
+      value: stats.prets,
+      icon: CreditCard,
+      description: 'Prêts actifs',
+      color: 'text-green-600',
+      bgColor: 'bg-green-50',
+    },
+    {
+      title: 'Remboursements',
+      value: stats.remboursements,
+      icon: DollarSign,
+      description: `${stats.remboursementsPayes} payés`,
+      color: 'text-orange-600',
+      bgColor: 'bg-orange-50',
+      badge: stats.remboursementsPayes > 0 ? (
+        <Badge variant="secondary" className="ml-2 bg-green-100 text-green-800">
+          {stats.remboursementsPayes} payés
+        </Badge>
+      ) : null,
+    },
+    {
+      title: 'Montant Total',
+      value: formatCurrency(stats.montantTotal),
+      icon: TrendingUp,
+      description: 'Total prêté',
+      color: 'text-indigo-600',
+      bgColor: 'bg-indigo-50',
+    },
+  ]
+
+  const actionCards = [
+    ...(userProfile.role === 'admin' || userProfile.role === 'manager'
+      ? [
+          {
+            title: 'Gérer les Utilisateurs',
+            description: userProfile.role === 'admin' ? 'Créer managers et agents' : 'Créer des agents',
+            href: '/utilisateurs',
+            icon: Users,
+            color: 'text-purple-600',
+            bgColor: 'bg-purple-50',
+            hoverColor: 'hover:bg-purple-100',
+          },
+          {
+            title: 'Gérer les Agents',
+            description: 'Créer et modifier les agents',
+            href: '/agents',
+            icon: UserPlus,
+            color: 'text-blue-600',
+            bgColor: 'bg-blue-50',
+            hoverColor: 'hover:bg-blue-100',
+          },
+        ]
+      : []),
+    ...(userProfile.role === 'admin' || userProfile.role === 'agent'
+      ? [
+          {
+            title: 'Gérer les Membres',
+            description: 'Créer et modifier les membres',
+            href: '/membres',
+            icon: Users,
+            color: 'text-green-600',
+            bgColor: 'bg-green-50',
+            hoverColor: 'hover:bg-green-100',
+          },
+          {
+            title: 'Gérer les Prêts',
+            description: 'Créer et décaisser les prêts',
+            href: '/prets',
+            icon: CreditCard,
+            color: 'text-indigo-600',
+            bgColor: 'bg-indigo-50',
+            hoverColor: 'hover:bg-indigo-100',
+          },
+          {
+            title: 'Remboursements',
+            description: 'Enregistrer les paiements',
+            href: '/remboursements',
+            icon: DollarSign,
+            color: 'text-orange-600',
+            bgColor: 'bg-orange-50',
+            hoverColor: 'hover:bg-orange-100',
+          },
+        ]
+      : []),
+  ]
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
       {/* Header */}
-      <header className="bg-white shadow-sm border-b">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-              <p className="text-sm text-gray-600">
-                {roleLabels[userProfile.role]} • {userProfile.email}
-                {userProfile.agent_id && ` • Agent: ${userProfile.agent_id}`}
-              </p>
-            </div>
-            <button
-              onClick={handleSignOut}
-              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
-            >
-              Déconnexion
-            </button>
-          </div>
-        </div>
-      </header>
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold tracking-tight text-foreground">Dashboard</h1>
+        <p className="text-muted-foreground mt-2">
+          Bienvenue, {userProfile.nom && userProfile.prenom 
+            ? `${userProfile.prenom} ${userProfile.nom}`
+            : userProfile.email}
+        </p>
+      </div>
 
-      <div className="container mx-auto px-4 py-8">
-        {/* Statistiques */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-          {(userProfile.role === 'admin' || userProfile.role === 'manager') && (
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <div className="text-sm text-gray-600 mb-1">Agents</div>
-              <div className="text-3xl font-bold text-gray-900">{stats.agents}</div>
-            </div>
-          )}
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="text-sm text-gray-600 mb-1">Membres</div>
-            <div className="text-3xl font-bold text-gray-900">{stats.membres}</div>
-          </div>
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="text-sm text-gray-600 mb-1">Prêts</div>
-            <div className="text-3xl font-bold text-gray-900">{stats.prets}</div>
-          </div>
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="text-sm text-gray-600 mb-1">Remboursements</div>
-            <div className="text-3xl font-bold text-gray-900">{stats.remboursements}</div>
-            <div className="text-sm text-green-600 mt-1">
-              {stats.remboursementsPayes} payés
-            </div>
-          </div>
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="text-sm text-gray-600 mb-1">Montant Total</div>
-            <div className="text-3xl font-bold text-gray-900">
-              {new Intl.NumberFormat('fr-FR').format(stats.montantTotal)} HTG
-            </div>
-          </div>
-        </div>
+      {/* Stats Cards */}
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 mb-8">
+        {statCards.map((stat, index) => {
+          const Icon = stat.icon
+          return (
+            <Card key={index} className="border-0 shadow-sm">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground">
+                  {stat.title}
+                </CardTitle>
+                <div className={`p-2 rounded-lg ${stat.bgColor}`}>
+                  <Icon className={`w-4 h-4 ${stat.color}`} />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-foreground mb-1">
+                  {stat.value}
+                </div>
+                <p className="text-xs text-muted-foreground flex items-center gap-2">
+                  {stat.description}
+                  {stat.badge}
+                </p>
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
 
-        {/* Actions rapides */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-          <h2 className="text-xl font-semibold mb-4">Actions rapides</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {(userProfile.role === 'admin' || userProfile.role === 'manager') && (
-              <>
-                <Link
-                  href="/utilisateurs"
-                  className="p-4 border-2 border-gray-200 rounded-lg hover:border-purple-500 hover:bg-purple-50 transition"
-                >
-                  <div className="text-2xl mb-2">👤</div>
-                  <div className="font-semibold">Gérer les Utilisateurs</div>
-                  <div className="text-sm text-gray-600">
-                    {userProfile.role === 'admin' ? 'Créer managers et agents' : 'Créer des agents'}
-                  </div>
-                </Link>
-                <Link
-                  href="/agents"
-                  className="p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
-                >
-                  <div className="text-2xl mb-2">👥</div>
-                  <div className="font-semibold">Gérer les Agents</div>
-                  <div className="text-sm text-gray-600">Créer et modifier</div>
-                </Link>
-              </>
-            )}
-            {(userProfile.role === 'admin' || userProfile.role === 'agent') && (
-              <>
-                <Link
-                  href="/membres"
-                  className="p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
-                >
-                  <div className="text-2xl mb-2">👤</div>
-                  <div className="font-semibold">Gérer les Membres</div>
-                  <div className="text-sm text-gray-600">Créer et modifier</div>
-                </Link>
-                <Link
-                  href="/prets"
-                  className="p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
-                >
-                  <div className="text-2xl mb-2">💰</div>
-                  <div className="font-semibold">Gérer les Prêts</div>
-                  <div className="text-sm text-gray-600">Créer et décaisser</div>
-                </Link>
-                <Link
-                  href="/remboursements"
-                  className="p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition"
-                >
-                  <div className="text-2xl mb-2">💳</div>
-                  <div className="font-semibold">Remboursements</div>
-                  <div className="text-sm text-gray-600">Enregistrer les paiements</div>
-                </Link>
-              </>
-            )}
-          </div>
+      {/* Action Cards */}
+      <div>
+        <h2 className="text-xl font-semibold tracking-tight mb-4 text-foreground">
+          Actions rapides
+        </h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {actionCards.map((action, index) => {
+            const Icon = action.icon
+            return (
+              <Link key={index} href={action.href}>
+                <Card className={`border transition-all cursor-pointer ${action.hoverColor} hover:shadow-md`}>
+                  <CardHeader>
+                    <div className="flex items-center justify-between">
+                      <div className={`p-3 rounded-lg ${action.bgColor}`}>
+                        <Icon className={`w-5 h-5 ${action.color}`} />
+                      </div>
+                      <ArrowUpRight className="w-4 h-4 text-muted-foreground" />
+                    </div>
+                    <CardTitle className="text-base font-semibold mt-4">
+                      {action.title}
+                    </CardTitle>
+                    <CardDescription className="text-sm mt-1">
+                      {action.description}
+                    </CardDescription>
+                  </CardHeader>
+                </Card>
+              </Link>
+            )
+          })}
         </div>
       </div>
-    </div>
+    </DashboardLayout>
   )
 }
-

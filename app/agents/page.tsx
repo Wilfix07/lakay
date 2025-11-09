@@ -1,15 +1,31 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import Link from 'next/link'
 import { supabase, type Agent } from '@/lib/supabase'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile } from '@/lib/auth'
+import { DashboardLayout } from '@/components/DashboardLayout'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import { Plus, X, Loader2 } from 'lucide-react'
+import type { UserProfile } from '@/lib/supabase'
 
 function AgentsPageContent() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [formData, setFormData] = useState({
     nom: '',
     prenom: '',
@@ -18,11 +34,23 @@ function AgentsPageContent() {
   })
 
   useEffect(() => {
-    loadAgents()
+    loadUserProfile()
   }, [])
+
+  useEffect(() => {
+    if (userProfile) {
+      loadAgents()
+    }
+  }, [userProfile])
+
+  async function loadUserProfile() {
+    const profile = await getUserProfile()
+    setUserProfile(profile)
+  }
 
   async function loadAgents() {
     try {
+      setLoading(true)
       const { data, error } = await supabase
         .from('agents')
         .select('*')
@@ -40,6 +68,7 @@ function AgentsPageContent() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setSubmitting(true)
     try {
       // Générer l'agent_id automatiquement
       const { data: maxAgents } = await supabase
@@ -72,163 +101,158 @@ function AgentsPageContent() {
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
       alert('Erreur: ' + (error.message || 'Erreur inconnue'))
+    } finally {
+      setSubmitting(false)
     }
   }
 
-  if (loading) {
+  async function handleSignOut() {
+    // This will be handled by DashboardLayout
+  }
+
+  if (loading || !userProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-xl">Chargement...</div>
+        <Loader2 className="w-6 h-6 animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="container mx-auto px-4">
-        <div className="flex justify-between items-center mb-8">
+    <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Agents de Crédit</h1>
-            <p className="text-gray-600 mt-2">Gérer les agents et leurs portefeuilles</p>
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">Agents de Crédit</h1>
+            <p className="text-muted-foreground mt-2">Gérer les agents et leurs portefeuilles</p>
           </div>
-          <div className="flex gap-4">
-            <Link
-              href="/"
-              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-            >
-              Accueil
-            </Link>
-            <button
-              onClick={() => setShowForm(!showForm)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              {showForm ? 'Annuler' : '+ Nouvel Agent'}
-            </button>
-          </div>
+          <Button onClick={() => setShowForm(!showForm)} className="gap-2">
+            {showForm ? (
+              <>
+                <X className="w-4 h-4" />
+                Annuler
+              </>
+            ) : (
+              <>
+                <Plus className="w-4 h-4" />
+                Nouvel Agent
+              </>
+            )}
+          </Button>
         </div>
 
+        {/* Form */}
         {showForm && (
-          <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-            <h2 className="text-xl font-semibold mb-4">Créer un nouvel agent</h2>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Nom *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.nom}
-                    onChange={(e) => setFormData({ ...formData, nom: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
+          <Card>
+            <CardHeader>
+              <CardTitle>Créer un nouvel agent</CardTitle>
+              <CardDescription>Remplissez les informations pour créer un nouvel agent</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="nom">Nom *</Label>
+                    <Input
+                      id="nom"
+                      required
+                      value={formData.nom}
+                      onChange={(e) => setFormData({ ...formData, nom: e.target.value })}
+                      placeholder="Nom de l'agent"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="prenom">Prénom *</Label>
+                    <Input
+                      id="prenom"
+                      required
+                      value={formData.prenom}
+                      onChange={(e) => setFormData({ ...formData, prenom: e.target.value })}
+                      placeholder="Prénom de l'agent"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="email">Email</Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      value={formData.email}
+                      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      placeholder="email@example.com"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="telephone">Téléphone</Label>
+                    <Input
+                      id="telephone"
+                      type="tel"
+                      value={formData.telephone}
+                      onChange={(e) => setFormData({ ...formData, telephone: e.target.value })}
+                      placeholder="+509 XX XX XX XX"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Prénom *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.prenom}
-                    onChange={(e) => setFormData({ ...formData, prenom: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Téléphone
-                  </label>
-                  <input
-                    type="tel"
-                    value={formData.telephone}
-                    onChange={(e) => setFormData({ ...formData, telephone: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-              </div>
-              <button
-                type="submit"
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-              >
-                Créer l'agent
-              </button>
-            </form>
-          </div>
+                <Button type="submit" disabled={submitting} className="w-full md:w-auto">
+                  {submitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Création...
+                    </>
+                  ) : (
+                    'Créer l\'agent'
+                  )}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
         )}
 
-        <div className="bg-white rounded-lg shadow-md overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  ID Agent
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Nom
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Prénom
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Email
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Téléphone
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Date création
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {agents.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-4 text-center text-gray-500">
-                    Aucun agent enregistré
-                  </td>
-                </tr>
-              ) : (
-                agents.map((agent) => (
-                  <tr key={agent.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {agent.agent_id}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {agent.nom}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {agent.prenom}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {agent.email || '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {agent.telephone || '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {new Date(agent.created_at).toLocaleDateString('fr-FR')}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        {/* Table */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Liste des agents</CardTitle>
+            <CardDescription>Total: {agents.length} agent(s)</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {agents.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <p>Aucun agent enregistré</p>
+              </div>
+            ) : (
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>ID Agent</TableHead>
+                      <TableHead>Nom</TableHead>
+                      <TableHead>Prénom</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Téléphone</TableHead>
+                      <TableHead>Date création</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {agents.map((agent) => (
+                      <TableRow key={agent.id}>
+                        <TableCell className="font-medium">{agent.agent_id}</TableCell>
+                        <TableCell>{agent.nom}</TableCell>
+                        <TableCell>{agent.prenom}</TableCell>
+                        <TableCell>{agent.email || '-'}</TableCell>
+                        <TableCell>{agent.telephone || '-'}</TableCell>
+                        <TableCell>
+                          {new Date(agent.created_at).toLocaleDateString('fr-FR')}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
-    </div>
+    </DashboardLayout>
   )
 }
 
@@ -239,4 +263,3 @@ export default function AgentsPage() {
     </ProtectedRoute>
   )
 }
-

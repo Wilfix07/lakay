@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { getUserProfile, getUserRole, PERMISSIONS, type UserRole } from '@/lib/auth'
+import { getUserProfile, PERMISSIONS } from '@/lib/auth'
+import type { UserRole } from '@/lib/supabase'
 
 interface ProtectedRouteProps {
   children: React.ReactNode
@@ -21,7 +22,8 @@ export default function ProtectedRoute({
 
   useEffect(() => {
     checkAuth()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router])
 
   async function checkAuth() {
     try {

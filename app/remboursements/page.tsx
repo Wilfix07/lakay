@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { supabase, type Remboursement, type Pret } from '@/lib/supabase'
+import { supabase, type Remboursement, type Pret, type UserProfile } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile } from '@/lib/auth'
@@ -13,7 +13,7 @@ function RemboursementsPageContent() {
   const [loading, setLoading] = useState(true)
   const [filterPret, setFilterPret] = useState('')
   const [filterStatut, setFilterStatut] = useState('')
-  const [userProfile, setUserProfile] = useState<any>(null)
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
 
   useEffect(() => {
     loadUserProfile()
@@ -24,12 +24,14 @@ function RemboursementsPageContent() {
       loadPrets()
       loadRemboursements()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
 
   useEffect(() => {
     if (userProfile) {
       loadRemboursements()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterPret, filterStatut, userProfile])
 
   async function loadUserProfile() {

@@ -12,7 +12,6 @@ export default function SetupPage() {
   const [adminEmail] = useState('admin@lakay.com')
   const [adminPassword] = useState('Admin123!')
   const [userId, setUserId] = useState('')
-  const [userExists, setUserExists] = useState(false)
 
   useEffect(() => {
     checkExistingAdmin()

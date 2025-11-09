@@ -2,13 +2,13 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { supabase, type UserProfile } from '@/lib/supabase'
+import { supabase, type UserProfile, type Agent } from '@/lib/supabase'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile } from '@/lib/auth'
 
 function UtilisateursPageContent() {
   const [users, setUsers] = useState<UserProfile[]>([])
-  const [agents, setAgents] = useState<any[]>([])
+  const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [formData, setFormData] = useState({
@@ -19,7 +19,7 @@ function UtilisateursPageContent() {
     prenom: '',
     agent_id: '', // Pour les agents seulement
   })
-  const [userProfile, setUserProfile] = useState<any>(null)
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
@@ -34,6 +34,7 @@ function UtilisateursPageContent() {
         loadAgents()
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
 
   async function loadUserProfile() {

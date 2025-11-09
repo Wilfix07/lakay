@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { supabase, type Pret, type Membre, type Agent } from '@/lib/supabase'
+import { supabase, type Pret, type Membre, type Agent, type UserProfile } from '@/lib/supabase'
 import { formatCurrency, formatDate, getMonthName } from '@/lib/utils'
 import { addDays, getDay } from 'date-fns'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -15,7 +15,7 @@ function PretsPageContent() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingPret, setEditingPret] = useState<Pret | null>(null)
-  const [userProfile, setUserProfile] = useState<any>(null)
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [formData, setFormData] = useState({
     membre_id: '',
     agent_id: '',
@@ -36,6 +36,7 @@ function PretsPageContent() {
         setFormData(prev => ({ ...prev, agent_id: userProfile.agent_id! }))
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
 
   async function loadUserProfile() {
@@ -210,7 +211,7 @@ function PretsPageContent() {
         })
         
         // Passer au jour ouvrable suivant pour la prochaine itération
-        currentDate = getNextBusinessDayFrom(currentDate)
+        currentDate = addDays(currentDate, 1)
       }
 
       const { error: rembError } = await supabase
@@ -339,7 +340,7 @@ function PretsPageContent() {
           })
           .eq('pret_id', editingPret.pret_id)
           .eq('numero_remboursement', i)
-        currentDate = getNextBusinessDayFrom(currentDate)
+        currentDate = addDays(currentDate, 1)
       }
 
       alert('Décaissement modifié avec succès')
