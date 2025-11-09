@@ -109,6 +109,16 @@ function RemboursementsPageContent() {
       return
     }
 
+    const pretRecord = prets.find((pret) => pret.pret_id === remboursement.pret_id)
+    const fallbackPrincipal =
+      pretRecord && pretRecord.nombre_remboursements
+        ? Number(pretRecord.montant_pret || 0) / Number(pretRecord.nombre_remboursements || 1)
+        : Number(remboursement.montant || 0) / 1.15
+    const currentPrincipalValue =
+      remboursement.principal != null
+        ? Number(remboursement.principal)
+        : Math.round(fallbackPrincipal * 100) / 100
+
     const newPrincipalValue = parseFloat(nouveauPrincipal)
     const newMontantValue = parseFloat(nouveauMontant)
     const newInterest = Math.max(newMontantValue - newPrincipalValue, 0)
@@ -132,8 +142,20 @@ function RemboursementsPageContent() {
 
       if (error) throw error
 
+      if (remboursement.statut === 'paye' && pretRecord) {
+        const currentCapital =
+          pretRecord.capital_restant ?? pretRecord.montant_pret ?? 0
+        const updatedCapital = Math.max(currentCapital - (newPrincipalValue - currentPrincipalValue), 0)
+        const { error: capitalError } = await supabase
+          .from('prets')
+          .update({ capital_restant: updatedCapital })
+          .eq('pret_id', remboursement.pret_id)
+        if (capitalError) throw capitalError
+      }
+
       alert('Remboursement modifié avec succès')
       loadRemboursements()
+      loadPrets()
     } catch (error: any) {
       console.error('Erreur lors de la modification:', error)
       alert('Erreur lors de la modification: ' + (error.message || 'Erreur inconnue'))
