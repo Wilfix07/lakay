@@ -26,6 +26,7 @@ function RemboursementsPageContent() {
   })
   const [paymentInterestDue, setPaymentInterestDue] = useState(0)
   const [paymentPrincipalDue, setPaymentPrincipalDue] = useState(0)
+  const [memberPaidSummary, setMemberPaidSummary] = useState<Record<string, number>>({})
   const [paymentLoading, setPaymentLoading] = useState(false)
   const [paymentError, setPaymentError] = useState('')
   const [paymentSuccess, setPaymentSuccess] = useState('')
@@ -153,6 +154,16 @@ function RemboursementsPageContent() {
 
       if (error) throw error
       setRemboursements(data || [])
+      const paidMap: Record<string, number> = {}
+      for (const remboursement of data || []) {
+        if (remboursement.statut === 'paye' || remboursement.statut === 'paye_partiel') {
+          const pret = getPretById(remboursement.pret_id)
+          const memberId = pret?.membre_id || remboursement.membre_id
+          if (!memberId) continue
+          paidMap[memberId] = (paidMap[memberId] ?? 0) + Number(remboursement.principal || 0)
+        }
+      }
+      setMemberPaidSummary(paidMap)
     } catch (error) {
       console.error('Erreur lors du chargement des remboursements:', error)
       alert('Erreur lors du chargement des remboursements')
@@ -722,6 +733,15 @@ function RemboursementsPageContent() {
                         )}
                         {' • '}Intérêt dû : {formatCurrency(paymentInterestDue)}{' '}
                         {' • '}Principal dû : {formatCurrency(paymentPrincipalDue)}
+                        {getPretById(paymentPretId)?.membre_id &&
+                          memberPaidSummary[getPretById(paymentPretId)?.membre_id ?? ''] ? (
+                          <>
+                            {' • '}Principal déjà remboursé :{' '}
+                            {formatCurrency(
+                              memberPaidSummary[getPretById(paymentPretId)?.membre_id ?? ''],
+                            )}
+                          </>
+                        ) : null}
                       </p>
                     )}
                   </div>
