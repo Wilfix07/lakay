@@ -129,7 +129,7 @@ function ImpayesPageContent() {
       const membreMap = new Map((membresRes.data || []).map((m) => [m.membre_id, m]))
       const agentMap = new Map((agentsRes.data || []).map((a) => [a.agent_id, a]))
 
-      const computePrincipal = (remboursement: Remboursement) => {
+      const getPrincipalValue = (remboursement: Remboursement) => {
         if (remboursement.principal != null) {
           return Number(remboursement.principal)
         }
@@ -158,7 +158,7 @@ function ImpayesPageContent() {
       const enriched: ImpayeRow[] = overdue.map((remboursement) => {
         const membre = membreMap.get(remboursement.membre_id)
         const agent = agentMap.get(remboursement.agent_id)
-        const principal = computePrincipal(remboursement)
+        const principal = getPrincipalValue(remboursement as Remboursement)
         const montant = Number(remboursement.montant || 0)
         const dueDate = remboursement.date_remboursement
         const due = dueDate ? new Date(dueDate) : null
