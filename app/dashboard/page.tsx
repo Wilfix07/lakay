@@ -40,6 +40,7 @@ import {
   Tooltip as RechartsTooltip,
   CartesianGrid,
 } from 'recharts'
+import { Skeleton } from '@/components/ui/skeleton'
 
 export default function DashboardPage() {
   const router = useRouter()
@@ -834,7 +835,9 @@ export default function DashboardPage() {
                 Total des intérêts collectés sur les remboursements payés
               </CardDescription>
             </div>
-            {interestSummary.total > 0 && (
+            {loading ? (
+              <Skeleton className="w-48 h-7 rounded-md" />
+            ) : interestSummary.total > 0 ? (
               <div className="flex flex-wrap gap-2">
                 <Badge variant="secondary" className="bg-rose-50 text-rose-600">
                   Total: {formatCurrency(interestSummary.total)}
@@ -843,12 +846,16 @@ export default function DashboardPage() {
                   Commission (30%): {formatCurrency(interestSummary.commissionTotal)}
                 </Badge>
               </div>
-            )}
+            ) : null}
           </div>
         </CardHeader>
         <CardContent>
           <div className="h-80">
-            {interestSummary.monthly.length > 0 ? (
+            {loading ? (
+              <div className="h-full flex items-center justify-center">
+                <Skeleton className="w-full h-64" />
+              </div>
+            ) : interestSummary.monthly.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={interestSummary.monthly}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />

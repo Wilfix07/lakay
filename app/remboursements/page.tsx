@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { supabase, type Remboursement, type Pret, type UserProfile } from '@/lib/supabase'
+import { supabase, type Remboursement, type Pret, type UserProfile, type Membre } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile } from '@/lib/auth'
@@ -10,10 +10,25 @@ import { getUserProfile } from '@/lib/auth'
 function RemboursementsPageContent() {
   const [remboursements, setRemboursements] = useState<Remboursement[]>([])
   const [prets, setPrets] = useState<Pret[]>([])
+  const [membres, setMembres] = useState<Membre[]>([])
   const [loading, setLoading] = useState(true)
   const [filterPret, setFilterPret] = useState('')
   const [filterStatut, setFilterStatut] = useState('')
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const [showPaymentForm, setShowPaymentForm] = useState(false)
+  const [paymentPretId, setPaymentPretId] = useState('')
+  const [paymentRemboursements, setPaymentRemboursements] = useState<Remboursement[]>([])
+  const [paymentForm, setPaymentForm] = useState({
+    remboursementId: '',
+    montant: '',
+    principal: '',
+    datePaiement: new Date().toISOString().split('T')[0],
+  })
+  const [paymentInterestDue, setPaymentInterestDue] = useState(0)
+  const [paymentPrincipalDue, setPaymentPrincipalDue] = useState(0)
+  const [paymentLoading, setPaymentLoading] = useState(false)
+  const [paymentError, setPaymentError] = useState('')
+  const [paymentSuccess, setPaymentSuccess] = useState('')
 
   useEffect(() => {
     loadUserProfile()
@@ -22,6 +37,7 @@ function RemboursementsPageContent() {
   useEffect(() => {
     if (userProfile) {
       loadPrets()
+      loadMembres()
       loadRemboursements()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -58,6 +74,57 @@ function RemboursementsPageContent() {
       setPrets(data || [])
     } catch (error) {
       console.error('Erreur lors du chargement des prêts:', error)
+    }
+  }
+
+  async function loadMembres() {
+    try {
+      let query = supabase
+        .from('membres')
+        .select('membre_id, nom, prenom, agent_id')
+        .order('membre_id', { ascending: true })
+
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        query = query.eq('agent_id', userProfile.agent_id)
+      }
+
+      const { data, error } = await query
+
+      if (error) throw error
+      setMembres(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement des membres:', error)
+      setMembres([])
+    }
+  }
+
+  async function loadPaymentRemboursements(pretId: string) {
+    if (!pretId) {
+      setPaymentRemboursements([])
+      return
+    }
+    try {
+      setPaymentLoading(true)
+      let query = supabase
+        .from('remboursements')
+        .select('*')
+        .eq('pret_id', pretId)
+        .in('statut', ['en_attente', 'en_retard'])
+        .order('numero_remboursement', { ascending: true })
+
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        query = query.eq('agent_id', userProfile.agent_id)
+      }
+
+      const { data, error } = await query
+
+      if (error) throw error
+      setPaymentRemboursements(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement des remboursements pour le formulaire:', error)
+      setPaymentRemboursements([])
+    } finally {
+      setPaymentLoading(false)
     }
   }
 
@@ -272,6 +339,194 @@ function RemboursementsPageContent() {
     }
   }
 
+  function resetPaymentForm() {
+    setPaymentPretId('')
+    setPaymentRemboursements([])
+    setPaymentForm({
+      remboursementId: '',
+      montant: '',
+      principal: '',
+      datePaiement: new Date().toISOString().split('T')[0],
+    })
+    setPaymentError('')
+    setPaymentSuccess('')
+    setPaymentInterestDue(0)
+    setPaymentPrincipalDue(0)
+  }
+
+  function getPretById(pretId: string) {
+    return prets.find((pret) => pret.pret_id === pretId)
+  }
+
+  function getMemberLabel(membreId: string | null | undefined) {
+    if (!membreId) return '-'
+    const membre = membres.find((m) => m.membre_id === membreId)
+    if (!membre) return membreId
+    const name = `${membre.prenom ?? ''} ${membre.nom ?? ''}`.trim()
+    return name ? `${name} (${membreId})` : membreId
+  }
+
+  function getMemberName(membreId: string | null | undefined) {
+    if (!membreId) return '-'
+    const membre = membres.find((m) => m.membre_id === membreId)
+    if (!membre) return membreId
+    return `${membre.prenom ?? ''} ${membre.nom ?? ''}`.trim() || membreId
+  }
+
+  function computePrincipal(remboursement: Remboursement) {
+    if (remboursement.principal != null) {
+      return Number(remboursement.principal)
+    }
+    const pretRecord = getPretById(remboursement.pret_id)
+    if (pretRecord && pretRecord.nombre_remboursements) {
+      const base =
+        Number(pretRecord.montant_pret || 0) / Number(pretRecord.nombre_remboursements || 1)
+      return Math.round(base * 100) / 100
+    }
+    return Math.round((Number(remboursement.montant || 0) / 1.15) * 100) / 100
+  }
+
+  function handlePaymentPretChange(value: string) {
+    setPaymentPretId(value)
+    setPaymentForm({
+      remboursementId: '',
+      montant: '',
+      principal: '',
+      datePaiement: new Date().toISOString().split('T')[0],
+    })
+    setPaymentError('')
+    setPaymentSuccess('')
+    setPaymentInterestDue(0)
+    setPaymentPrincipalDue(0)
+    loadPaymentRemboursements(value)
+  }
+
+  function handlePaymentRemboursementChange(value: string) {
+    const remboursement = paymentRemboursements.find((r) => r.id.toString() === value)
+    if (!remboursement) {
+      setPaymentForm((prev) => ({
+        ...prev,
+        remboursementId: value,
+        montant: '',
+        principal: '',
+      }))
+      setPaymentInterestDue(0)
+      setPaymentPrincipalDue(0)
+      return
+    }
+    const montant = Number(remboursement.montant || 0)
+    const principalValue = computePrincipal(remboursement)
+    const interestValue =
+      remboursement.interet != null
+        ? Number(remboursement.interet)
+        : Math.max(montant - principalValue, 0)
+    setPaymentInterestDue(Math.max(interestValue, 0))
+    setPaymentPrincipalDue(principalValue)
+    setPaymentForm((prev) => ({
+      ...prev,
+      remboursementId: value,
+      montant: montant.toString(),
+      principal: Math.max(montant - interestValue, 0).toFixed(2),
+    }))
+    setPaymentError('')
+    setPaymentSuccess('')
+  }
+
+  async function handlePaymentSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setPaymentError('')
+    setPaymentSuccess('')
+
+    if (!paymentPretId) {
+      setPaymentError('Veuillez sélectionner un prêt')
+      return
+    }
+    const remboursement = paymentRemboursements.find(
+      (r) => r.id.toString() === paymentForm.remboursementId,
+    )
+    if (!remboursement) {
+      setPaymentError('Veuillez sélectionner une échéance à payer')
+      return
+    }
+    const montant = parseFloat(paymentForm.montant)
+    if (Number.isNaN(montant) || montant <= 0) {
+      setPaymentError('Montant invalide')
+      return
+    }
+    const interestPortion = Math.min(montant, Math.max(paymentInterestDue, 0))
+    const principalPortion = Math.max(montant - interestPortion, 0)
+    if (!paymentForm.datePaiement) {
+      setPaymentError('Date de paiement requise')
+      return
+    }
+
+    try {
+      setPaymentLoading(true)
+      const pretRecord = getPretById(remboursement.pret_id)
+      const interet = Math.max(interestPortion, 0)
+      const principal = Math.max(principalPortion, 0)
+
+      const { error } = await supabase
+        .from('remboursements')
+        .update({
+          statut: 'paye',
+          date_paiement: paymentForm.datePaiement,
+          montant,
+          principal,
+          interet,
+        })
+        .eq('id', remboursement.id)
+
+      if (error) throw error
+
+      if (pretRecord) {
+        const nouveauCapital = Math.max(
+          (pretRecord.capital_restant ?? pretRecord.montant_pret ?? 0) - principal,
+          0,
+        )
+        const { error: capitalError } = await supabase
+          .from('prets')
+          .update({ capital_restant: nouveauCapital })
+          .eq('pret_id', remboursement.pret_id)
+        if (capitalError) throw capitalError
+      }
+
+      const { data: allRemboursements, error: checkError } = await supabase
+        .from('remboursements')
+        .select('statut')
+        .eq('pret_id', remboursement.pret_id)
+
+      if (checkError) throw checkError
+
+      const allPaid = allRemboursements?.every((r) => r.statut === 'paye')
+      if (allPaid) {
+        const { error: updateError } = await supabase
+          .from('prets')
+          .update({ statut: 'termine' })
+          .eq('pret_id', remboursement.pret_id)
+        if (updateError) throw updateError
+      }
+
+      setPaymentSuccess('Paiement enregistré avec succès')
+      loadRemboursements()
+      loadPrets()
+      loadPaymentRemboursements(paymentPretId)
+      setPaymentInterestDue(0)
+      setPaymentPrincipalDue(0)
+      setPaymentForm((prev) => ({
+        ...prev,
+        remboursementId: '',
+        montant: '',
+        principal: '',
+      }))
+    } catch (error: any) {
+      console.error('Erreur lors de l’enregistrement du paiement:', error)
+      setPaymentError(error.message || 'Erreur lors de l’enregistrement du paiement')
+    } finally {
+      setPaymentLoading(false)
+    }
+  }
+
   function getStatutColor(statut: string, dateRemboursement: string) {
     if (statut === 'paye') return 'bg-green-100 text-green-800'
     if (statut === 'en_retard') return 'bg-red-100 text-red-800'
@@ -329,18 +584,241 @@ function RemboursementsPageContent() {
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="container mx-auto px-4">
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Remboursements</h1>
             <p className="text-gray-600 mt-2">Enregistrer les remboursements quotidiens</p>
           </div>
-          <Link
-            href="/"
-            className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-          >
-            Accueil
-          </Link>
+          <div className="flex flex-wrap gap-3">
+            {userProfile && (userProfile.role === 'admin' || userProfile.role === 'agent') && (
+              <button
+                onClick={() => {
+                  const next = !showPaymentForm
+                  setShowPaymentForm(next)
+                  if (!next) {
+                    resetPaymentForm()
+                  }
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                {showPaymentForm ? 'Fermer le formulaire' : 'Enregistrer un paiement'}
+              </button>
+            )}
+            <Link
+              href="/"
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+            >
+              Accueil
+            </Link>
+          </div>
         </div>
+
+        {showPaymentForm && (
+          <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 className="text-xl font-semibold mb-4">Enregistrer un paiement</h2>
+            {paymentError && (
+              <div className="mb-3 bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded">
+                {paymentError}
+              </div>
+            )}
+            {paymentSuccess && (
+              <div className="mb-3 bg-green-50 border border-green-200 text-green-700 px-4 py-2 rounded">
+                {paymentSuccess}
+              </div>
+            )}
+            <form onSubmit={handlePaymentSubmit} className="space-y-4">
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Prêt *
+                  </label>
+                  <select
+                    value={paymentPretId}
+                    onChange={(e) => handlePaymentPretChange(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={paymentLoading}
+                    required
+                  >
+                    <option value="">Sélectionner un prêt</option>
+                    {prets.map((pret) => (
+                      <option key={pret.id} value={pret.pret_id}>
+                        {pret.pret_id} - {getMemberLabel(pret.membre_id)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Échéance à payer *
+                  </label>
+                  <select
+                    value={paymentForm.remboursementId}
+                    onChange={(e) => handlePaymentRemboursementChange(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={!paymentPretId || paymentLoading}
+                    required
+                  >
+                    <option value="">Sélectionner une échéance</option>
+                    {paymentRemboursements.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        #{r.numero_remboursement} - {getMemberLabel(r.membre_id)} - {formatDate(r.date_remboursement)} (
+                        {formatCurrency(Number(r.montant || 0))})
+                      </option>
+                    ))}
+                  </select>
+                  {!paymentLoading && paymentPretId && paymentRemboursements.length === 0 && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Aucune échéance en attente pour ce prêt.
+                    </p>
+                  )}
+                </div>
+                {paymentPretId && (
+                  <div className="md:col-span-2 bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 text-sm text-blue-900">
+                    <p className="font-semibold">
+                      Membre : {getMemberName(getPretById(paymentPretId)?.membre_id)}
+                    </p>
+                    <p>
+                      Prêt : {paymentPretId}{' '}
+                      {getPretById(paymentPretId)?.montant_pret
+                        ? ` • Montant initial : ${formatCurrency(
+                            Number(getPretById(paymentPretId)?.montant_pret || 0),
+                          )}`
+                        : ''}
+                    </p>
+                    {paymentForm.remboursementId && (
+                      <p>
+                        Échéance sélectionnée : #{paymentRemboursements.find(
+                          (r) => r.id.toString() === paymentForm.remboursementId,
+                        )?.numero_remboursement}{' '}
+                        • Montant prévu :{' '}
+                        {formatCurrency(
+                          Number(
+                            paymentRemboursements.find(
+                              (r) => r.id.toString() === paymentForm.remboursementId,
+                            )?.montant || 0,
+                          ),
+                        )}
+                        {' • '}Intérêt dû : {formatCurrency(paymentInterestDue)}{' '}
+                        {' • '}Principal dû : {formatCurrency(paymentPrincipalDue)}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Montant payé (HTG) *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={paymentForm.montant}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      const numeric = parseFloat(value)
+                      const computedPrincipal =
+                        !Number.isNaN(numeric) && value !== ''
+                          ? Math.max(numeric - Math.max(paymentInterestDue, 0), 0)
+                          : 0
+                      setPaymentForm((prev) => ({
+                        ...prev,
+                        montant: value,
+                        principal: value === '' ? '' : computedPrincipal.toFixed(2),
+                      }))
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={!paymentForm.remboursementId || paymentLoading}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Principal appliqué (HTG)
+                  </label>
+                  <input
+                    type="text"
+                    value={paymentForm.principal}
+                    readOnly
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-600"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Le principal est calculé après avoir couvert l’intérêt dû.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Date de paiement *
+                  </label>
+                  <input
+                    type="date"
+                    value={paymentForm.datePaiement}
+                    onChange={(e) =>
+                      setPaymentForm((prev) => ({ ...prev, datePaiement: e.target.value }))
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={paymentLoading}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Intérêt calculé
+                  </label>
+                  <input
+                    type="text"
+                    value={
+                      paymentForm.montant
+                        ? formatCurrency(
+                            Math.min(
+                              parseFloat(paymentForm.montant || '0'),
+                              Math.max(paymentInterestDue, 0),
+                            ),
+                          )
+                        : formatCurrency(0)
+                    }
+                    readOnly
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-600"
+                  />
+                  {paymentInterestDue > 0 && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Intérêt restant après ce paiement :{' '}
+                      {paymentForm.montant
+                        ? formatCurrency(
+                            Math.max(
+                              paymentInterestDue -
+                                Math.min(
+                                  parseFloat(paymentForm.montant || '0'),
+                                  Math.max(paymentInterestDue, 0),
+                                ),
+                              0,
+                            ),
+                          )
+                        : formatCurrency(paymentInterestDue)}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-4">
+                <button
+                  type="submit"
+                  disabled={paymentLoading}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {paymentLoading ? 'Enregistrement...' : 'Enregistrer le paiement'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => resetPaymentForm()}
+                  className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={paymentLoading}
+                >
+                  Réinitialiser
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
 
         {/* Statistiques */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
