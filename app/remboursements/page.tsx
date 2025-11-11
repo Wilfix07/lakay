@@ -465,11 +465,14 @@ function RemboursementsPageContent() {
       const pretRecord = getPretById(remboursement.pret_id)
       const interet = Math.max(interestPortion, 0)
       const principal = Math.max(principalPortion, 0)
+      const expectedTotal =
+        Math.max(paymentInterestDue, 0) + Math.max(paymentPrincipalDue, 0)
+      const newStatus = montant >= expectedTotal - 0.01 ? 'paye' : 'paye_partiel'
 
       const { error } = await supabase
         .from('remboursements')
         .update({
-          statut: 'paye',
+          statut: newStatus,
           date_paiement: paymentForm.datePaiement,
           montant,
           principal,
@@ -507,10 +510,22 @@ function RemboursementsPageContent() {
         if (updateError) throw updateError
       }
 
-      setPaymentSuccess('Paiement enregistré avec succès')
+      setPaymentSuccess(
+        newStatus === 'paye'
+          ? 'Paiement enregistré avec succès'
+          : 'Paiement partiel enregistré',
+      )
       loadRemboursements()
       loadPrets()
       loadPaymentRemboursements(paymentPretId)
+      setPaymentInterestDue(0)
+      setPaymentPrincipalDue(0)
+      setPaymentForm((prev) => ({
+        ...prev,
+        remboursementId: '',
+        montant: '',
+        principal: '',
+      }))
       setPaymentInterestDue(0)
       setPaymentPrincipalDue(0)
       setPaymentForm((prev) => ({
@@ -529,6 +544,7 @@ function RemboursementsPageContent() {
 
   function getStatutColor(statut: string, dateRemboursement: string) {
     if (statut === 'paye') return 'bg-green-100 text-green-800'
+    if (statut === 'paye_partiel') return 'bg-blue-100 text-blue-800'
     if (statut === 'en_retard') return 'bg-red-100 text-red-800'
     
     // Vérifier si en retard
@@ -546,6 +562,7 @@ function RemboursementsPageContent() {
 
   function getStatutLabel(statut: string, dateRemboursement: string) {
     if (statut === 'paye') return 'Payé'
+    if (statut === 'paye_partiel') return 'Payé partiellement'
     if (statut === 'en_retard') return 'En retard'
     
     const today = new Date()
@@ -571,6 +588,7 @@ function RemboursementsPageContent() {
   const stats = {
     total: remboursements.length,
     payes: remboursements.filter(r => r.statut === 'paye').length,
+    payesPartiels: remboursements.filter(r => r.statut === 'paye_partiel').length,
     en_attente: remboursements.filter(r => r.statut === 'en_attente').length,
     en_retard: remboursements.filter(r => {
       const today = new Date()
@@ -580,6 +598,10 @@ function RemboursementsPageContent() {
       return r.statut === 'en_attente' && dateRemb < today
     }).length,
   }
+
+  const paidRemboursements = remboursements.filter(
+    (r) => r.statut === 'paye' || r.statut === 'paye_partiel',
+  )
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
@@ -821,7 +843,7 @@ function RemboursementsPageContent() {
 
 
         {/* Statistiques */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
           <div className="bg-white rounded-lg shadow-md p-4">
             <div className="text-sm text-gray-600">Total</div>
             <div className="text-2xl font-bold text-gray-900">{stats.total}</div>
@@ -829,6 +851,10 @@ function RemboursementsPageContent() {
           <div className="bg-green-50 rounded-lg shadow-md p-4">
             <div className="text-sm text-gray-600">Payés</div>
             <div className="text-2xl font-bold text-green-600">{stats.payes}</div>
+          </div>
+          <div className="bg-blue-50 rounded-lg shadow-md p-4">
+            <div className="text-sm text-gray-600">Payés partiels</div>
+            <div className="text-2xl font-bold text-blue-600">{stats.payesPartiels}</div>
           </div>
           <div className="bg-yellow-50 rounded-lg shadow-md p-4">
             <div className="text-sm text-gray-600">En attente</div>
@@ -872,6 +898,7 @@ function RemboursementsPageContent() {
                 <option value="">Tous les statuts</option>
                 <option value="en_attente">En attente</option>
                 <option value="paye">Payé</option>
+                <option value="paye_partiel">Payé partiel</option>
                 <option value="en_retard">En retard</option>
               </select>
             </div>
@@ -880,113 +907,124 @@ function RemboursementsPageContent() {
 
         {/* Table des remboursements */}
         <div className="bg-white rounded-lg shadow-md overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Prêt
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Membre
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  N° Remb.
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Montant
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Principal
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Intérêt
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Date prévue
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Date payée
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Statut
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {remboursements.length === 0 ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
                 <tr>
-                  <td colSpan={10} className="px-6 py-4 text-center text-gray-500">
-                    Aucun remboursement trouvé
-                  </td>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Prêt
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Membre
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    N° Remb.
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Montant payé
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Principal appliqué
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Intérêt appliqué
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Intérêt restant
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Date prévue
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Date payée
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Statut
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
                 </tr>
-              ) : (
-                remboursements.map((remboursement) => (
-                  <tr key={remboursement.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {remboursement.pret_id}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {remboursement.membre_id}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {remboursement.numero_remboursement}/23
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatCurrency(remboursement.montant)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatCurrency(remboursement.principal ?? 0)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatCurrency(remboursement.interet ?? 0)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatDate(remboursement.date_remboursement)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {remboursement.date_paiement ? formatDate(remboursement.date_paiement) : '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatutColor(remboursement.statut, remboursement.date_remboursement)}`}>
-                        {getStatutLabel(remboursement.statut, remboursement.date_remboursement)}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <div className="flex gap-2">
-                        {remboursement.statut !== 'paye' && (
-                          <button
-                            onClick={() => handlePaiement(remboursement)}
-                            className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
-                          >
-                            Marquer payé
-                          </button>
-                        )}
-                        {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
-                          <>
-                            <button
-                              onClick={() => handleEditRemboursement(remboursement)}
-                              className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
-                            >
-                              Modifier
-                            </button>
-                            <button
-                              onClick={() => handleDeleteRemboursement(remboursement)}
-                              className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
-                            >
-                              Supprimer
-                            </button>
-                          </>
-                        )}
-                      </div>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {paidRemboursements.length === 0 ? (
+                  <tr>
+                    <td colSpan={11} className="px-6 py-4 text-center text-gray-500">
+                      Aucun remboursement payé pour le moment
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  paidRemboursements.map((remboursement) => {
+                    const montantPrevu = Number(remboursement.montant || 0)
+                    const principalApplique = Number(remboursement.principal || 0)
+                    const interetApplique = Number(remboursement.interet || 0)
+                    const interetRestant = Math.max(montantPrevu - principalApplique - interetApplique, 0)
+                    const isPartial = remboursement.statut === 'paye_partiel' || interetRestant > 0
+                    return (
+                      <tr key={remboursement.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                          {remboursement.pret_id}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {remboursement.membre_id}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {remboursement.numero_remboursement}/23
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {formatCurrency(remboursement.montant)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {formatCurrency(principalApplique)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {formatCurrency(interetApplique)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {formatCurrency(interetRestant)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {formatDate(remboursement.date_remboursement)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {remboursement.date_paiement ? formatDate(remboursement.date_paiement) : '-'}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span
+                            className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                              isPartial
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-green-100 text-green-800'
+                            }`}
+                          >
+                            {isPartial ? 'Payé partiel' : 'Payé'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleEditRemboursement(remboursement)}
+                                className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                              >
+                                Modifier
+                              </button>
+                              <button
+                                onClick={() => handleDeleteRemboursement(remboursement)}
+                                className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                              >
+                                Supprimer
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
