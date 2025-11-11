@@ -12,7 +12,8 @@ import {
   Menu,
   ArrowDownRight,
   AlertTriangle,
-  CalendarDays
+  CalendarDays,
+  PiggyBank,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -78,6 +79,12 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Remboursements du jour',
       href: '/remboursements/aujourdhui',
       icon: CalendarDays,
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Profit & Loss',
+      href: '/pnl',
+      icon: PiggyBank,
       roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
     {
