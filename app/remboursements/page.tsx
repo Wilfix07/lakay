@@ -30,6 +30,10 @@ function RemboursementsPageContent() {
   const [paymentLoading, setPaymentLoading] = useState(false)
   const [paymentError, setPaymentError] = useState('')
   const [paymentSuccess, setPaymentSuccess] = useState('')
+  const [partialLockInfo, setPartialLockInfo] = useState<{
+    active: boolean
+    message?: string
+  }>({ active: false })
 
   useEffect(() => {
     loadUserProfile()
@@ -102,6 +106,7 @@ function RemboursementsPageContent() {
   async function loadPaymentRemboursements(pretId: string) {
     if (!pretId) {
       setPaymentRemboursements([])
+      setPartialLockInfo({ active: false })
       return
     }
     try {
@@ -110,7 +115,7 @@ function RemboursementsPageContent() {
         .from('remboursements')
         .select('*')
         .eq('pret_id', pretId)
-        .in('statut', ['en_attente', 'en_retard'])
+        .in('statut', ['en_attente', 'en_retard', 'paye_partiel'])
         .order('numero_remboursement', { ascending: true })
 
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
@@ -120,10 +125,27 @@ function RemboursementsPageContent() {
       const { data, error } = await query
 
       if (error) throw error
-      setPaymentRemboursements(data || [])
+      const list = data || []
+      const partial = list.find((r) => r.statut === 'paye_partiel')
+      if (partial) {
+        setPaymentRemboursements([partial])
+        const amounts = computeScheduledAmounts(partial)
+        const remaining =
+          partial.statut === 'paye_partiel' ? amounts.remainingTotal : amounts.scheduledTotal
+        setPartialLockInfo({
+          active: true,
+          message: `Ce prêt a un remboursement partiel (#${partial.numero_remboursement}). Le solde de ${formatCurrency(
+            remaining,
+          )} doit être réglé avant de passer à une autre échéance.`,
+        })
+      } else {
+        setPaymentRemboursements(list)
+        setPartialLockInfo({ active: false })
+      }
     } catch (error) {
       console.error('Erreur lors du chargement des remboursements pour le formulaire:', error)
       setPaymentRemboursements([])
+      setPartialLockInfo({ active: false })
     } finally {
       setPaymentLoading(false)
     }
@@ -353,6 +375,7 @@ function RemboursementsPageContent() {
   function resetPaymentForm() {
     setPaymentPretId('')
     setPaymentRemboursements([])
+    setPartialLockInfo({ active: false })
     setPaymentForm({
       remboursementId: '',
       montant: '',
@@ -384,18 +407,58 @@ function RemboursementsPageContent() {
     return `${membre.prenom ?? ''} ${membre.nom ?? ''}`.trim() || membreId
   }
 
-  function computePrincipal(remboursement: Remboursement) {
-    if (remboursement.principal != null) {
-      return Number(remboursement.principal)
-    }
-    const pretRecord = getPretById(remboursement.pret_id)
-    if (pretRecord && pretRecord.nombre_remboursements) {
-      const base =
-        Number(pretRecord.montant_pret || 0) / Number(pretRecord.nombre_remboursements || 1)
-      return Math.round(base * 100) / 100
-    }
-    return Math.round((Number(remboursement.montant || 0) / 1.15) * 100) / 100
+function computeScheduledAmounts(remboursement: Remboursement) {
+  const pretRecord = getPretById(remboursement.pret_id)
+  const scheduledTotal =
+    pretRecord && pretRecord.montant_remboursement != null
+      ? Number(pretRecord.montant_remboursement || 0)
+      : Math.max(Number(remboursement.montant || 0), 0)
+
+  let scheduledPrincipalBase: number
+  if (pretRecord && pretRecord.nombre_remboursements) {
+    const base =
+      Number(pretRecord.montant_pret || 0) / Number(pretRecord.nombre_remboursements || 1)
+    scheduledPrincipalBase = Math.round(base * 100) / 100
+  } else {
+    scheduledPrincipalBase = Math.max(Number(remboursement.principal || 0), 0)
   }
+
+  let scheduledPrincipal = scheduledPrincipalBase
+  if (remboursement.principal != null) {
+    if (remboursement.statut === 'paye') {
+      scheduledPrincipal = Number(remboursement.principal)
+    } else if (
+      remboursement.statut === 'en_attente' ||
+      remboursement.statut === 'en_retard'
+    ) {
+      scheduledPrincipal = Number(remboursement.principal)
+    }
+  }
+
+  const scheduledInterest = Math.max(scheduledTotal - scheduledPrincipal, 0)
+  const paidPrincipal =
+    remboursement.statut === 'paye' || remboursement.statut === 'paye_partiel'
+      ? Math.max(Number(remboursement.principal || 0), 0)
+      : 0
+  const paidInterest =
+    remboursement.statut === 'paye' || remboursement.statut === 'paye_partiel'
+      ? Math.max(Number(remboursement.interet || 0), 0)
+      : 0
+
+  const remainingPrincipal = Math.max(scheduledPrincipal - paidPrincipal, 0)
+  const remainingInterest = Math.max(scheduledInterest - paidInterest, 0)
+
+  return {
+    scheduledTotal,
+    scheduledPrincipal,
+    scheduledInterest,
+    paidPrincipal,
+    paidInterest,
+    remainingPrincipal,
+    remainingInterest,
+    remainingTotal: remainingPrincipal + remainingInterest,
+  }
+}
 
   function handlePaymentPretChange(value: string) {
     setPaymentPretId(value)
@@ -425,19 +488,16 @@ function RemboursementsPageContent() {
       setPaymentPrincipalDue(0)
       return
     }
-    const montant = Number(remboursement.montant || 0)
-    const principalValue = computePrincipal(remboursement)
-    const interestValue =
-      remboursement.interet != null
-        ? Number(remboursement.interet)
-        : Math.max(montant - principalValue, 0)
-    setPaymentInterestDue(Math.max(interestValue, 0))
-    setPaymentPrincipalDue(principalValue)
+    const amounts = computeScheduledAmounts(remboursement)
+    const remainingInterest = Math.max(amounts.remainingInterest, 0)
+    const remainingPrincipal = Math.max(amounts.remainingPrincipal, 0)
+    setPaymentInterestDue(remainingInterest)
+    setPaymentPrincipalDue(remainingPrincipal)
     setPaymentForm((prev) => ({
       ...prev,
       remboursementId: value,
-      montant: montant.toString(),
-      principal: Math.max(montant - interestValue, 0).toFixed(2),
+      montant: (remainingInterest + remainingPrincipal).toFixed(2),
+      principal: remainingPrincipal.toFixed(2),
     }))
     setPaymentError('')
     setPaymentSuccess('')
@@ -457,6 +517,12 @@ function RemboursementsPageContent() {
     )
     if (!remboursement) {
       setPaymentError('Veuillez sélectionner une échéance à payer')
+      return
+    }
+    if (partialLockInfo.active && remboursement.statut !== 'paye_partiel') {
+      setPaymentError(
+        'Ce prêt possède une échéance partiellement payée. Veuillez solder cette échéance avant d’en payer une autre.',
+      )
       return
     }
     const montant = parseFloat(paymentForm.montant)
@@ -479,15 +545,32 @@ function RemboursementsPageContent() {
       const expectedTotal =
         Math.max(paymentInterestDue, 0) + Math.max(paymentPrincipalDue, 0)
       const newStatus = montant >= expectedTotal - 0.01 ? 'paye' : 'paye_partiel'
+      const amountsBeforePayment = computeScheduledAmounts(remboursement)
+      const cumulativePrincipal = Math.min(
+        amountsBeforePayment.paidPrincipal + principal,
+        amountsBeforePayment.scheduledPrincipal,
+      )
+      const cumulativeInterest = Math.min(
+        amountsBeforePayment.paidInterest + interet,
+        amountsBeforePayment.scheduledInterest,
+      )
+      const previousPaidTotal =
+        remboursement.statut === 'paye_partiel'
+          ? Math.max(Number(remboursement.montant || 0), 0)
+          : 0
+      const cumulativeMontant = Math.min(
+        previousPaidTotal + montant,
+        amountsBeforePayment.scheduledTotal,
+      )
 
       const { error } = await supabase
         .from('remboursements')
         .update({
           statut: newStatus,
           date_paiement: paymentForm.datePaiement,
-          montant,
-          principal,
-          interet,
+          montant: cumulativeMontant,
+          principal: cumulativePrincipal,
+          interet: cumulativeInterest,
         })
         .eq('id', remboursement.id)
 
@@ -614,6 +697,17 @@ function RemboursementsPageContent() {
     (r) => r.statut === 'paye' || r.statut === 'paye_partiel',
   )
 
+  const selectedPayment = paymentRemboursements.find(
+    (r) => r.id.toString() === paymentForm.remboursementId,
+  )
+  const selectedPaymentAmounts = selectedPayment
+    ? computeScheduledAmounts(selectedPayment)
+    : null
+  const selectedAlreadyPaid =
+    selectedPayment && selectedPayment.statut === 'paye_partiel'
+      ? Math.max(Number(selectedPayment.montant || 0), 0)
+      : 0
+
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="container mx-auto px-4">
@@ -659,6 +753,11 @@ function RemboursementsPageContent() {
                 {paymentSuccess}
               </div>
             )}
+            {partialLockInfo.active && partialLockInfo.message && (
+              <div className="mb-3 bg-amber-50 border border-amber-200 text-amber-700 px-4 py-2 rounded text-sm">
+                {partialLockInfo.message}
+              </div>
+            )}
             <form onSubmit={handlePaymentSubmit} className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4">
                 <div>
@@ -692,12 +791,22 @@ function RemboursementsPageContent() {
                     required
                   >
                     <option value="">Sélectionner une échéance</option>
-                    {paymentRemboursements.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        #{r.numero_remboursement} - {getMemberLabel(r.membre_id)} - {formatDate(r.date_remboursement)} (
-                        {formatCurrency(Number(r.montant || 0))})
-                      </option>
-                    ))}
+                    {paymentRemboursements.map((r) => {
+                      const amounts = computeScheduledAmounts(r)
+                      const alreadyPaid =
+                        r.statut === 'paye_partiel' ? Math.max(Number(r.montant || 0), 0) : 0
+                      return (
+                        <option
+                          key={r.id}
+                          value={r.id}
+                          disabled={partialLockInfo.active && r.statut !== 'paye_partiel'}
+                        >
+                          #{r.numero_remboursement} · {formatDate(r.date_remboursement)} ·{' '}
+                          {getStatutLabel(r.statut, r.date_remboursement)} (
+                          {formatCurrency(amounts.remainingTotal + alreadyPaid)})
+                        </option>
+                      )
+                    })}
                   </select>
                   {!paymentLoading && paymentPretId && paymentRemboursements.length === 0 && (
                     <p className="text-xs text-gray-500 mt-1">
@@ -718,30 +827,28 @@ function RemboursementsPageContent() {
                           )}`
                         : ''}
                     </p>
-                    {paymentForm.remboursementId && (
-                      <p>
-                        Échéance sélectionnée : #{paymentRemboursements.find(
-                          (r) => r.id.toString() === paymentForm.remboursementId,
-                        )?.numero_remboursement}{' '}
-                        • Montant prévu :{' '}
-                        {formatCurrency(
-                          Number(
-                            paymentRemboursements.find(
-                              (r) => r.id.toString() === paymentForm.remboursementId,
-                            )?.montant || 0,
-                          ),
-                        )}
-                        {' • '}Intérêt dû : {formatCurrency(paymentInterestDue)}{' '}
-                        {' • '}Principal dû : {formatCurrency(paymentPrincipalDue)}
-                        {getPretById(paymentPretId)?.membre_id &&
-                          memberPaidSummary[getPretById(paymentPretId)?.membre_id ?? ''] ? (
-                          <>
-                            {' • '}Principal déjà remboursé :{' '}
-                            {formatCurrency(
-                              memberPaidSummary[getPretById(paymentPretId)?.membre_id ?? ''],
-                            )}
-                          </>
-                        ) : null}
+                    {paymentForm.remboursementId && selectedPayment && selectedPaymentAmounts && (
+                      <p className="space-y-1">
+                        <span className="block">
+                          Échéance sélectionnée : #{selectedPayment.numero_remboursement} • Montant
+                          prévu : {formatCurrency(selectedPaymentAmounts.scheduledTotal)}
+                        </span>
+                        <span className="block">
+                          Déjà payé : {formatCurrency(selectedAlreadyPaid)} • Solde restant :{' '}
+                          {formatCurrency(paymentInterestDue + paymentPrincipalDue)}
+                        </span>
+                        <span className="block">
+                          Intérêt restant : {formatCurrency(paymentInterestDue)} • Principal restant
+                          : {formatCurrency(paymentPrincipalDue)}
+                          {getPretById(paymentPretId)?.membre_id &&
+                          memberPaidSummary[getPretById(paymentPretId)?.membre_id ?? '']
+                            ? ` • Principal déjà remboursé (tout prêt) : ${formatCurrency(
+                                memberPaidSummary[
+                                  getPretById(paymentPretId)?.membre_id ?? ''
+                                ] ?? 0,
+                              )}`
+                            : ''}
+                        </span>
                       </p>
                     )}
                   </div>
@@ -980,6 +1087,9 @@ function RemboursementsPageContent() {
                     const interetApplique = Number(remboursement.interet || 0)
                     const interetRestant = Math.max(montantPrevu - principalApplique - interetApplique, 0)
                     const isPartial = remboursement.statut === 'paye_partiel' || interetRestant > 0
+                    const pretRecord = getPretById(remboursement.pret_id)
+                    const totalInstallments =
+                      pretRecord?.nombre_remboursements ?? paidRemboursements.length
                     return (
                       <tr key={remboursement.id} className="hover:bg-gray-50">
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
@@ -989,7 +1099,7 @@ function RemboursementsPageContent() {
                           {remboursement.membre_id}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {remboursement.numero_remboursement}/23
+                          {remboursement.numero_remboursement}/{totalInstallments}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                           {formatCurrency(remboursement.montant)}

@@ -2,18 +2,19 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { 
-  LayoutDashboard, 
-  Users, 
-  UserPlus, 
-  CreditCard, 
-  DollarSign, 
+import {
+  LayoutDashboard,
+  Users,
+  UserPlus,
+  CreditCard,
+  DollarSign,
   LogOut,
   Menu,
   ArrowDownRight,
   AlertTriangle,
   CalendarDays,
   PiggyBank,
+  Settings,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -92,6 +93,12 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       href: '/impayes',
       icon: AlertTriangle,
       roles: ['admin', 'manager', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Paramètres',
+      href: '/parametres',
+      icon: Settings,
+      roles: ['admin'] as UserRole[],
     },
     {
       title: 'Dépenses',

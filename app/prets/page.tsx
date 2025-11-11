@@ -4,9 +4,27 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { supabase, type Pret, type Membre, type Agent, type UserProfile } from '@/lib/supabase'
 import { formatCurrency, formatDate, getMonthName } from '@/lib/utils'
-import { addDays, getDay } from 'date-fns'
+import { addDays, addMonths, getDay } from 'date-fns'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile } from '@/lib/auth'
+
+type FrequenceRemboursement = 'journalier' | 'mensuel'
+
+interface LoanScheduleEntry {
+  numero: number
+  montant: number
+  principal: number
+  interet: number
+  date: Date
+}
+
+interface LoanPlan {
+  montantEcheance: number
+  totalRemboursement: number
+  interetTotal: number
+  datePremierRemboursement: Date
+  schedule: LoanScheduleEntry[]
+}
 
 function PretsPageContent() {
   const [prets, setPrets] = useState<Pret[]>([])
@@ -21,7 +39,99 @@ function PretsPageContent() {
     agent_id: '',
     montant_pret: '',
     date_decaissement: new Date().toISOString().split('T')[0],
+    frequence_remboursement: 'journalier',
+    nombre_remboursements: '23',
   })
+
+  function adjustToBusinessDay(date: Date): Date {
+    let adjusted = new Date(date)
+    const day = getDay(adjusted)
+    if (day === 6) {
+      adjusted = addDays(adjusted, 2)
+    } else if (day === 0) {
+      adjusted = addDays(adjusted, 1)
+    }
+    return adjusted
+  }
+
+  function getInitialPaymentDate(dateDecaissement: Date, frequency: FrequenceRemboursement): Date {
+    if (frequency === 'mensuel') {
+      return adjustToBusinessDay(addMonths(dateDecaissement, 1))
+    }
+    return adjustToBusinessDay(addDays(dateDecaissement, 2))
+  }
+
+  function getNextPaymentDate(current: Date, frequency: FrequenceRemboursement): Date {
+    if (frequency === 'mensuel') {
+      return adjustToBusinessDay(addMonths(current, 1))
+    }
+    return adjustToBusinessDay(addDays(current, 1))
+  }
+
+  function calculateLoanPlan(
+    amount: number,
+    frequency: FrequenceRemboursement,
+    count: number,
+    decaissementDate: string,
+  ): LoanPlan {
+    const interestRate = 0.15
+    const schedule: LoanScheduleEntry[] = []
+    let dateDecaissement = new Date(decaissementDate)
+    if (Number.isNaN(dateDecaissement.getTime())) {
+      dateDecaissement = new Date()
+    }
+
+    if (!(amount > 0) || !(count > 0)) {
+      const baseDate = getInitialPaymentDate(dateDecaissement, frequency)
+      return {
+        montantEcheance: 0,
+        totalRemboursement: 0,
+        interetTotal: 0,
+        datePremierRemboursement: baseDate,
+        schedule,
+      }
+    }
+
+    let paymentDate = getInitialPaymentDate(dateDecaissement, frequency)
+    const basePrincipal = amount / count
+    const basePrincipalRounded = Math.round(basePrincipal * 100) / 100
+    let remainingPrincipal = Math.round(amount * 100) / 100
+
+    for (let i = 1; i <= count; i++) {
+      let principal = i === count ? Math.round(remainingPrincipal * 100) / 100 : basePrincipalRounded
+      principal = Math.max(principal, 0)
+      remainingPrincipal = Math.round((remainingPrincipal - principal) * 100) / 100
+      const interest = Math.round(principal * interestRate * 100) / 100
+      const installmentAmount = Math.round((principal + interest) * 100) / 100
+
+      schedule.push({
+        numero: i,
+        montant: installmentAmount,
+        principal,
+        interet: interest,
+        date: new Date(paymentDate),
+      })
+
+      if (i < count) {
+        paymentDate = getNextPaymentDate(paymentDate, frequency)
+      }
+    }
+
+    const montantEcheance =
+      schedule[0]?.montant ?? Math.round((basePrincipalRounded * (1 + interestRate)) * 100) / 100
+    const totalRemboursement =
+      Math.round(schedule.reduce((sum, entry) => sum + entry.montant, 0) * 100) / 100
+    const interetTotal =
+      Math.round(schedule.reduce((sum, entry) => sum + entry.interet, 0) * 100) / 100
+
+    return {
+      montantEcheance,
+      totalRemboursement,
+      interetTotal,
+      datePremierRemboursement: schedule[0]?.date ?? paymentDate,
+      schedule,
+    }
+  }
 
   useEffect(() => {
     loadUserProfile()
@@ -111,10 +221,18 @@ function PretsPageContent() {
     e.preventDefault()
     try {
       const montantPret = parseFloat(formData.montant_pret)
+      const nombreRemboursements = parseInt(formData.nombre_remboursements, 10)
+      const frequency: FrequenceRemboursement =
+        formData.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'
       
       // Validation
       if (isNaN(montantPret) || montantPret <= 0) {
         alert('Le montant du prêt doit être un nombre positif')
+        return
+      }
+
+      if (isNaN(nombreRemboursements) || nombreRemboursements <= 0) {
+        alert('Veuillez saisir une durée valide (nombre d’échéances).')
         return
       }
 
@@ -137,13 +255,17 @@ function PretsPageContent() {
         return
       }
 
-      // Calcul avec intérêt de 15% sur chaque remboursement quotidien
-      // Montant de base par jour (sans intérêt) = montant_pret / 23
-      const montantBaseParJour = montantPret / 23
-      const montantInteretParJour = Math.round((montantBaseParJour * 0.15) * 100) / 100
-      const montantRemboursement = Math.round((montantBaseParJour + montantInteretParJour) * 100) / 100 // Arrondi à 2 décimales
-      
-      // Vérification : montant total remboursé = montantRemboursement * 23 = montantPret * 1.15
+      const plan = calculateLoanPlan(
+        montantPret,
+        frequency,
+        nombreRemboursements,
+        formData.date_decaissement,
+      )
+
+      if (plan.schedule.length !== nombreRemboursements) {
+        alert('Impossible de générer l’échéancier. Vérifiez les paramètres.')
+        return
+      }
 
       // Générer le pret_id automatiquement
       const monthName = getMonthName(new Date(formData.date_decaissement))
@@ -165,34 +287,6 @@ function PretsPageContent() {
         }
       }
 
-      // Fonction pour obtenir le prochain jour ouvrable (exclut samedi=6 et dimanche=0)
-      function getNextBusinessDay(date: Date): Date {
-        let nextDay = new Date(date)
-        let dayOfWeek = getDay(nextDay)
-        
-        // Si c'est samedi (6), passer à lundi
-        if (dayOfWeek === 6) {
-          nextDay = addDays(nextDay, 2)
-        }
-        // Si c'est dimanche (0), passer à lundi
-        else if (dayOfWeek === 0) {
-          nextDay = addDays(nextDay, 1)
-        }
-        
-        return nextDay
-      }
-
-      // Fonction pour obtenir le prochain jour ouvrable à partir d'une date
-      function getNextBusinessDayFrom(date: Date): Date {
-        let nextDay = addDays(date, 1)
-        return getNextBusinessDay(nextDay)
-      }
-
-      // Calculer la date du premier remboursement (2ème jour ouvrable après décaissement)
-      const dateDecaissement = new Date(formData.date_decaissement)
-      let datePremierRemboursement = addDays(dateDecaissement, 2)
-      datePremierRemboursement = getNextBusinessDay(datePremierRemboursement)
-
       // Créer le prêt
       const { error: pretError } = await supabase
         .from('prets')
@@ -201,39 +295,31 @@ function PretsPageContent() {
           membre_id: formData.membre_id,
           agent_id: formData.agent_id,
           montant_pret: montantPret,
-          montant_remboursement: montantRemboursement,
-          nombre_remboursements: 23,
+          montant_remboursement: plan.montantEcheance,
+          nombre_remboursements: nombreRemboursements,
           date_decaissement: formData.date_decaissement,
-          date_premier_remboursement: datePremierRemboursement.toISOString().split('T')[0],
+          date_premier_remboursement: plan.datePremierRemboursement
+            .toISOString()
+            .split('T')[0],
           statut: 'actif',
           capital_restant: montantPret,
+          frequence_remboursement: frequency,
         }])
 
       if (pretError) throw pretError
 
-      // Créer les 23 remboursements en excluant les weekends
-      const remboursements = []
-      let currentDate = new Date(datePremierRemboursement)
-      
-      for (let i = 1; i <= 23; i++) {
-        // S'assurer que la date n'est pas un weekend
-        currentDate = getNextBusinessDay(currentDate)
-        
-        remboursements.push({
-          pret_id: newPretId,
-          membre_id: formData.membre_id,
-          agent_id: formData.agent_id,
-          numero_remboursement: i,
-          montant: montantRemboursement,
-          principal: Math.round(montantBaseParJour * 100) / 100,
-          interet: montantInteretParJour,
-          date_remboursement: currentDate.toISOString().split('T')[0],
-          statut: 'en_attente',
-        })
-        
-        // Passer au jour ouvrable suivant pour la prochaine itération
-        currentDate = addDays(currentDate, 1)
-      }
+      // Créer les remboursements selon le plan
+      const remboursements = plan.schedule.map((entry) => ({
+        pret_id: newPretId,
+        membre_id: formData.membre_id,
+        agent_id: formData.agent_id,
+        numero_remboursement: entry.numero,
+        montant: entry.montant,
+        principal: entry.principal,
+        interet: entry.interet,
+        date_remboursement: entry.date.toISOString().split('T')[0],
+        statut: 'en_attente',
+      }))
 
       const { error: rembError } = await supabase
         .from('remboursements')
@@ -241,13 +327,17 @@ function PretsPageContent() {
 
       if (rembError) throw rembError
 
-      alert('Prêt créé avec succès! Les 23 remboursements ont été générés.')
+      alert(
+        `Prêt créé avec succès! ${nombreRemboursements} échéance(s) ${frequency === 'mensuel' ? 'mensuelle(s)' : 'quotidienne(s)'} ont été générées.`,
+      )
       setShowForm(false)
       setFormData({
         membre_id: '',
         agent_id: '',
         montant_pret: '',
         date_decaissement: new Date().toISOString().split('T')[0],
+        frequence_remboursement: 'journalier',
+        nombre_remboursements: '23',
       })
       loadPrets()
     } catch (error: any) {
@@ -270,6 +360,8 @@ function PretsPageContent() {
       agent_id: pret.agent_id,
       montant_pret: pret.montant_pret.toString(),
       date_decaissement: pret.date_decaissement,
+      frequence_remboursement: (pret.frequence_remboursement as FrequenceRemboursement) ?? 'journalier',
+      nombre_remboursements: pret.nombre_remboursements?.toString() ?? '1',
     })
     setShowForm(true)
   }
@@ -310,9 +402,17 @@ function PretsPageContent() {
 
     try {
       const montantPret = parseFloat(formData.montant_pret)
+      const nombreRemboursements = parseInt(formData.nombre_remboursements, 10)
+      const frequency: FrequenceRemboursement =
+        formData.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'
       
       if (isNaN(montantPret) || montantPret <= 0) {
         alert('Le montant du prêt doit être un nombre positif')
+        return
+      }
+
+      if (isNaN(nombreRemboursements) || nombreRemboursements <= 0) {
+        alert('Veuillez saisir une durée valide (nombre d’échéances).')
         return
       }
 
@@ -336,59 +436,54 @@ function PretsPageContent() {
         }
       }
 
-      // Recalculer avec intérêt de 15% sur chaque remboursement quotidien
-      const montantBaseParJour = montantPret / 23
-      // Ajouter 15% d'intérêt sur chaque remboursement quotidien
-      const montantRemboursement = Math.round((montantBaseParJour * 1.15) * 100) / 100
+      const plan = calculateLoanPlan(
+        montantPret,
+        frequency,
+        nombreRemboursements,
+        formData.date_decaissement,
+      )
 
-      // Calculer la nouvelle date du premier remboursement
-      const dateDecaissement = new Date(formData.date_decaissement)
-      function getNextBusinessDay(date: Date): Date {
-        let nextDay = new Date(date)
-        let dayOfWeek = getDay(nextDay)
-        if (dayOfWeek === 6) nextDay = addDays(nextDay, 2)
-        else if (dayOfWeek === 0) nextDay = addDays(nextDay, 1)
-        return nextDay
+      if (plan.schedule.length !== nombreRemboursements) {
+        alert('Impossible de générer l’échéancier. Vérifiez les paramètres.')
+        return
       }
-      function getNextBusinessDayFrom(date: Date): Date {
-        let nextDay = addDays(date, 1)
-        return getNextBusinessDay(nextDay)
-      }
-      let datePremierRemboursement = addDays(dateDecaissement, 2)
-      datePremierRemboursement = getNextBusinessDay(datePremierRemboursement)
 
-      // Mettre à jour le prêt
       const { error: pretError } = await supabase
         .from('prets')
         .update({
           membre_id: formData.membre_id,
           agent_id: formData.agent_id,
           montant_pret: montantPret,
-          montant_remboursement: montantRemboursement,
+          montant_remboursement: plan.montantEcheance,
+          nombre_remboursements: nombreRemboursements,
           date_decaissement: formData.date_decaissement,
-          date_premier_remboursement: datePremierRemboursement.toISOString().split('T')[0],
+          date_premier_remboursement: plan.datePremierRemboursement
+            .toISOString()
+            .split('T')[0],
+          frequence_remboursement: frequency,
         })
         .eq('id', editingPret.id)
 
       if (pretError) throw pretError
 
-      // Mettre à jour tous les remboursements
-      let currentDate = new Date(datePremierRemboursement)
-      
-      for (let i = 1; i <= 23; i++) {
-        currentDate = getNextBusinessDay(currentDate)
-        const montantInteretParJour = Math.round((montantBaseParJour * 0.15) * 100) / 100
-        await supabase
+      // Recréer les remboursements
+      await supabase.from('remboursements').delete().eq('pret_id', editingPret.pret_id)
+      const remboursements = plan.schedule.map((entry) => ({
+        pret_id: editingPret.pret_id,
+        membre_id: formData.membre_id,
+        agent_id: formData.agent_id,
+        numero_remboursement: entry.numero,
+        montant: entry.montant,
+        principal: entry.principal,
+        interet: entry.interet,
+        date_remboursement: entry.date.toISOString().split('T')[0],
+        statut: 'en_attente',
+      }))
+      if (remboursements.length > 0) {
+        const { error: insertError } = await supabase
           .from('remboursements')
-          .update({
-            montant: montantRemboursement,
-            principal: Math.round(montantBaseParJour * 100) / 100,
-            interet: montantInteretParJour,
-            date_remboursement: currentDate.toISOString().split('T')[0],
-          })
-          .eq('pret_id', editingPret.pret_id)
-          .eq('numero_remboursement', i)
-        currentDate = addDays(currentDate, 1)
+          .insert(remboursements)
+        if (insertError) throw insertError
       }
 
       alert('Décaissement modifié avec succès')
@@ -399,6 +494,8 @@ function PretsPageContent() {
         agent_id: '',
         montant_pret: '',
         date_decaissement: new Date().toISOString().split('T')[0],
+        frequence_remboursement: 'journalier',
+        nombre_remboursements: '23',
       })
       loadPrets()
     } catch (error: any) {
@@ -414,6 +511,20 @@ function PretsPageContent() {
   const filteredMembres = formData.agent_id
     ? membres.filter(m => m.agent_id === formData.agent_id)
     : membres
+
+  const loanPreview = (() => {
+    const montant = parseFloat(formData.montant_pret)
+    const count = parseInt(formData.nombre_remboursements, 10)
+    if (!(montant > 0) || !(count > 0)) {
+      return null
+    }
+    return calculateLoanPlan(
+      montant,
+      formData.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier',
+      count,
+      formData.date_decaissement,
+    )
+  })()
 
   if (loading) {
     return (
@@ -447,6 +558,8 @@ function PretsPageContent() {
                   agent_id: '',
                   montant_pret: '',
                   date_decaissement: new Date().toISOString().split('T')[0],
+                  frequence_remboursement: 'journalier',
+                  nombre_remboursements: '23',
                 })
               }}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -462,7 +575,7 @@ function PretsPageContent() {
               {editingPret ? 'Modifier le décaissement' : 'Créer un nouveau prêt'}
             </h2>
             <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid md:grid-cols-2 gap-4">
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Agent de Crédit *
@@ -535,30 +648,89 @@ function PretsPageContent() {
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
-                  {formData.montant_pret && !isNaN(parseFloat(formData.montant_pret)) && parseFloat(formData.montant_pret) > 0 && (() => {
-                    const montantPret = parseFloat(formData.montant_pret)
-                    const montantBaseParJour = montantPret / 23
-                    const montantRemboursementParJour = Math.round((montantBaseParJour * 1.15) * 100) / 100
-                    const montantTotalRembourse = montantRemboursementParJour * 23
-                    const interetTotal = montantTotalRembourse - montantPret
-                    
-                    return (
-                      <div className="text-sm text-gray-600 mt-1 space-y-1">
-                        <p>
-                          <strong>Montant de base par jour:</strong> {formatCurrency(Math.round(montantBaseParJour * 100) / 100)}
-                        </p>
-                        <p className="text-blue-600">
-                          <strong>Montant à rembourser par jour (avec 15% d'intérêt):</strong> {formatCurrency(montantRemboursementParJour)}
-                        </p>
-                        <p>
-                          <strong>Total à rembourser:</strong> {formatCurrency(Math.round(montantTotalRembourse * 100) / 100)} (23 remboursements)
-                        </p>
-                        <p className="text-green-600">
-                          <strong>Intérêt total:</strong> {formatCurrency(Math.round(interetTotal * 100) / 100)}
-                        </p>
-                      </div>
-                    )
-                  })()}
+                  {loanPreview && (
+                    <div className="text-sm text-gray-600 mt-1 space-y-1">
+                      <p>
+                        <strong>Fréquence:</strong>{' '}
+                        {formData.frequence_remboursement === 'mensuel'
+                          ? 'Mensuelle'
+                          : 'Quotidienne'}
+                      </p>
+                      <p>
+                        <strong>Échéances:</strong> {formData.nombre_remboursements}
+                      </p>
+                      <p>
+                        <strong>Montant par échéance:</strong> {formatCurrency(loanPreview.montantEcheance)}
+                      </p>
+                      <p>
+                        <strong>Total à rembourser:</strong> {formatCurrency(loanPreview.totalRemboursement)} ({formData.nombre_remboursements} échéance(s))
+                      </p>
+                      <p className="text-green-600">
+                        <strong>Intérêt total:</strong> {formatCurrency(loanPreview.interetTotal)}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Fréquence de paiement *
+                  </label>
+                  <select
+                    value={formData.frequence_remboursement}
+                    onChange={(e) =>
+                      setFormData((prev) => {
+                        const nextFrequency = e.target.value as FrequenceRemboursement
+                        let nextCount = prev.nombre_remboursements
+                        if (!nextCount) {
+                          nextCount = nextFrequency === 'mensuel' ? '6' : '23'
+                        } else if (
+                          prev.frequence_remboursement === 'journalier' &&
+                          nextFrequency === 'mensuel' &&
+                          nextCount === '23'
+                        ) {
+                          nextCount = '6'
+                        } else if (
+                          prev.frequence_remboursement === 'mensuel' &&
+                          nextFrequency === 'journalier' &&
+                          nextCount === '6'
+                        ) {
+                          nextCount = '23'
+                        }
+                        return {
+                          ...prev,
+                          frequence_remboursement: nextFrequency,
+                          nombre_remboursements: nextCount,
+                        }
+                      })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="journalier">Quotidienne</option>
+                    <option value="mensuel">Mensuelle</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Choisissez la fréquence de remboursement (jours ouvrés pour le quotidien).
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Nombre d’échéances *
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={formData.nombre_remboursements}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        nombre_remboursements: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Durée du prêt en nombre d’échéances ({formData.frequence_remboursement === 'mensuel' ? 'mois' : 'jours ouvrés'}).
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -572,21 +744,18 @@ function PretsPageContent() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                   {formData.date_decaissement && (() => {
-                    // Calculer la date du premier remboursement en excluant les weekends
-                    const dateDecaissement = new Date(formData.date_decaissement)
-                    let datePremierRemb = addDays(dateDecaissement, 2)
-                    const dayOfWeek = getDay(datePremierRemb)
-                    // Si samedi (6), passer à lundi (+2 jours)
-                    if (dayOfWeek === 6) {
-                      datePremierRemb = addDays(datePremierRemb, 2)
-                    }
-                    // Si dimanche (0), passer à lundi (+1 jour)
-                    else if (dayOfWeek === 0) {
-                      datePremierRemb = addDays(datePremierRemb, 1)
-                    }
+                    const previewDate = loanPreview
+                      ? loanPreview.datePremierRemboursement
+                      : getInitialPaymentDate(
+                          new Date(formData.date_decaissement),
+                          formData.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier',
+                        )
                     return (
                       <p className="text-sm text-gray-600 mt-1">
-                        Premier remboursement: {formatDate(datePremierRemb)} (jours ouvrés uniquement)
+                        Premier remboursement: {formatDate(previewDate)}{' '}
+                        {formData.frequence_remboursement === 'journalier'
+                          ? '(jours ouvrés uniquement)'
+                          : '(ajusté au jour ouvré suivant si besoin)'}
                       </p>
                     )
                   })()}
@@ -617,7 +786,13 @@ function PretsPageContent() {
                     Montant
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Remboursement/jour
+                    Montant échéance
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Fréquence
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Durée
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Date décaissement
@@ -635,7 +810,12 @@ function PretsPageContent() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {prets.length === 0 ? (
                   <tr>
-                    <td colSpan={(userProfile?.role === 'admin' || userProfile?.role === 'manager') ? 7 : 6} className="px-6 py-4 text-center text-gray-500">
+                    <td
+                      colSpan={
+                        userProfile?.role === 'admin' || userProfile?.role === 'manager' ? 9 : 8
+                      }
+                      className="px-6 py-4 text-center text-gray-500"
+                    >
                       Aucun prêt enregistré
                     </td>
                   </tr>
@@ -653,6 +833,12 @@ function PretsPageContent() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {formatCurrency(pret.montant_remboursement)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {pret.frequence_remboursement === 'mensuel' ? 'Mensuelle' : 'Quotidienne'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {pret.nombre_remboursements} échéance(s)
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {formatDate(pret.date_decaissement)}

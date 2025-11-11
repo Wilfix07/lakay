@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS prets (
     montant_pret DECIMAL(10, 2) NOT NULL, -- Montant total du prêt (ex: 5000 HTG)
     montant_remboursement DECIMAL(10, 2) NOT NULL, -- Montant de chaque remboursement (ex: 250 HTG)
     nombre_remboursements INTEGER NOT NULL DEFAULT 23,
+    frequence_remboursement VARCHAR(20) NOT NULL DEFAULT 'journalier',
     date_decaissement DATE NOT NULL,
     date_premier_remboursement DATE NOT NULL, -- 2ème jour après décaissement
     statut VARCHAR(20) DEFAULT 'actif', -- actif, termine, annule
@@ -72,6 +73,44 @@ CREATE TABLE IF NOT EXISTS agent_expenses (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Paramètres globaux du système (échéancier, taux d'intérêts, etc.)
+CREATE TABLE IF NOT EXISTS system_settings (
+    id SERIAL PRIMARY KEY,
+    key TEXT UNIQUE NOT NULL,
+    value JSONB NOT NULL,
+    description TEXT,
+    updated_by UUID REFERENCES auth.users(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Barème des montants autorisés pour les prêts
+CREATE TABLE IF NOT EXISTS loan_amount_brackets (
+    id SERIAL PRIMARY KEY,
+    label TEXT,
+    min_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    max_amount DECIMAL(12, 2),
+    default_interest_rate DECIMAL(5, 2),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Catégories de dépenses gérées par l'administrateur
+CREATE TABLE IF NOT EXISTS expense_categories (
+    id SERIAL PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Permissions de base
+GRANT SELECT, INSERT, UPDATE, DELETE ON system_settings TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON loan_amount_brackets TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON expense_categories TO authenticated;
+
 -- Index pour améliorer les performances
 CREATE INDEX IF NOT EXISTS idx_membres_agent_id ON membres(agent_id);
 CREATE INDEX IF NOT EXISTS idx_prets_membre_id ON prets(membre_id);
@@ -82,6 +121,9 @@ CREATE INDEX IF NOT EXISTS idx_remboursements_statut ON remboursements(statut);
 CREATE INDEX IF NOT EXISTS idx_agent_expenses_agent_id ON agent_expenses(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_expenses_date ON agent_expenses(expense_date);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_prets_membre_actif ON prets(membre_id) WHERE statut = 'actif';
+CREATE INDEX IF NOT EXISTS idx_system_settings_key ON system_settings(key);
+CREATE INDEX IF NOT EXISTS idx_loan_amount_brackets_active ON loan_amount_brackets(is_active);
+CREATE INDEX IF NOT EXISTS idx_expense_categories_active ON expense_categories(is_active);
 
 -- Fonction pour générer automatiquement l'agent_id
 CREATE OR REPLACE FUNCTION generate_agent_id()
@@ -164,4 +206,66 @@ CREATE TRIGGER update_prets_updated_at BEFORE UPDATE ON prets
 
 CREATE TRIGGER update_remboursements_updated_at BEFORE UPDATE ON remboursements
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_system_settings_updated_at BEFORE UPDATE ON system_settings
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_loan_amount_brackets_updated_at BEFORE UPDATE ON loan_amount_brackets
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_expense_categories_updated_at BEFORE UPDATE ON expense_categories
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Activer la RLS et définir les politiques pour un accès réservé aux administrateurs
+ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE loan_amount_brackets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE expense_categories ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY admin_manage_system_settings
+    ON system_settings
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM user_profiles up
+            WHERE up.id = auth.uid() AND up.role = 'admin'
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM user_profiles up
+            WHERE up.id = auth.uid() AND up.role = 'admin'
+        )
+    );
+
+CREATE POLICY admin_manage_loan_amount_brackets
+    ON loan_amount_brackets
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM user_profiles up
+            WHERE up.id = auth.uid() AND up.role = 'admin'
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM user_profiles up
+            WHERE up.id = auth.uid() AND up.role = 'admin'
+        )
+    );
+
+CREATE POLICY admin_manage_expense_categories
+    ON expense_categories
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM user_profiles up
+            WHERE up.id = auth.uid() AND up.role = 'admin'
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM user_profiles up
+            WHERE up.id = auth.uid() AND up.role = 'admin'
+        )
+    );
 

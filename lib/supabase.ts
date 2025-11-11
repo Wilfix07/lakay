@@ -63,6 +63,7 @@ export interface Pret {
   date_premier_remboursement: string
   statut: 'actif' | 'termine' | 'annule'
   capital_restant?: number
+  frequence_remboursement?: 'journalier' | 'mensuel' | string
   created_at: string
   updated_at: string
 }
@@ -92,6 +93,36 @@ export interface UserProfile {
   agent_id?: string
   nom?: string
   prenom?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SystemSetting {
+  id: number
+  key: string
+  value: Record<string, any>
+  description?: string | null
+  updated_by?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface LoanAmountBracket {
+  id: number
+  label?: string | null
+  min_amount: number
+  max_amount?: number | null
+  default_interest_rate?: number | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface ExpenseCategory {
+  id: number
+  name: string
+  description?: string | null
+  is_active: boolean
   created_at: string
   updated_at: string
 }

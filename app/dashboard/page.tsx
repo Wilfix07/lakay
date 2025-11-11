@@ -39,6 +39,7 @@ import {
   YAxis,
   Tooltip as RechartsTooltip,
   CartesianGrid,
+  Cell,
 } from 'recharts'
 import { Skeleton } from '@/components/ui/skeleton'
 
@@ -75,6 +76,16 @@ export default function DashboardPage() {
     }[]
   }>({ total: 0, commissionTotal: 0, monthly: [] })
   const [expensesSummary, setExpensesSummary] = useState<number>(0)
+  const agentBarColors = [
+    '#2563eb', // blue-600
+    '#16a34a', // green-600
+    '#f97316', // orange-500
+    '#dc2626', // red-600
+    '#0ea5e9', // sky-500
+    '#9333ea', // purple-600
+    '#facc15', // yellow-500
+    '#14b8a6', // teal-500
+  ]
 
   useEffect(() => {
     loadUserProfile()
@@ -217,8 +228,10 @@ export default function DashboardPage() {
         const impayesRate =
           totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
+        const qualifyingStatuses = new Set(['paye', 'paye_partiel'])
+
         const collectionMap = (remboursementsRes.data || [])
-          .filter((item) => item.statut === 'paye' && item.agent_id)
+          .filter((item) => qualifyingStatuses.has(item.statut) && item.agent_id)
           .reduce<Map<string, number>>((acc, item) => {
             const key = item.agent_id!
             const current = acc.get(key) ?? 0
@@ -229,7 +242,7 @@ export default function DashboardPage() {
         const interestMap = new Map<string, number>()
         let totalInterest = 0
         for (const remboursement of remboursementsRes.data || []) {
-          if (remboursement.statut !== 'paye') continue
+          if (!qualifyingStatuses.has(remboursement.statut)) continue
           const principalValue = getPrincipalValue(remboursement)
           const interestValue =
             remboursement.interet != null
@@ -272,6 +285,15 @@ export default function DashboardPage() {
         const expensesTotal =
           expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
         setExpensesSummary(expensesTotal)
+
+        const monthlyExpensesMap = new Map<string, number>()
+        for (const expense of expensesRes.data || []) {
+          if (!expense.expense_date) continue
+          const expenseDate = new Date(expense.expense_date)
+          if (Number.isNaN(expenseDate.getTime())) continue
+          const key = `${expenseDate.getFullYear()}-${String(expenseDate.getMonth() + 1).padStart(2, '0')}`
+          monthlyExpensesMap.set(key, (monthlyExpensesMap.get(key) ?? 0) + Number(expense.amount || 0))
+        }
         const monthlyKeys = new Set([
           ...interestMap.keys(),
           ...monthlyExpensesMap.keys(),
@@ -407,9 +429,11 @@ export default function DashboardPage() {
           todayRemboursementsCount,
           todayRemboursementsAmount,
         })
+        const qualifyingStatuses = new Set(['paye', 'paye_partiel'])
+
         const totalCollected =
           remboursementsRes.data
-            ?.filter((item) => item.statut === 'paye')
+            ?.filter((item) => qualifyingStatuses.has(item.statut))
             .reduce((sum, item) => sum + Number(item.montant || 0), 0) || 0
         const displayName =
           `${userProfile.prenom ?? ''} ${userProfile.nom ?? ''}`.trim() || userProfile.agent_id || 'Vous'
@@ -430,7 +454,7 @@ export default function DashboardPage() {
         const interestMap = new Map<string, number>()
         let totalInterest = 0
         for (const remboursement of remboursementsRes.data || []) {
-          if (remboursement.statut !== 'paye') continue
+          if (!qualifyingStatuses.has(remboursement.statut)) continue
           const principalValue = getPrincipalValue(remboursement)
           const interestValue =
             remboursement.interet != null
@@ -444,6 +468,14 @@ export default function DashboardPage() {
           if (Number.isNaN(dateObj.getTime())) continue
           const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
           interestMap.set(key, (interestMap.get(key) ?? 0) + interestValue)
+        }
+        const monthlyExpensesMap = new Map<string, number>()
+        for (const expense of expensesRes.data || []) {
+          if (!expense.expense_date) continue
+          const expenseDate = new Date(expense.expense_date)
+          if (Number.isNaN(expenseDate.getTime())) continue
+          const key = `${expenseDate.getFullYear()}-${String(expenseDate.getMonth() + 1).padStart(2, '0')}`
+          monthlyExpensesMap.set(key, (monthlyExpensesMap.get(key) ?? 0) + Number(expense.amount || 0))
         }
         const monthlyKeys = new Set([
           ...interestMap.keys(),
@@ -785,7 +817,14 @@ export default function DashboardPage() {
                       formatter={(value: number) => formatCurrency(Number(value))}
                       labelFormatter={(label) => `Agent: ${label}`}
                     />
-                    <Bar dataKey="total_collected" fill="var(--color-primary)" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="total_collected" radius={[6, 6, 0, 0]}>
+                      {agentCollections.map((entry, index) => (
+                        <Cell
+                          key={`agent-bar-${entry.agent_id}`}
+                          fill={agentBarColors[index % agentBarColors.length]}
+                        />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               ) : (

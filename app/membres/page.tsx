@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -37,8 +37,10 @@ import {
 type MemberLoanHistory = {
   pret_id: string
   montant_pret: number
+  capital_restant: number | null
   date_decaissement: string
   statut: string
+  nombre_remboursements?: number
   remboursements: {
     id: number
     numero_remboursement: number
@@ -48,6 +50,7 @@ type MemberLoanHistory = {
     statut: string
     date_remboursement: string
     date_paiement: string | null
+    jours_retard: number
   }[]
 }
 
@@ -64,9 +67,8 @@ function MembresPageContent() {
   const [transferSaving, setTransferSaving] = useState(false)
   const [transferError, setTransferError] = useState<string | null>(null)
   const [memberLoans, setMemberLoans] = useState<MemberLoanHistory[]>([])
+  const [selectedMember, setSelectedMember] = useState<Membre | null>(null)
   const [selectedLoanId, setSelectedLoanId] = useState<string>('')
-  const [selectedMemberHistory, setSelectedMemberHistory] = useState<MemberLoanHistory | null>(null)
-  const [historyMember, setHistoryMember] = useState<Membre | null>(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [formData, setFormData] = useState({
     agent_id: '',
@@ -77,7 +79,115 @@ function MembresPageContent() {
   })
 
   const currentLoan =
-    memberLoans.find((loan) => loan.pret_id === selectedLoanId) ?? selectedMemberHistory ?? null
+    memberLoans.find((loan) => loan.pret_id === selectedLoanId) ?? memberLoans[0] ?? null
+
+  const selectedAgent = useMemo(() => {
+    if (!selectedMember) return null
+    return agents.find((agent) => agent.agent_id === selectedMember.agent_id) ?? null
+  }, [agents, selectedMember])
+
+  function computeCapitalRestant(loan: MemberLoanHistory): number {
+    if (loan.capital_restant !== null && loan.capital_restant !== undefined) {
+      return Number(loan.capital_restant)
+    }
+    const principalPaid = loan.remboursements
+      .filter((r) => r.statut === 'paye' || r.statut === 'paye_partiel')
+      .reduce((sum, r) => sum + Number(r.principal || 0), 0)
+    return Math.max(loan.montant_pret - principalPaid, 0)
+  }
+
+  const memberSummary = useMemo(() => {
+    if (!selectedMember) {
+      return {
+        totalLoans: 0,
+        activeLoans: 0,
+        outstandingPrincipal: 0,
+        lateInstallments: 0,
+        totalLateDays: 0,
+      }
+    }
+    if (memberLoans.length === 0) {
+      return {
+        totalLoans: 0,
+        activeLoans: 0,
+        outstandingPrincipal: 0,
+        lateInstallments: 0,
+        totalLateDays: 0,
+      }
+    }
+    return memberLoans.reduce(
+      (acc, loan) => {
+        const capitalRestant = computeCapitalRestant(loan)
+        const lateInstallments = loan.remboursements.filter(
+          (r) =>
+            (r.statut === 'en_retard' || r.statut === 'en_attente' || r.statut === 'paye_partiel') &&
+            r.jours_retard > 0,
+        ).length
+        const totalLateDays = loan.remboursements.reduce((sum, r) => {
+          if (r.jours_retard > 0 && r.statut !== 'paye') {
+            return sum + r.jours_retard
+          }
+          return sum
+        }, 0)
+        return {
+          totalLoans: acc.totalLoans + 1,
+          activeLoans: acc.activeLoans + (loan.statut === 'actif' ? 1 : 0),
+          outstandingPrincipal: acc.outstandingPrincipal + capitalRestant,
+          lateInstallments: acc.lateInstallments + lateInstallments,
+          totalLateDays: acc.totalLateDays + totalLateDays,
+        }
+      },
+      {
+        totalLoans: 0,
+        activeLoans: 0,
+        outstandingPrincipal: 0,
+        lateInstallments: 0,
+        totalLateDays: 0,
+      },
+    )
+  }, [memberLoans, selectedMember])
+
+  const currentLoanStats = useMemo(() => {
+    if (!currentLoan) {
+      return {
+        principalPaid: 0,
+        interestPaid: 0,
+        capitalRestant: 0,
+        lateInstallments: 0,
+        totalLateDays: 0,
+        upcomingDueDate: null as string | null,
+      }
+    }
+    const principalPaid = currentLoan.remboursements
+      .filter((r) => r.statut === 'paye' || r.statut === 'paye_partiel')
+      .reduce((sum, r) => sum + Number(r.principal || 0), 0)
+    const interestPaid = currentLoan.remboursements
+      .filter((r) => r.statut === 'paye' || r.statut === 'paye_partiel')
+      .reduce((sum, r) => sum + Number(r.interet || 0), 0)
+    const capitalRestant = computeCapitalRestant(currentLoan)
+    const lateInstallments = currentLoan.remboursements.filter(
+      (r) =>
+        (r.statut === 'en_retard' || r.statut === 'en_attente' || r.statut === 'paye_partiel') &&
+        r.jours_retard > 0,
+    ).length
+    const totalLateDays = currentLoan.remboursements.reduce((sum, r) => {
+      if (r.jours_retard > 0 && r.statut !== 'paye') {
+        return sum + r.jours_retard
+      }
+      return sum
+    }, 0)
+    const upcomingDue = currentLoan.remboursements.find(
+      (r) => r.statut === 'en_attente' || r.statut === 'paye_partiel',
+    )
+    return {
+      principalPaid,
+      interestPaid,
+      capitalRestant,
+      lateInstallments,
+      totalLateDays,
+      upcomingDueDate: upcomingDue?.date_remboursement ?? null,
+    }
+  }, [currentLoan])
 
   useEffect(() => {
     loadUserProfile()
@@ -138,31 +248,21 @@ function MembresPageContent() {
     }
   }
 
-  function applySelectedLoan(loans: MemberLoanHistory[], loanId?: string) {
-    if (loans.length === 0) {
-      setSelectedLoanId('')
-      setSelectedMemberHistory(null)
-      return
-    }
-    const targetId = loanId ?? loans[0].pret_id
-    const loan = loans.find((item) => item.pret_id === targetId) ?? loans[0]
-    setSelectedLoanId(loan.pret_id)
-    setSelectedMemberHistory(loan)
-  }
-
   async function loadMemberHistory(membre: Membre) {
     try {
       setHistoryLoading(true)
-      setHistoryMember(membre)
-
+      setMemberLoans([])
+      setSelectedLoanId('')
+      setSelectedMember(membre)
       const { data: pretsData, error: pretsError } = await supabase
         .from('prets')
-        .select('pret_id, montant_pret, date_decaissement, statut')
+        .select('pret_id, montant_pret, capital_restant, date_decaissement, statut, nombre_remboursements, montant_remboursement')
         .eq('membre_id', membre.membre_id)
         .order('date_decaissement', { ascending: false })
 
       if (pretsError) throw pretsError
 
+      const today = new Date()
       const { data: remboursementsData, error: remboursementsError } = await supabase
         .from('remboursements')
         .select(
@@ -175,6 +275,20 @@ function MembresPageContent() {
 
       const remboursementsByPret = new Map<string, MemberLoanHistory['remboursements']>()
       for (const remb of remboursementsData || []) {
+        const dueDate = remb.date_remboursement ? new Date(remb.date_remboursement) : null
+        const paymentDate = remb.date_paiement ? new Date(remb.date_paiement) : null
+        let joursRetard = 0
+        if (dueDate) {
+          const comparisonDate =
+            remb.statut === 'paye' && paymentDate
+              ? paymentDate
+              : paymentDate ?? today
+          const diffMs = comparisonDate.getTime() - dueDate.getTime()
+          if (diffMs > 0) {
+            joursRetard = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+          }
+        }
+
         const list = remboursementsByPret.get(remb.pret_id) ?? []
         list.push({
           id: remb.id,
@@ -185,6 +299,7 @@ function MembresPageContent() {
           statut: remb.statut || 'en_attente',
           date_remboursement: remb.date_remboursement,
           date_paiement: remb.date_paiement,
+          jours_retard: joursRetard,
         })
         remboursementsByPret.set(remb.pret_id, list)
       }
@@ -193,16 +308,17 @@ function MembresPageContent() {
         pretsData?.map((pret) => ({
           pret_id: pret.pret_id,
           montant_pret: Number(pret.montant_pret || 0),
+          capital_restant: pret.capital_restant !== null && pret.capital_restant !== undefined ? Number(pret.capital_restant) : null,
           date_decaissement: pret.date_decaissement,
           statut: pret.statut || 'actif',
+          nombre_remboursements: pret.nombre_remboursements,
           remboursements: remboursementsByPret.get(pret.pret_id) ?? [],
         })) ?? []
 
       setMemberLoans(loans)
-      applySelectedLoan(loans)
+      setSelectedLoanId(loans[0]?.pret_id ?? '')
     } catch (error) {
       console.error('Erreur lors du chargement de l’historique des prêts:', error)
-      setSelectedMemberHistory(null)
       setMemberLoans([])
     } finally {
       setHistoryLoading(false)
@@ -210,7 +326,7 @@ function MembresPageContent() {
   }
 
   function handleSelectLoan(pretId: string) {
-    applySelectedLoan(memberLoans, pretId)
+    setSelectedLoanId(pretId)
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -474,7 +590,11 @@ function MembresPageContent() {
                   </TableHeader>
                   <TableBody>
                     {membres.map((membre) => (
-                        <TableRow key={membre.id}>
+                      <TableRow
+                        key={membre.id}
+                        className={selectedMember?.id === membre.id ? 'bg-muted/50' : ''}
+                        onClick={() => loadMemberHistory(membre)}
+                      >
                         <TableCell className="font-medium">{membre.membre_id}</TableCell>
                         <TableCell>{membre.agent_id}</TableCell>
                         <TableCell>{membre.nom}</TableCell>
@@ -484,24 +604,18 @@ function MembresPageContent() {
                           {new Date(membre.created_at).toLocaleDateString('fr-FR')}
                         </TableCell>
                         <TableCell className="text-right space-x-2">
-                          <div className="inline-flex gap-2">
+                          {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
                             <Button
-                              variant="secondary"
+                              variant="outline"
                               size="sm"
-                              onClick={() => loadMemberHistory(membre)}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openTransferDialog(membre)
+                              }}
                             >
-                              Historique
+                              Transférer
                             </Button>
-                            {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => openTransferDialog(membre)}
-                              >
-                                Transférer
-                              </Button>
-                            )}
-                          </div>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -512,12 +626,12 @@ function MembresPageContent() {
           </CardContent>
         </Card>
 
-        {historyMember && (
+{selectedMember && (
           <Card>
             <CardHeader>
               <CardTitle>
-                Historique des prêts – {historyMember.prenom} {historyMember.nom} (
-                {historyMember.membre_id})
+        Historique des prêts – {selectedMember.prenom} {selectedMember.nom} (
+        {selectedMember.membre_id})
               </CardTitle>
               <CardDescription>
                 Suivi des décaissements et remboursements effectués par ce membre.
@@ -528,149 +642,224 @@ function MembresPageContent() {
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
                 </div>
-              ) : memberLoans.length === 0 ? (
-                <div className="py-8 text-muted-foreground text-center">
-                  Aucun prêt n’est enregistré pour ce membre.
-                </div>
               ) : (
                 <>
-                  {memberLoans.length > 1 && (
-                    <div className="max-w-xs">
-                      <Label>Prêt</Label>
-                      <Select value={selectedLoanId} onValueChange={handleSelectLoan}>
-                        <SelectTrigger className="mt-1">
-                          <SelectValue placeholder="Sélectionner un prêt" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {memberLoans.map((loan) => (
-                            <SelectItem key={loan.pret_id} value={loan.pret_id}>
-                              {loan.pret_id} — {formatCurrency(loan.montant_pret)} (
-                              {new Date(loan.date_decaissement).toLocaleDateString('fr-FR')})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                    <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Agent de crédit</p>
+                      <p className="text-sm font-medium text-foreground">
+                        {selectedAgent
+                          ? `${selectedAgent.prenom} ${selectedAgent.nom} (${selectedAgent.agent_id})`
+                          : selectedMember.agent_id}
+                      </p>
                     </div>
-                  )}
+                    <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Téléphone</p>
+                      <p className="text-sm font-medium text-foreground">
+                        {selectedMember.telephone || 'Non renseigné'}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Adresse</p>
+                      <p className="text-sm font-medium text-foreground">
+                        {selectedMember.adresse || 'Non renseignée'}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Date d’inscription</p>
+                      <p className="text-sm font-medium text-foreground">
+                        {formatDate(selectedMember.created_at)}
+                      </p>
+                    </div>
+                  </div>
 
-                  {currentLoan && (
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                    <div className="rounded-lg border px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Prêts totaux</p>
+                      <p className="text-lg font-semibold text-foreground">
+                        {memberSummary.totalLoans}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {memberSummary.activeLoans} prêt(s) actif(s)
+                      </p>
+                    </div>
+                    <div className="rounded-lg border px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Capital restant</p>
+                      <p className="text-lg font-semibold text-foreground">
+                        {formatCurrency(memberSummary.outstandingPrincipal)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Échéances en retard</p>
+                      <p className="text-lg font-semibold text-foreground">
+                        {memberSummary.lateInstallments}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Jours de retard cumulés</p>
+                      <p className="text-lg font-semibold text-foreground">
+                        {memberSummary.totalLateDays}
+                      </p>
+                    </div>
+                  </div>
+
+                  {memberLoans.length === 0 ? (
+                    <div className="py-8 text-muted-foreground text-center">
+                      Aucun prêt n’est enregistré pour ce membre.
+                    </div>
+                  ) : (
                     <>
-                      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                        <div className="rounded-lg border bg-muted/30 px-4 py-3">
-                          <p className="text-xs uppercase text-muted-foreground">Montant du prêt</p>
-                          <p className="text-lg font-semibold text-foreground">
-                            {formatCurrency(currentLoan.montant_pret)}
-                          </p>
+                      {memberLoans.length > 1 && (
+                        <div className="max-w-xs">
+                          <Label>Prêt</Label>
+                          <Select value={selectedLoanId} onValueChange={handleSelectLoan}>
+                            <SelectTrigger className="mt-1">
+                              <SelectValue placeholder="Sélectionner un prêt" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {memberLoans.map((loan) => (
+                                <SelectItem key={loan.pret_id} value={loan.pret_id}>
+                                  {loan.pret_id} — {formatCurrency(loan.montant_pret)} (
+                                  {formatDate(loan.date_decaissement)}) •{' '}
+                                  {loan.statut === 'actif' ? 'Actif' : 'Terminé'}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
-                        <div className="rounded-lg border bg-muted/30 px-4 py-3">
-                          <p className="text-xs uppercase text-muted-foreground">Principal remboursé</p>
-                          <p className="text-lg font-semibold text-foreground">
-                            {formatCurrency(
-                              currentLoan.remboursements
-                                .filter((r) => r.statut === 'paye' || r.statut === 'paye_partiel')
-                                .reduce((sum, r) => sum + Number(r.principal || 0), 0),
-                            )}
-                          </p>
-                        </div>
-                        <div className="rounded-lg border bg-muted/30 px-4 py-3">
-                          <p className="text-xs uppercase text-muted-foreground">Intérêts payés</p>
-                          <p className="text-lg font-semibold text-foreground">
-                            {formatCurrency(
-                              currentLoan.remboursements
-                                .filter((r) => r.statut === 'paye' || r.statut === 'paye_partiel')
-                                .reduce((sum, r) => sum + Number(r.interet || 0), 0),
-                            )}
-                          </p>
-                        </div>
-                        <div className="rounded-lg border bg-muted/30 px-4 py-3">
-                          <p className="text-xs uppercase text-muted-foreground">Capital restant</p>
-                          <p className="text-lg font-semibold text-foreground">
-                            {formatCurrency(
-                              Math.max(
-                                currentLoan.montant_pret -
-                                  currentLoan.remboursements
-                                    .filter(
-                                      (r) =>
-                                        r.statut === 'paye' || r.statut === 'paye_partiel',
-                                    )
-                                    .reduce((sum, r) => sum + Number(r.principal || 0), 0),
-                                0,
-                              ),
-                            )}
-                          </p>
-                        </div>
-                      </div>
+                      )}
 
-                      <div className="rounded-md border overflow-x-auto">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>#</TableHead>
-                              <TableHead>Montant</TableHead>
-                              <TableHead>Principal</TableHead>
-                              <TableHead>Intérêt</TableHead>
-                              <TableHead>Date prévue</TableHead>
-                              <TableHead>Date payée</TableHead>
-                              <TableHead>Statut</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {currentLoan.remboursements.length === 0 ? (
-                              <TableRow>
-                                <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
-                                  Aucun remboursement enregistré pour ce prêt.
-                                </TableCell>
-                              </TableRow>
-                            ) : (
-                              currentLoan.remboursements.map((remboursement) => (
-                                <TableRow key={remboursement.id}>
-                                  <TableCell className="whitespace-nowrap text-sm">
-                                    {remboursement.numero_remboursement}/23
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                                    {formatCurrency(remboursement.montant)}
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                                    {formatCurrency(remboursement.principal)}
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                                    {formatCurrency(remboursement.interet)}
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                                    {formatDate(remboursement.date_remboursement)}
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                                    {remboursement.date_paiement
-                                      ? formatDate(remboursement.date_paiement)
-                                      : '-'}
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap">
-                                    <span
-                                      className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                                        remboursement.statut === 'paye'
-                                          ? 'bg-green-100 text-green-800'
-                                          : remboursement.statut === 'paye_partiel'
-                                          ? 'bg-blue-100 text-blue-800'
-                                          : remboursement.statut === 'en_retard'
-                                          ? 'bg-red-100 text-red-800'
-                                          : 'bg-yellow-100 text-yellow-800'
-                                      }`}
-                                    >
-                                      {remboursement.statut === 'paye'
-                                        ? 'Payé'
-                                        : remboursement.statut === 'paye_partiel'
-                                        ? 'Payé partiel'
-                                        : remboursement.statut === 'en_retard'
-                                        ? 'En retard'
-                                        : 'En attente'}
-                                    </span>
-                                  </TableCell>
+                      {currentLoan && (
+                        <>
+                          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+                            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                              <p className="text-xs uppercase text-muted-foreground">Montant du prêt</p>
+                              <p className="text-lg font-semibold text-foreground">
+                                {formatCurrency(currentLoan.montant_pret)}
+                              </p>
+                            </div>
+                            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                              <p className="text-xs uppercase text-muted-foreground">Principal remboursé</p>
+                              <p className="text-lg font-semibold text-foreground">
+                                {formatCurrency(currentLoanStats.principalPaid)}
+                              </p>
+                            </div>
+                            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                              <p className="text-xs uppercase text-muted-foreground">Intérêts payés</p>
+                              <p className="text-lg font-semibold text-foreground">
+                                {formatCurrency(currentLoanStats.interestPaid)}
+                              </p>
+                            </div>
+                            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                              <p className="text-xs uppercase text-muted-foreground">Capital restant</p>
+                              <p className="text-lg font-semibold text-foreground">
+                                {formatCurrency(currentLoanStats.capitalRestant)}
+                              </p>
+                            </div>
+                            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                              <p className="text-xs uppercase text-muted-foreground">Retards en cours</p>
+                              <p className="text-lg font-semibold text-foreground">
+                                {currentLoanStats.lateInstallments}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {currentLoanStats.totalLateDays} jour(s) de retard cumulés
+                              </p>
+                            </div>
+                          </div>
+
+                          {currentLoanStats.upcomingDueDate && (
+                            <p className="text-sm text-muted-foreground">
+                              Prochaine échéance prévue le{' '}
+                              <span className="font-semibold">
+                                {formatDate(currentLoanStats.upcomingDueDate)}
+                              </span>
+                              .
+                            </p>
+                          )}
+
+                          <div className="rounded-md border overflow-x-auto">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>#</TableHead>
+                                  <TableHead>Montant</TableHead>
+                                  <TableHead>Principal</TableHead>
+                                  <TableHead>Intérêt</TableHead>
+                                  <TableHead>Date prévue</TableHead>
+                                  <TableHead>Date payée</TableHead>
+                                  <TableHead>Jours de retard</TableHead>
+                                  <TableHead>Statut</TableHead>
                                 </TableRow>
-                              ))
-                            )}
-                          </TableBody>
-                        </Table>
-                      </div>
+                              </TableHeader>
+                              <TableBody>
+                                {currentLoan.remboursements.length === 0 ? (
+                                  <TableRow>
+                                    <TableCell
+                                      colSpan={8}
+                                      className="py-6 text-center text-sm text-muted-foreground"
+                                    >
+                                      Aucun remboursement enregistré pour ce prêt.
+                                    </TableCell>
+                                  </TableRow>
+                                ) : (
+                                  currentLoan.remboursements.map((remboursement) => (
+                                    <TableRow key={remboursement.id}>
+                                      <TableCell className="whitespace-nowrap text-sm">
+                                        {remboursement.numero_remboursement}/
+                                        {currentLoan.nombre_remboursements ??
+                                          currentLoan.remboursements.length}
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                                        {formatCurrency(remboursement.montant)}
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                                        {formatCurrency(remboursement.principal)}
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                                        {formatCurrency(remboursement.interet)}
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                                        {formatDate(remboursement.date_remboursement)}
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                                        {remboursement.date_paiement
+                                          ? formatDate(remboursement.date_paiement)
+                                          : '-'}
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap text-sm font-medium">
+                                        {remboursement.jours_retard > 0
+                                          ? `${remboursement.jours_retard} jour(s)`
+                                          : '-'}
+                                      </TableCell>
+                                      <TableCell className="whitespace-nowrap">
+                                        <span
+                                          className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                            remboursement.statut === 'paye'
+                                              ? 'bg-green-100 text-green-800'
+                                              : remboursement.statut === 'paye_partiel'
+                                              ? 'bg-blue-100 text-blue-800'
+                                              : remboursement.statut === 'en_retard'
+                                              ? 'bg-red-100 text-red-800'
+                                              : 'bg-yellow-100 text-yellow-800'
+                                          }`}
+                                        >
+                                          {remboursement.statut === 'paye'
+                                            ? 'Payé'
+                                            : remboursement.statut === 'paye_partiel'
+                                            ? 'Payé partiel'
+                                            : remboursement.statut === 'en_retard'
+                                            ? 'En retard'
+                                            : 'En attente'}
+                                        </span>
+                                      </TableCell>
+                                    </TableRow>
+                                  ))
+                                )}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </>
+                      )}
                     </>
                   )}
                 </>
