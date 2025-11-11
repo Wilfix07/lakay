@@ -10,7 +10,9 @@ import {
   DollarSign, 
   LogOut,
   Menu,
-  ArrowDownRight
+  ArrowDownRight,
+  AlertTriangle,
+  CalendarDays
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -71,6 +73,18 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       href: '/remboursements',
       icon: DollarSign,
       roles: ['admin', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Remboursements du jour',
+      href: '/remboursements/aujourdhui',
+      icon: CalendarDays,
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Impayés',
+      href: '/impayes',
+      icon: AlertTriangle,
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
     {
       title: 'Dépenses',

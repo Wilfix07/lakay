@@ -53,6 +53,9 @@ export default function DashboardPage() {
     montantTotal: 0,
     impayesCount: 0,
     impayesRate: 0,
+    impayesPrincipal: 0,
+    todayRemboursementsCount: 0,
+    todayRemboursementsAmount: 0,
   })
   const [agentCollections, setAgentCollections] = useState<
     { agent_id: string; total_collected: number; displayName: string }[]
@@ -106,7 +109,7 @@ export default function DashboardPage() {
         ] = await Promise.all([
           supabase.from('agents').select('agent_id, nom, prenom'),
           supabase.from('membres').select('id', { count: 'exact', head: true }),
-          supabase.from('prets').select('id, montant_pret, nombre_remboursements'),
+          supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant'),
           supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet'),
           supabase.from('agent_expenses').select('amount'),
         ])
@@ -118,14 +121,60 @@ export default function DashboardPage() {
         if (expensesRes.error) throw expensesRes.error
 
         const agentsData = agentsRes.data || []
-        const montantTotal =
-          pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
+        const activePrets =
+          pretsRes.data?.filter((pret) => pret.statut === 'actif') || []
+        const totalActivePrincipal =
+          activePrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0) || 0
         const totalRemboursements = remboursementsRes.data?.length || 0
         const remboursementsPayes =
           remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0
+
+        const pretMapByNumericId = new Map(
+          (pretsRes.data || []).map((pret) => [pret.id, pret]),
+        )
+        const pretMapByCode = new Map(
+          (pretsRes.data || []).map((pret) => [pret.pret_id, pret]),
+        )
+
         const today = new Date()
         today.setHours(0, 0, 0, 0)
-        const impayesCount =
+        const todayDateString = today.toISOString().split('T')[0]
+        const todayRemboursements = (remboursementsRes.data || []).filter(
+          (r) => r.date_remboursement === todayDateString,
+        )
+        const todayRemboursementsCount = todayRemboursements.length
+        const todayRemboursementsAmount = todayRemboursements.reduce(
+          (sum, remboursement) => sum + Number(remboursement.montant || 0),
+          0,
+        )
+
+        const getPrincipalValue = (remboursement: {
+          principal: number | null
+          montant: number | null
+          pret_id: number | string | null
+        }) => {
+          if (remboursement.principal != null) {
+            return Number(remboursement.principal)
+          }
+          const pret =
+            pretMapByNumericId.get(remboursement.pret_id as number) ||
+            pretMapByCode.get(remboursement.pret_id as string)
+          if (pret && pret.nombre_remboursements) {
+            const base =
+              Number(pret.montant_pret || 0) /
+              Number(pret.nombre_remboursements || 1)
+            return Math.round(base * 100) / 100
+          }
+          const fallback =
+            Number(remboursement.montant || 0) / 1.15
+          return Math.round(fallback * 100) / 100
+        }
+
+        const activePretIds = new Set(
+          activePrets.map((pret) => pret.pret_id),
+        )
+
+        const overdueRemboursements =
           remboursementsRes.data?.filter((r) => {
             if (r.statut === 'paye') return false
             if (r.statut === 'en_retard') return true
@@ -136,7 +185,25 @@ export default function DashboardPage() {
               return dueDate < today
             }
             return false
-          }).length || 0
+          }) || []
+
+        const impayesCount = overdueRemboursements.length
+        const impayesPrincipal =
+          overdueRemboursements.reduce((sum, remboursement) => {
+            return sum + getPrincipalValue(remboursement)
+          }, 0) || 0
+        const principalPayesActifs =
+          (remboursementsRes.data || [])
+            .filter(
+              (remboursement) =>
+                remboursement.statut === 'paye' &&
+                activePretIds.has(remboursement.pret_id),
+            )
+            .reduce((sum, remboursement) => {
+              return sum + getPrincipalValue(remboursement)
+            }, 0) || 0
+        const portefeuilleActif = Math.max(totalActivePrincipal - principalPayesActifs, 0)
+
         const impayesRate =
           totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
@@ -149,22 +216,11 @@ export default function DashboardPage() {
             return acc
           }, new Map())
 
-        const pretMap = new Map(
-          (pretsRes.data || []).map((pret) => [pret.id, pret]),
-        )
         const interestMap = new Map<string, number>()
         let totalInterest = 0
         for (const remboursement of remboursementsRes.data || []) {
           if (remboursement.statut !== 'paye') continue
-          const pret = pretMap.get(remboursement.pret_id)
-          const fallbackPrincipal =
-            pret && pret.nombre_remboursements
-              ? Number(pret.montant_pret || 0) / Number(pret.nombre_remboursements || 1)
-              : Number(remboursement.montant || 0) / 1.15
-          const principalValue =
-            remboursement.principal != null
-              ? Number(remboursement.principal)
-              : Math.round(fallbackPrincipal * 100) / 100
+          const principalValue = getPrincipalValue(remboursement)
           const interestValue =
             remboursement.interet != null
               ? Number(remboursement.interet)
@@ -193,9 +249,12 @@ export default function DashboardPage() {
           prets: pretsRes.data?.length || 0,
           remboursements: remboursementsRes.data?.length || 0,
           remboursementsPayes,
-          montantTotal,
+          montantTotal: portefeuilleActif,
           impayesCount,
           impayesRate,
+          impayesPrincipal,
+          todayRemboursementsCount,
+          todayRemboursementsAmount,
         })
         setAgentCollections(
           collections.sort((a, b) => b.total_collected - a.total_collected),
@@ -219,7 +278,7 @@ export default function DashboardPage() {
       else if (userProfile.role === 'agent' && userProfile.agent_id) {
         const [membresRes, pretsRes, remboursementsRes, expensesRes] = await Promise.all([
           supabase.from('membres').select('id', { count: 'exact', head: true }).eq('agent_id', userProfile.agent_id),
-          supabase.from('prets').select('id, montant_pret, nombre_remboursements').eq('agent_id', userProfile.agent_id),
+          supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant').eq('agent_id', userProfile.agent_id),
           supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet').eq('agent_id', userProfile.agent_id),
           supabase.from('agent_expenses').select('amount').eq('agent_id', userProfile.agent_id),
         ])
@@ -229,14 +288,56 @@ export default function DashboardPage() {
         if (remboursementsRes.error) throw remboursementsRes.error
         if (expensesRes.error) throw expensesRes.error
 
-        const montantTotal =
-          pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
+        const activePrets =
+          pretsRes.data?.filter((pret) => pret.statut === 'actif') || []
+        const totalActivePrincipal =
+          activePrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0) || 0
         const totalRemboursements = remboursementsRes.data?.length || 0
         const remboursementsPayes =
           remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0
+        const pretMapById = new Map(
+          (pretsRes.data || []).map((pret) => [pret.id, pret]),
+        )
+        const pretMapByCode = new Map(
+          (pretsRes.data || []).map((pret) => [pret.pret_id, pret]),
+        )
         const today = new Date()
         today.setHours(0, 0, 0, 0)
-        const impayesCount =
+        const todayDateString = today.toISOString().split('T')[0]
+        const todayRemboursements = (remboursementsRes.data || []).filter(
+          (r) => r.date_remboursement === todayDateString,
+        )
+        const todayRemboursementsCount = todayRemboursements.length
+        const todayRemboursementsAmount = todayRemboursements.reduce(
+          (sum, remboursement) => sum + Number(remboursement.montant || 0),
+          0,
+        )
+
+        const getPrincipalValue = (remboursement: {
+          principal: number | null
+          montant: number | null
+          pret_id: number | string | null
+        }) => {
+          if (remboursement.principal != null) {
+            return Number(remboursement.principal)
+          }
+          const pret =
+            pretMapById.get(remboursement.pret_id as number) ||
+            pretMapByCode.get(remboursement.pret_id as string)
+          if (pret && pret.nombre_remboursements) {
+            const base =
+              Number(pret.montant_pret || 0) /
+              Number(pret.nombre_remboursements || 1)
+            return Math.round(base * 100) / 100
+          }
+          const fallback =
+            Number(remboursement.montant || 0) / 1.15
+          return Math.round(fallback * 100) / 100
+        }
+
+        const activePretIds = new Set(activePrets.map((pret) => pret.pret_id))
+
+        const overdueRemboursements =
           remboursementsRes.data?.filter((r) => {
             if (r.statut === 'paye') return false
             if (r.statut === 'en_retard') return true
@@ -247,7 +348,25 @@ export default function DashboardPage() {
               return dueDate < today
             }
             return false
-          }).length || 0
+          }) || []
+
+        const impayesCount = overdueRemboursements.length
+        const impayesPrincipal =
+          overdueRemboursements.reduce((sum, remboursement) => {
+            return sum + getPrincipalValue(remboursement)
+          }, 0) || 0
+        const principalPayesActifs =
+          (remboursementsRes.data || [])
+            .filter(
+              (remboursement) =>
+                remboursement.statut === 'paye' &&
+                activePretIds.has(remboursement.pret_id),
+            )
+            .reduce((sum, remboursement) => {
+              return sum + getPrincipalValue(remboursement)
+            }, 0) || 0
+        const portefeuilleActif = Math.max(totalActivePrincipal - principalPayesActifs, 0)
+
         const impayesRate =
           totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
@@ -257,9 +376,12 @@ export default function DashboardPage() {
           prets: pretsRes.data?.length || 0,
           remboursements: remboursementsRes.data?.length || 0,
           remboursementsPayes,
-          montantTotal,
+          montantTotal: portefeuilleActif,
           impayesCount,
           impayesRate,
+          impayesPrincipal,
+          todayRemboursementsCount,
+          todayRemboursementsAmount,
         })
         const totalCollected =
           remboursementsRes.data
@@ -281,22 +403,11 @@ export default function DashboardPage() {
         const expensesTotal =
           expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
         setExpensesSummary(expensesTotal)
-        const pretMap = new Map(
-          (pretsRes.data || []).map((pret) => [pret.id, pret]),
-        )
         const interestMap = new Map<string, number>()
         let totalInterest = 0
         for (const remboursement of remboursementsRes.data || []) {
           if (remboursement.statut !== 'paye') continue
-          const pret = pretMap.get(remboursement.pret_id)
-          const fallbackPrincipal =
-            pret && pret.nombre_remboursements
-              ? Number(pret.montant_pret || 0) / Number(pret.nombre_remboursements || 1)
-              : Number(remboursement.montant || 0) / 1.15
-          const principalValue =
-            remboursement.principal != null
-              ? Number(remboursement.principal)
-              : Math.round(fallbackPrincipal * 100) / 100
+          const principalValue = getPrincipalValue(remboursement)
           const interestValue =
             remboursement.interet != null
               ? Number(remboursement.interet)
@@ -373,24 +484,22 @@ export default function DashboardPage() {
     },
     {
       title: 'Remboursements',
-      value: stats.remboursements,
+      value: stats.todayRemboursementsCount,
       icon: DollarSign,
-      description: `${stats.remboursementsPayes} payés`,
+      description: `Montant du jour: ${formatCurrency(stats.todayRemboursementsAmount)}`,
       color: 'text-orange-600',
       bgColor: 'bg-orange-50',
-      badge: stats.remboursementsPayes > 0 ? (
-        <Badge variant="secondary" className="ml-2 bg-green-100 text-green-800">
-          {stats.remboursementsPayes} payés
-        </Badge>
-      ) : null,
+      href: '/remboursements/aujourdhui',
+      badge: null,
     },
     {
       title: "Taux d'impayés",
       value: `${stats.impayesRate.toFixed(1)}%`,
       icon: AlertTriangle,
-      description: `${stats.impayesCount} échéances en retard`,
+      description: `Principal impayé: ${formatCurrency(stats.impayesPrincipal)}`,
       color: 'text-red-600',
       bgColor: 'bg-red-50',
+      href: '/impayes',
       badge: stats.impayesCount > 0 ? (
         <Badge variant="secondary" className="ml-2 bg-red-100 text-red-800">
           {stats.impayesCount} impayé{stats.impayesCount > 1 ? 's' : ''}
@@ -398,10 +507,10 @@ export default function DashboardPage() {
       ) : null,
     },
     {
-      title: 'Montant Total',
+      title: 'Portefeuille actif',
       value: formatCurrency(stats.montantTotal),
       icon: TrendingUp,
-      description: 'Total prêté',
+      description: 'Principal restant sur prêts actifs',
       color: 'text-indigo-600',
       bgColor: 'bg-indigo-50',
     },
@@ -523,8 +632,10 @@ export default function DashboardPage() {
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 mb-8">
         {statCards.map((stat, index) => {
           const Icon = stat.icon
-          return (
-            <Card key={index} className="border-0 shadow-sm">
+          const cardContent = (
+            <Card
+              className={`border-0 shadow-sm ${stat.href ? 'transition-transform hover:-translate-y-1 hover:shadow-md cursor-pointer' : ''}`}
+            >
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
                   {stat.title}
@@ -539,10 +650,22 @@ export default function DashboardPage() {
                 </div>
                 <p className="text-xs text-muted-foreground flex items-center gap-2">
                   {stat.description}
-                  {stat.badge}
                 </p>
+                {stat.badge}
               </CardContent>
             </Card>
+          )
+          if (stat.href) {
+            return (
+              <Link key={index} href={stat.href}>
+                {cardContent}
+              </Link>
+            )
+          }
+          return (
+            <div key={index}>
+              {cardContent}
+            </div>
           )
         })}
       </div>
