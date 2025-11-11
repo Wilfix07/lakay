@@ -20,6 +20,7 @@ import {
   ArrowDownRight,
   Loader2,
   AlertTriangle,
+  Wallet,
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import {
@@ -62,8 +63,16 @@ export default function DashboardPage() {
   >([])
   const [interestSummary, setInterestSummary] = useState<{
     total: number
-    monthly: { key: string; label: string; interest: number }[]
-  }>({ total: 0, monthly: [] })
+    commissionTotal: number
+    monthly: {
+      key: string
+      label: string
+      interest: number
+      expenses: number
+      net: number
+      commission: number
+    }[]
+  }>({ total: 0, commissionTotal: 0, monthly: [] })
   const [expensesSummary, setExpensesSummary] = useState<number>(0)
 
   useEffect(() => {
@@ -111,7 +120,7 @@ export default function DashboardPage() {
           supabase.from('membres').select('id', { count: 'exact', head: true }),
           supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant'),
           supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet'),
-          supabase.from('agent_expenses').select('amount'),
+          supabase.from('agent_expenses').select('amount, expense_date'),
         ])
 
         if (agentsRes.error) throw agentsRes.error
@@ -262,17 +271,31 @@ export default function DashboardPage() {
         const expensesTotal =
           expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
         setExpensesSummary(expensesTotal)
-        const monthly = Array.from(interestMap.entries())
-          .map(([key, interest]) => {
+        const monthlyKeys = new Set([
+          ...interestMap.keys(),
+          ...monthlyExpensesMap.keys(),
+        ])
+        const monthly = Array.from(monthlyKeys)
+          .map((key) => {
             const [year, month] = key.split('-').map((value) => Number(value))
             const label = new Date(year, month - 1).toLocaleDateString('fr-FR', {
               month: 'short',
               year: 'numeric',
             })
-            return { key, label, interest }
+            const interest = interestMap.get(key) ?? 0
+            const expenses = monthlyExpensesMap.get(key) ?? 0
+            const net = interest - expenses
+            const commission = net > 0 ? net * 0.3 : 0
+            return { key, label, interest, expenses, net, commission }
           })
           .sort((a, b) => a.key.localeCompare(b.key))
-        setInterestSummary({ total: totalInterest, monthly })
+        const commissionTotal =
+          monthly.reduce((sum, entry) => sum + entry.commission, 0) || 0
+        setInterestSummary({
+          total: totalInterest,
+          commissionTotal,
+          monthly,
+        })
       } 
       // Stats pour Agent (seulement ses données)
       else if (userProfile.role === 'agent' && userProfile.agent_id) {
@@ -280,7 +303,7 @@ export default function DashboardPage() {
           supabase.from('membres').select('id', { count: 'exact', head: true }).eq('agent_id', userProfile.agent_id),
           supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant').eq('agent_id', userProfile.agent_id),
           supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet').eq('agent_id', userProfile.agent_id),
-          supabase.from('agent_expenses').select('amount').eq('agent_id', userProfile.agent_id),
+          supabase.from('agent_expenses').select('amount, expense_date').eq('agent_id', userProfile.agent_id),
         ])
 
         if (membresRes.error) throw membresRes.error
@@ -421,17 +444,31 @@ export default function DashboardPage() {
           const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
           interestMap.set(key, (interestMap.get(key) ?? 0) + interestValue)
         }
-        const monthly = Array.from(interestMap.entries())
-          .map(([key, interest]) => {
+        const monthlyKeys = new Set([
+          ...interestMap.keys(),
+          ...monthlyExpensesMap.keys(),
+        ])
+        const monthly = Array.from(monthlyKeys)
+          .map((key) => {
             const [year, month] = key.split('-').map((value) => Number(value))
             const label = new Date(year, month - 1).toLocaleDateString('fr-FR', {
               month: 'short',
               year: 'numeric',
             })
-            return { key, label, interest }
+            const interest = interestMap.get(key) ?? 0
+            const expenses = monthlyExpensesMap.get(key) ?? 0
+            const net = interest - expenses
+            const commission = net > 0 ? net * 0.3 : 0
+            return { key, label, interest, expenses, net, commission }
           })
           .sort((a, b) => a.key.localeCompare(b.key))
-        setInterestSummary({ total: totalInterest, monthly })
+        const commissionTotal =
+          monthly.reduce((sum, entry) => sum + entry.commission, 0) || 0
+        setInterestSummary({
+          total: totalInterest,
+          commissionTotal,
+          monthly,
+        })
       }
     } catch (error) {
       console.error('Erreur lors du chargement des stats:', error)
@@ -521,6 +558,14 @@ export default function DashboardPage() {
       description: 'Intérêt (15%) collecté',
       color: 'text-rose-600',
       bgColor: 'bg-rose-50',
+    },
+    {
+      title: 'Commission agents',
+      value: formatCurrency(interestSummary.commissionTotal),
+      icon: Wallet,
+      description: '30% des intérêts nets mensuels',
+      color: 'text-teal-600',
+      bgColor: 'bg-teal-50',
     },
     {
       title: 'Total dépenses',
@@ -790,9 +835,14 @@ export default function DashboardPage() {
               </CardDescription>
             </div>
             {interestSummary.total > 0 && (
-              <Badge variant="secondary" className="bg-rose-50 text-rose-600">
-                Total: {formatCurrency(interestSummary.total)}
-              </Badge>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="secondary" className="bg-rose-50 text-rose-600">
+                  Total: {formatCurrency(interestSummary.total)}
+                </Badge>
+                <Badge variant="secondary" className="bg-teal-50 text-teal-600">
+                  Commission (30%): {formatCurrency(interestSummary.commissionTotal)}
+                </Badge>
+              </div>
             )}
           </div>
         </CardHeader>
