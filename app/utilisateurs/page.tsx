@@ -19,6 +19,16 @@ function UtilisateursPageContent() {
     prenom: '',
     agent_id: '', // Pour les agents seulement
   })
+  const [showEditForm, setShowEditForm] = useState(false)
+  const [editingUser, setEditingUser] = useState<UserProfile | null>(null)
+  const [editData, setEditData] = useState({
+    email: '',
+    role: 'agent' as 'manager' | 'agent',
+    nom: '',
+    prenom: '',
+    agent_id: '',
+    password: '',
+  })
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -152,6 +162,125 @@ function UtilisateursPageContent() {
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
       setError(error.message || 'Erreur lors de la création de l\'utilisateur')
+    }
+  }
+
+  function handleStartEdit(user: UserProfile) {
+    if (userProfile?.role !== 'admin') return
+    setEditingUser(user)
+    setEditData({
+      email: user.email,
+      role: (user.role as 'manager' | 'agent') ?? 'agent',
+      nom: user.nom ?? '',
+      prenom: user.prenom ?? '',
+      agent_id: user.agent_id ?? '',
+      password: '',
+    })
+    setShowEditForm(true)
+    setShowForm(false)
+    setError('')
+    setSuccess('')
+  }
+
+  async function handleEditSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editingUser) return
+    setError('')
+    setSuccess('')
+
+    if (!editData.email || !editData.nom || !editData.prenom) {
+      setError('Email, nom et prénom sont requis')
+      return
+    }
+
+    if (editData.role === 'agent' && !editData.agent_id) {
+      setError('Veuillez sélectionner un agent de crédit')
+      return
+    }
+
+    try {
+      const payload: Record<string, any> = {
+        id: editingUser.id,
+        email: editData.email,
+        role: editData.role,
+        nom: editData.nom,
+        prenom: editData.prenom,
+        agent_id: editData.role === 'agent' ? editData.agent_id : null,
+      }
+      if (editData.password) {
+        payload.password = editData.password
+      }
+
+      const response = await fetch('/api/users/update', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      })
+
+      const contentType = response.headers.get('content-type')
+      const data = contentType && contentType.includes('application/json')
+        ? await response.json()
+        : { error: 'Réponse serveur invalide' }
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Erreur lors de la mise à jour de l’utilisateur')
+      }
+
+      setSuccess('Utilisateur mis à jour avec succès')
+      setShowEditForm(false)
+      setEditingUser(null)
+      setEditData({
+        email: '',
+        role: 'agent',
+        nom: '',
+        prenom: '',
+        agent_id: '',
+        password: '',
+      })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Erreur lors de la modification:', error)
+      setError(error.message || 'Erreur lors de la modification de l’utilisateur')
+    }
+  }
+
+  async function handleDeleteUser(user: UserProfile) {
+    if (userProfile?.role !== 'admin') return
+    if (!confirm(`Êtes-vous sûr de vouloir supprimer l’utilisateur ${user.email} ?`)) {
+      return
+    }
+    setError('')
+    setSuccess('')
+
+    try {
+      const response = await fetch('/api/users/delete', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ id: user.id }),
+      })
+
+      const contentType = response.headers.get('content-type')
+      const data = contentType && contentType.includes('application/json')
+        ? await response.json()
+        : { error: 'Réponse serveur invalide' }
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Erreur lors de la suppression de l’utilisateur')
+      }
+
+      setSuccess('Utilisateur supprimé avec succès')
+      if (editingUser?.id === user.id) {
+        setEditingUser(null)
+        setShowEditForm(false)
+      }
+      loadUsers()
+    } catch (error: any) {
+      console.error('Erreur lors de la suppression:', error)
+      setError(error.message || 'Erreur lors de la suppression de l’utilisateur')
     }
   }
 
@@ -326,6 +455,132 @@ function UtilisateursPageContent() {
           </div>
         )}
 
+        {showEditForm && editingUser && userProfile?.role === 'admin' && (
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold">Modifier l’utilisateur</h2>
+              <button
+                onClick={() => {
+                  setShowEditForm(false)
+                  setEditingUser(null)
+                  setEditData({
+                    email: '',
+                    role: 'agent',
+                    nom: '',
+                    prenom: '',
+                    agent_id: '',
+                    password: '',
+                  })
+                }}
+                className="text-sm text-gray-500 hover:text-gray-700"
+              >
+                Fermer
+              </button>
+            </div>
+            <form onSubmit={handleEditSubmit} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Email *
+                  </label>
+                  <input
+                    type="email"
+                    value={editData.email}
+                    onChange={(e) => setEditData({ ...editData, email: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Nouveau mot de passe
+                  </label>
+                  <input
+                    type="password"
+                    value={editData.password}
+                    onChange={(e) => setEditData({ ...editData, password: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    minLength={6}
+                    placeholder="Laisser vide pour conserver le mot de passe"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Rôle *
+                  </label>
+                  <select
+                    value={editData.role}
+                    onChange={(e) =>
+                      setEditData({
+                        ...editData,
+                        role: e.target.value as 'manager' | 'agent',
+                        agent_id: e.target.value === 'agent' ? editData.agent_id : '',
+                      })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    required
+                  >
+                    <option value="manager">Manager</option>
+                    <option value="agent">Agent de crédit</option>
+                  </select>
+                </div>
+                {editData.role === 'agent' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Agent de crédit *
+                    </label>
+                    <select
+                      value={editData.agent_id}
+                      onChange={(e) => setEditData({ ...editData, agent_id: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                      required
+                    >
+                      <option value="">Sélectionner un agent</option>
+                      {agents.map((agent) => (
+                        <option key={agent.agent_id} value={agent.agent_id}>
+                          {agent.agent_id} - {agent.nom} {agent.prenom}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Nom *
+                  </label>
+                  <input
+                    type="text"
+                    value={editData.nom}
+                    onChange={(e) => setEditData({ ...editData, nom: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Prénom *
+                  </label>
+                  <input
+                    type="text"
+                    value={editData.prenom}
+                    onChange={(e) => setEditData({ ...editData, prenom: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    required
+                  />
+                </div>
+              </div>
+              <div className="flex gap-4">
+                <button
+                  type="submit"
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  Mettre à jour
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-xl font-semibold">Liste des utilisateurs</h2>
@@ -353,6 +608,11 @@ function UtilisateursPageContent() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Date de création
                   </th>
+                  {userProfile?.role === 'admin' && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -381,6 +641,24 @@ function UtilisateursPageContent() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {new Date(user.created_at).toLocaleDateString('fr-FR')}
                     </td>
+                    {userProfile?.role === 'admin' && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleStartEdit(user)}
+                            className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                          >
+                            Modifier
+                          </button>
+                          <button
+                            onClick={() => handleDeleteUser(user)}
+                            className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                          >
+                            Supprimer
+                          </button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
