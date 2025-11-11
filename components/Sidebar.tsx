@@ -104,7 +104,7 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Dépenses',
       href: '/expenses',
       icon: ArrowDownRight,
-      roles: ['manager', 'agent'] as UserRole[],
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
   ].filter(item => item.roles.includes(userProfile.role))
 

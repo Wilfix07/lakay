@@ -127,3 +127,15 @@ export interface ExpenseCategory {
   updated_at: string
 }
 
+export interface AgentExpense {
+  id: number
+  agent_id: string
+  amount: number
+  category?: string | null
+  description?: string | null
+  expense_date: string
+  created_by?: string | null
+  created_at: string
+  updated_at?: string
+}
+
