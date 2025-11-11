@@ -81,6 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_remboursements_membre_id ON remboursements(membre
 CREATE INDEX IF NOT EXISTS idx_remboursements_statut ON remboursements(statut);
 CREATE INDEX IF NOT EXISTS idx_agent_expenses_agent_id ON agent_expenses(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_expenses_date ON agent_expenses(expense_date);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_prets_membre_actif ON prets(membre_id) WHERE statut = 'actif';
 
 -- Fonction pour générer automatiquement l'agent_id
 CREATE OR REPLACE FUNCTION generate_agent_id()

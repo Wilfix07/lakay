@@ -118,6 +118,25 @@ function PretsPageContent() {
         return
       }
 
+      if (!formData.membre_id) {
+        alert('Veuillez sélectionner un membre')
+        return
+      }
+
+      // Vérifier si le membre a déjà un prêt actif
+      const { data: activeLoans, error: activeLoansError } = await supabase
+        .from('prets')
+        .select('id')
+        .eq('membre_id', formData.membre_id)
+        .eq('statut', 'actif')
+        .limit(1)
+
+      if (activeLoansError) throw activeLoansError
+      if (activeLoans && activeLoans.length > 0) {
+        alert('Ce membre a déjà un prêt actif. Il doit terminer de le rembourser avant de contracter un nouveau prêt.')
+        return
+      }
+
       // Calcul avec intérêt de 15% sur chaque remboursement quotidien
       // Montant de base par jour (sans intérêt) = montant_pret / 23
       const montantBaseParJour = montantPret / 23
@@ -233,6 +252,10 @@ function PretsPageContent() {
       loadPrets()
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
+      if (error?.code === '23505') {
+        alert('Ce membre a déjà un prêt actif. Terminez-le avant d’en créer un nouveau.')
+        return
+      }
       alert('Erreur: ' + (error.message || 'Erreur inconnue'))
     }
   }
@@ -291,6 +314,26 @@ function PretsPageContent() {
       if (isNaN(montantPret) || montantPret <= 0) {
         alert('Le montant du prêt doit être un nombre positif')
         return
+      }
+
+      if (!formData.membre_id) {
+        alert('Veuillez sélectionner un membre')
+        return
+      }
+
+      if (formData.membre_id !== editingPret.membre_id) {
+        const { data: activeLoans, error: activeLoansError } = await supabase
+          .from('prets')
+          .select('id')
+          .eq('membre_id', formData.membre_id)
+          .eq('statut', 'actif')
+          .limit(1)
+
+        if (activeLoansError) throw activeLoansError
+        if (activeLoans && activeLoans.length > 0) {
+          alert('Le membre sélectionné a déjà un prêt actif. Terminez-le ou choisissez un autre membre.')
+          return
+        }
       }
 
       // Recalculer avec intérêt de 15% sur chaque remboursement quotidien
@@ -360,6 +403,10 @@ function PretsPageContent() {
       loadPrets()
     } catch (error: any) {
       console.error('Erreur lors de la modification:', error)
+      if (error?.code === '23505') {
+        alert('Le membre sélectionné a déjà un prêt actif. Terminez-le avant de transférer ce prêt.')
+        return
+      }
       alert('Erreur lors de la modification: ' + (error.message || 'Erreur inconnue'))
     }
   }
@@ -449,9 +496,23 @@ function PretsPageContent() {
                       {formData.agent_id ? 'Sélectionner un membre' : 'Sélectionnez d\'abord un agent'}
                     </option>
                     {filteredMembres.map((membre) => (
-                      <option key={membre.id} value={membre.membre_id}>
-                        {membre.membre_id} - {membre.prenom} {membre.nom}
-                      </option>
+                      (() => {
+                        const hasActiveLoan = prets.some(
+                          (pret) => pret.membre_id === membre.membre_id && pret.statut === 'actif',
+                        )
+                        const isCurrentSelection =
+                          editingPret?.membre_id === membre.membre_id
+                        return (
+                          <option
+                            key={membre.id}
+                            value={membre.membre_id}
+                            disabled={hasActiveLoan && !isCurrentSelection}
+                          >
+                            {membre.membre_id} - {membre.prenom} {membre.nom}
+                            {hasActiveLoan && !isCurrentSelection ? ' (prêt actif)' : ''}
+                          </option>
+                        )
+                      })()
                     ))}
                   </select>
                 </div>

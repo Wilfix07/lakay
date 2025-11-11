@@ -19,6 +19,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Loader2,
+  AlertTriangle,
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import {
@@ -50,6 +51,8 @@ export default function DashboardPage() {
     remboursements: 0,
     remboursementsPayes: 0,
     montantTotal: 0,
+    impayesCount: 0,
+    impayesRate: 0,
   })
   const [agentCollections, setAgentCollections] = useState<
     { agent_id: string; total_collected: number; displayName: string }[]
@@ -117,8 +120,25 @@ export default function DashboardPage() {
         const agentsData = agentsRes.data || []
         const montantTotal =
           pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
+        const totalRemboursements = remboursementsRes.data?.length || 0
         const remboursementsPayes =
           remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+        const impayesCount =
+          remboursementsRes.data?.filter((r) => {
+            if (r.statut === 'paye') return false
+            if (r.statut === 'en_retard') return true
+            if (r.statut === 'en_attente' && r.date_remboursement) {
+              const dueDate = new Date(r.date_remboursement)
+              if (Number.isNaN(dueDate.getTime())) return false
+              dueDate.setHours(0, 0, 0, 0)
+              return dueDate < today
+            }
+            return false
+          }).length || 0
+        const impayesRate =
+          totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
         const collectionMap = (remboursementsRes.data || [])
           .filter((item) => item.statut === 'paye' && item.agent_id)
@@ -174,6 +194,8 @@ export default function DashboardPage() {
           remboursements: remboursementsRes.data?.length || 0,
           remboursementsPayes,
           montantTotal,
+          impayesCount,
+          impayesRate,
         })
         setAgentCollections(
           collections.sort((a, b) => b.total_collected - a.total_collected),
@@ -207,8 +229,27 @@ export default function DashboardPage() {
         if (remboursementsRes.error) throw remboursementsRes.error
         if (expensesRes.error) throw expensesRes.error
 
-        const montantTotal = pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
-        const remboursementsPayes = remboursementsRes.data?.filter(r => r.statut === 'paye').length || 0
+        const montantTotal =
+          pretsRes.data?.reduce((sum, p) => sum + Number(p.montant_pret || 0), 0) || 0
+        const totalRemboursements = remboursementsRes.data?.length || 0
+        const remboursementsPayes =
+          remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+        const impayesCount =
+          remboursementsRes.data?.filter((r) => {
+            if (r.statut === 'paye') return false
+            if (r.statut === 'en_retard') return true
+            if (r.statut === 'en_attente' && r.date_remboursement) {
+              const dueDate = new Date(r.date_remboursement)
+              if (Number.isNaN(dueDate.getTime())) return false
+              dueDate.setHours(0, 0, 0, 0)
+              return dueDate < today
+            }
+            return false
+          }).length || 0
+        const impayesRate =
+          totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
         setStats({
           agents: 0,
@@ -217,6 +258,8 @@ export default function DashboardPage() {
           remboursements: remboursementsRes.data?.length || 0,
           remboursementsPayes,
           montantTotal,
+          impayesCount,
+          impayesRate,
         })
         const totalCollected =
           remboursementsRes.data
@@ -338,6 +381,19 @@ export default function DashboardPage() {
       badge: stats.remboursementsPayes > 0 ? (
         <Badge variant="secondary" className="ml-2 bg-green-100 text-green-800">
           {stats.remboursementsPayes} payés
+        </Badge>
+      ) : null,
+    },
+    {
+      title: "Taux d'impayés",
+      value: `${stats.impayesRate.toFixed(1)}%`,
+      icon: AlertTriangle,
+      description: `${stats.impayesCount} échéances en retard`,
+      color: 'text-red-600',
+      bgColor: 'bg-red-50',
+      badge: stats.impayesCount > 0 ? (
+        <Badge variant="secondary" className="ml-2 bg-red-100 text-red-800">
+          {stats.impayesCount} impayé{stats.impayesCount > 1 ? 's' : ''}
         </Badge>
       ) : null,
     },
