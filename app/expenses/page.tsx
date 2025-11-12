@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/table'
 import { Loader2, Pencil, Trash2, Plus, Filter, RefreshCcw } from 'lucide-react'
 import { formatCurrency, formatDate } from '@/lib/utils'
+import { getExpenseCategories } from '@/lib/systemSettings'
 
 type Filters = {
   agent_id: string
@@ -80,16 +81,14 @@ function ExpensesPageContent() {
               .eq('agent_id', userProfile?.agent_id ?? '')
               .order('agent_id', { ascending: true })
 
-      const [{ data: agentsData, error: agentsError }, { data: categoriesData, error: categoriesError }] =
-        await Promise.all([
-          agentQuery,
-          supabase.from('expense_categories').select('*').order('name', { ascending: true }),
-        ])
+      const [{ data: agentsData, error: agentsError }] = await Promise.all([agentQuery])
 
       if (agentsError) throw agentsError
-      if (categoriesError) throw categoriesError
 
       setAgents(agentsData || [])
+      
+      // Charger les catégories de dépenses actives depuis les paramètres système
+      const categoriesData = await getExpenseCategories()
       setCategories(categoriesData || [])
       const initialAgent =
         userProfile?.role === 'agent' && userProfile.agent_id ? userProfile.agent_id : ''

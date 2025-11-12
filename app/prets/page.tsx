@@ -9,6 +9,12 @@ import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { useRouter } from 'next/navigation'
+import {
+  getScheduleSettings,
+  getInterestRates,
+  validateLoanAmount,
+  getLoanAmountBrackets,
+} from '@/lib/systemSettings'
 
 type FrequenceRemboursement = 'journalier' | 'mensuel'
 
@@ -37,6 +43,10 @@ function PretsPageContent() {
   const [showForm, setShowForm] = useState(false)
   const [editingPret, setEditingPret] = useState<Pret | null>(null)
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const [systemInterestRate, setSystemInterestRate] = useState(0.15)
+  const [systemDefaultInstallments, setSystemDefaultInstallments] = useState(23)
+  const [loanBrackets, setLoanBrackets] = useState<any[]>([])
+  const [amountValidationMessage, setAmountValidationMessage] = useState<string | null>(null)
   const [formData, setFormData] = useState({
     membre_id: '',
     agent_id: '',
@@ -82,7 +92,8 @@ function PretsPageContent() {
     count: number,
     decaissementDate: string,
   ): LoanPlan {
-    const interestRate = 0.15
+    // Utilise le taux d'intérêt chargé depuis les paramètres système
+    const interestRate = systemInterestRate
     const schedule: LoanScheduleEntry[] = []
     let dateDecaissement = new Date(decaissementDate)
     if (Number.isNaN(dateDecaissement.getTime())) {
@@ -147,6 +158,7 @@ function PretsPageContent() {
 
   useEffect(() => {
     if (userProfile) {
+      loadSystemSettings()
       loadAgents()
       loadMembres()
       loadPrets()
@@ -156,6 +168,30 @@ function PretsPageContent() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
+
+  async function loadSystemSettings() {
+    try {
+      // Charger les taux d'intérêt
+      const rates = await getInterestRates()
+      setSystemInterestRate(rates.baseInterestRate)
+
+      // Charger les paramètres d'échéancier
+      const scheduleSettings = await getScheduleSettings()
+      setSystemDefaultInstallments(scheduleSettings.totalInstallments)
+      
+      // Mettre à jour le nombre d'échéances par défaut dans le formulaire
+      setFormData(prev => ({
+        ...prev,
+        nombre_remboursements: scheduleSettings.totalInstallments.toString(),
+      }))
+
+      // Charger les barèmes de montants
+      const brackets = await getLoanAmountBrackets()
+      setLoanBrackets(brackets)
+    } catch (error) {
+      console.error('Erreur lors du chargement des paramètres système:', error)
+    }
+  }
 
   async function loadUserProfile() {
     const profile = await getUserProfile()
@@ -246,6 +282,13 @@ function PretsPageContent() {
 
       if (!formData.membre_id) {
         alert('Veuillez sélectionner un membre')
+        return
+      }
+
+      // Valider le montant selon les barèmes configurés
+      const validation = await validateLoanAmount(montantPret)
+      if (!validation.valid) {
+        alert(validation.message || 'Le montant du prêt n\'est pas dans les limites autorisées.')
         return
       }
 
@@ -643,15 +686,30 @@ function PretsPageContent() {
                     min="1"
                     step="0.01"
                     value={formData.montant_pret}
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const value = e.target.value
                       // Valider que c'est un nombre positif
                       if (value === '' || (!isNaN(parseFloat(value)) && parseFloat(value) >= 0)) {
                         setFormData({ ...formData, montant_pret: value })
+                        
+                        // Valider en temps réel selon les barèmes
+                        if (value && parseFloat(value) > 0) {
+                          const validation = await validateLoanAmount(parseFloat(value))
+                          if (!validation.valid) {
+                            setAmountValidationMessage(validation.message || null)
+                          } else {
+                            setAmountValidationMessage(null)
+                          }
+                        } else {
+                          setAmountValidationMessage(null)
+                        }
                       }
                     }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className={`w-full px-3 py-2 border ${amountValidationMessage ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent`}
                   />
+                  {amountValidationMessage && (
+                    <p className="text-sm text-red-600 mt-1">{amountValidationMessage}</p>
+                  )}
                   {loanPreview && (
                     <div className="text-sm text-gray-600 mt-1 space-y-1">
                       <p>
