@@ -4,9 +4,12 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { supabase, type UserProfile, type Agent } from '@/lib/supabase'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { getUserProfile } from '@/lib/auth'
+import { getUserProfile, signOut } from '@/lib/auth'
+import { DashboardLayout } from '@/components/DashboardLayout'
+import { useRouter } from 'next/navigation'
 
 function UtilisateursPageContent() {
+  const router = useRouter()
   const [users, setUsers] = useState<UserProfile[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
@@ -32,6 +35,11 @@ function UtilisateursPageContent() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+
+  async function handleSignOut() {
+    await signOut()
+    router.push('/login')
+  }
 
   useEffect(() => {
     loadUserProfile()
@@ -291,7 +299,7 @@ function UtilisateursPageContent() {
     ? ['agent']
     : []
 
-  if (loading && !userProfile) {
+  if (loading || !userProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-xl">Chargement...</div>
@@ -300,9 +308,9 @@ function UtilisateursPageContent() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="mb-6 flex justify-between items-center">
+    <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
+      <div className="space-y-6">
+        <div className="flex justify-between items-center">
           <h1 className="text-3xl font-bold text-gray-900">Gestion des Utilisateurs</h1>
           {availableRoles.length > 0 && (
             <button
@@ -677,7 +685,7 @@ function UtilisateursPageContent() {
           </Link>
         </div>
       </div>
-    </div>
+    </DashboardLayout>
   )
 }
 

@@ -109,9 +109,9 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
   ].filter(item => item.roles.includes(userProfile.role))
 
   const SidebarContent = () => (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Logo Section */}
-      <div className="flex items-center gap-3 px-6 py-6 border-b border-sidebar-border">
+      <div className="flex items-center gap-3 px-6 py-6 border-b border-sidebar-border flex-shrink-0">
         <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-primary text-primary-foreground">
           <span className="text-lg font-bold">L</span>
         </div>
@@ -121,8 +121,8 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
         </div>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 px-4 py-6 space-y-1">
+      {/* Navigation - Scrollable */}
+      <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
         {menuItems.map((item) => {
           const Icon = item.icon
           const isActive = pathname === item.href
@@ -147,10 +147,10 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
         })}
       </nav>
 
-      <Separator />
+      <Separator className="flex-shrink-0" />
 
       {/* User Section */}
-      <div className="p-4">
+      <div className="p-4 flex-shrink-0">
         <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-muted/50">
           <Avatar className="w-10 h-10">
             <AvatarFallback className="bg-primary text-primary-foreground">

@@ -5,9 +5,12 @@ import Link from 'next/link'
 import { supabase, type Remboursement, type Pret, type UserProfile, type Membre } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { getUserProfile } from '@/lib/auth'
+import { getUserProfile, signOut } from '@/lib/auth'
+import { DashboardLayout } from '@/components/DashboardLayout'
+import { useRouter } from 'next/navigation'
 
 function RemboursementsPageContent() {
+  const router = useRouter()
   const [remboursements, setRemboursements] = useState<Remboursement[]>([])
   const [prets, setPrets] = useState<Pret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
@@ -34,6 +37,11 @@ function RemboursementsPageContent() {
     active: boolean
     message?: string
   }>({ active: false })
+
+  async function handleSignOut() {
+    await signOut()
+    router.push('/login')
+  }
 
   useEffect(() => {
     loadUserProfile()
@@ -671,7 +679,7 @@ function computeScheduledAmounts(remboursement: Remboursement) {
     return 'En attente'
   }
 
-  if (loading) {
+  if (loading || !userProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-xl">Chargement...</div>
@@ -709,15 +717,15 @@ function computeScheduledAmounts(remboursement: Remboursement) {
       : 0
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="container mx-auto px-4">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
+    <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
+      <div className="space-y-8">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Remboursements</h1>
             <p className="text-gray-600 mt-2">Enregistrer les remboursements quotidiens</p>
           </div>
           <div className="flex flex-wrap gap-3">
-            {userProfile && (userProfile.role === 'admin' || userProfile.role === 'agent') && (
+            {(userProfile.role === 'admin' || userProfile.role === 'agent') && (
               <button
                 onClick={() => {
                   const next = !showPaymentForm
@@ -731,12 +739,6 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                 {showPaymentForm ? 'Fermer le formulaire' : 'Enregistrer un paiement'}
               </button>
             )}
-            <Link
-              href="/"
-              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-            >
-              Accueil
-            </Link>
           </div>
         </div>
 
@@ -1157,7 +1159,7 @@ function computeScheduledAmounts(remboursement: Remboursement) {
           </div>
         </div>
       </div>
-    </div>
+    </DashboardLayout>
   )
 }
 

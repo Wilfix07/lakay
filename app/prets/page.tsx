@@ -6,7 +6,9 @@ import { supabase, type Pret, type Membre, type Agent, type UserProfile } from '
 import { formatCurrency, formatDate, getMonthName } from '@/lib/utils'
 import { addDays, addMonths, getDay } from 'date-fns'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { getUserProfile } from '@/lib/auth'
+import { getUserProfile, signOut } from '@/lib/auth'
+import { DashboardLayout } from '@/components/DashboardLayout'
+import { useRouter } from 'next/navigation'
 
 type FrequenceRemboursement = 'journalier' | 'mensuel'
 
@@ -27,6 +29,7 @@ interface LoanPlan {
 }
 
 function PretsPageContent() {
+  const router = useRouter()
   const [prets, setPrets] = useState<Pret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
@@ -42,6 +45,11 @@ function PretsPageContent() {
     frequence_remboursement: 'journalier',
     nombre_remboursements: '23',
   })
+
+  async function handleSignOut() {
+    await signOut()
+    router.push('/login')
+  }
 
   function adjustToBusinessDay(date: Date): Date {
     let adjusted = new Date(date)
@@ -526,7 +534,7 @@ function PretsPageContent() {
     )
   })()
 
-  if (loading) {
+  if (loading || !userProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-xl">Chargement...</div>
@@ -535,21 +543,16 @@ function PretsPageContent() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="container mx-auto px-4">
-        <div className="flex justify-between items-center mb-8">
+    <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
+      <div className="space-y-8">
+        <div className="flex justify-between items-center">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Prêts</h1>
             <p className="text-gray-600 mt-2">Créer des prêts et effectuer les décaissements</p>
           </div>
           <div className="flex gap-4">
-            <Link
-              href="/"
-              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-            >
-              Accueil
-            </Link>
-            <button
+            {(userProfile.role === 'admin' || userProfile.role === 'agent') && (
+              <button
               onClick={() => {
                 setShowForm(!showForm)
                 setEditingPret(null)
@@ -563,9 +566,10 @@ function PretsPageContent() {
                 })
               }}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              {showForm ? 'Annuler' : '+ Nouveau Prêt'}
-            </button>
+              >
+                {showForm ? 'Annuler' : '+ Nouveau Prêt'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -878,7 +882,7 @@ function PretsPageContent() {
           </div>
         </div>
       </div>
-    </div>
+    </DashboardLayout>
   )
 }
 
