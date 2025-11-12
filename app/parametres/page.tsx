@@ -497,15 +497,36 @@ function ParametresPageContent() {
             {/* Échéancier */}
             <Card>
               <CardHeader>
-                <CardTitle>Échéancier des prêts</CardTitle>
-                <CardDescription>
-                  Définissez le nombre d’échéances et la fréquence des remboursements générés.
-                </CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      Échéancier des prêts
+                      {!loading && (
+                        <span className="inline-flex items-center rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-700 ring-1 ring-inset ring-green-600/20">
+                          Chargé depuis la BD
+                        </span>
+                      )}
+                    </CardTitle>
+                    <CardDescription>
+                      Définissez le nombre d'échéances et la fréquence des remboursements générés.
+                    </CardDescription>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={loadAllSettings}
+                    disabled={loading}
+                  >
+                    <RefreshCcw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+                    Actualiser
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleScheduleSubmit} className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label>Nombre d’échéances</Label>
+                    <Label>Nombre d'échéances</Label>
                     <Input
                       type="number"
                       min={1}
@@ -517,7 +538,11 @@ function ParametresPageContent() {
                         }))
                       }
                       required
+                      className={loading ? 'bg-muted' : ''}
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Valeur actuelle : {scheduleForm.totalInstallments} échéances
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Fréquence (jours)</Label>
@@ -532,7 +557,11 @@ function ParametresPageContent() {
                         }))
                       }
                       required
+                      className={loading ? 'bg-muted' : ''}
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Valeur actuelle : {scheduleForm.frequencyDays}
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Jours de grâce</Label>
@@ -547,7 +576,11 @@ function ParametresPageContent() {
                         }))
                       }
                       required
+                      className={loading ? 'bg-muted' : ''}
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Valeur actuelle : {scheduleForm.graceDays}
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Génération automatique</Label>
@@ -631,7 +664,11 @@ function ParametresPageContent() {
                         }))
                       }
                       required
+                      className={loading ? 'bg-muted' : ''}
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Actuel : {interestForm.penaltyRate}%
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Commission agents (%)</Label>
@@ -647,10 +684,10 @@ function ParametresPageContent() {
                         }))
                       }
                       required
+                      className={loading ? 'bg-muted' : ''}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Ce paramètre rappelle la commission appliquée aux agents (actuellement calculée
-                      à 30% du net).
+                      Actuel : {interestForm.commissionRate}% du net mensuel
                     </p>
                   </div>
                   <div className="md:col-span-3 flex items-center gap-3">
@@ -678,7 +715,14 @@ function ParametresPageContent() {
             {/* Barème des montants */}
             <Card>
               <CardHeader>
-                <CardTitle>Barème des montants</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  Barème des montants
+                  {brackets.length > 0 && (
+                    <span className="inline-flex items-center rounded-md bg-purple-50 px-2 py-1 text-xs font-medium text-purple-700 ring-1 ring-inset ring-purple-600/20">
+                      {brackets.length} barème{brackets.length > 1 ? 's' : ''}
+                    </span>
+                  )}
+                </CardTitle>
                 <CardDescription>
                   Définissez les limites de montants autorisés ainsi que le taux associé si besoin.
                 </CardDescription>
@@ -855,7 +899,14 @@ function ParametresPageContent() {
             {/* Catégories de dépenses */}
             <Card>
               <CardHeader>
-                <CardTitle>Catégories de dépenses</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  Catégories de dépenses
+                  {categories.length > 0 && (
+                    <span className="inline-flex items-center rounded-md bg-orange-50 px-2 py-1 text-xs font-medium text-orange-700 ring-1 ring-inset ring-orange-600/20">
+                      {categories.length} catégorie{categories.length > 1 ? 's' : ''}
+                    </span>
+                  )}
+                </CardTitle>
                 <CardDescription>
                   Organisez les dépenses des agents en définissant vos propres catégories.
                 </CardDescription>

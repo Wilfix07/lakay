@@ -30,7 +30,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { AlertTriangle, Loader2, RefreshCcw } from 'lucide-react'
+import { AlertTriangle, Loader2, RefreshCcw, DollarSign, TrendingUp } from 'lucide-react'
 
 type ImpayeRow = {
   id: number
@@ -262,10 +262,13 @@ function ImpayesPageContent() {
 
         <div className="grid gap-4 md:grid-cols-3">
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Échéances en retard
               </CardTitle>
+              <div className="p-2 rounded-lg bg-red-50">
+                <AlertTriangle className="w-4 h-4 text-red-600" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-foreground">{summary.count}</div>
@@ -275,10 +278,13 @@ function ImpayesPageContent() {
             </CardContent>
           </Card>
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Principal impayé
               </CardTitle>
+              <div className="p-2 rounded-lg bg-orange-50">
+                <DollarSign className="w-4 h-4 text-orange-600" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-foreground">
@@ -290,10 +296,13 @@ function ImpayesPageContent() {
             </CardContent>
           </Card>
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Montant total dû
               </CardTitle>
+              <div className="p-2 rounded-lg bg-rose-50">
+                <TrendingUp className="w-4 h-4 text-rose-600" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-foreground">

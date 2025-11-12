@@ -23,7 +23,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { CalendarDays, Loader2, RefreshCcw } from 'lucide-react'
+import { CalendarDays, Loader2, RefreshCcw, DollarSign, CheckCircle2, AlertCircle } from 'lucide-react'
 
 type DailyRemboursementRow = {
   id: number
@@ -244,38 +244,47 @@ function RemboursementsJourContent() {
 
         <div className="grid gap-4 md:grid-cols-4">
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Remboursements prévus
               </CardTitle>
+              <div className="p-2 rounded-lg bg-blue-50">
+                <CalendarDays className="w-4 h-4 text-blue-600" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-foreground">{summary.count}</div>
               <p className="text-xs text-muted-foreground mt-1">
-                Nombre total d’échéances du jour
+                Nombre total d'échéances du jour
               </p>
             </CardContent>
           </Card>
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Montant total
               </CardTitle>
+              <div className="p-2 rounded-lg bg-purple-50">
+                <DollarSign className="w-4 h-4 text-purple-600" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-foreground">
                 {formatCurrency(summary.totalMontant)}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                Somme des remboursements attendus aujourd’hui
+                Somme des remboursements attendus aujourd'hui
               </p>
             </CardContent>
           </Card>
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Payés
               </CardTitle>
+              <div className="p-2 rounded-lg bg-green-50">
+                <CheckCircle2 className="w-4 h-4 text-green-600" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-green-600">{summary.payes}</div>
@@ -291,10 +300,13 @@ function RemboursementsJourContent() {
             </CardContent>
           </Card>
           <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Restant à encaisser
               </CardTitle>
+              <div className="p-2 rounded-lg bg-amber-50">
+                <AlertCircle className="w-4 h-4 text-amber-600" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-amber-600">{summary.restants}</div>
