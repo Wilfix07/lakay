@@ -37,8 +37,13 @@ function UtilisateursPageContent() {
   const [success, setSuccess] = useState('')
 
   async function handleSignOut() {
-    await signOut()
-    router.push('/login')
+    try {
+      await signOut()
+      window.location.href = '/login'
+    } catch (error) {
+      console.error('Erreur lors de la déconnexion:', error)
+      window.location.href = '/login'
+    }
   }
 
   useEffect(() => {

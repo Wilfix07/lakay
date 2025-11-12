@@ -34,8 +34,21 @@ export async function signIn(email: string, password: string) {
 }
 
 export async function signOut() {
-  const { error } = await supabase.auth.signOut()
-  return { error }
+  try {
+    // Déconnexion de Supabase
+    const { error } = await supabase.auth.signOut()
+    
+    // Nettoyer le localStorage
+    if (typeof window !== 'undefined') {
+      localStorage.clear()
+      sessionStorage.clear()
+    }
+    
+    return { error }
+  } catch (error) {
+    console.error('Erreur lors de la déconnexion:', error)
+    return { error: error as Error }
+  }
 }
 
 export function hasPermission(userRole: UserRole | null, requiredRole: UserRole | UserRole[]): boolean {

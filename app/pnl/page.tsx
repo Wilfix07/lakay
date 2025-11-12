@@ -386,7 +386,13 @@ export default function ProfitLossPage() {
   ], [summary])
 
   async function handleSignOut() {
-    await signOut()
+    try {
+      await signOut()
+      window.location.href = '/login'
+    } catch (error) {
+      console.error('Erreur lors de la déconnexion:', error)
+      window.location.href = '/login'
+    }
   }
 
   if (loading && !userProfile) {

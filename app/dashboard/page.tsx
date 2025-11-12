@@ -509,8 +509,15 @@ export default function DashboardPage() {
   }
 
   async function handleSignOut() {
-    await signOut()
-    router.push('/login')
+    try {
+      await signOut()
+      // Forcer le rechargement complet de la page pour nettoyer l'état
+      window.location.href = '/login'
+    } catch (error) {
+      console.error('Erreur lors de la déconnexion:', error)
+      // Forcer la redirection même en cas d'erreur
+      window.location.href = '/login'
+    }
   }
 
   if (loading) {

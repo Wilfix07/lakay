@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { getUserProfile } from '@/lib/auth'
+import { getUserProfile, signOut } from '@/lib/auth'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -445,7 +445,13 @@ function MembresPageContent() {
   }
 
   async function handleSignOut() {
-    // This will be handled by DashboardLayout
+    try {
+      await signOut()
+      window.location.href = '/login'
+    } catch (error) {
+      console.error('Erreur lors de la déconnexion:', error)
+      window.location.href = '/login'
+    }
   }
 
   if (loading || !userProfile) {

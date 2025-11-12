@@ -10,7 +10,7 @@ import {
   type UserProfile,
 } from '@/lib/supabase'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { getUserProfile } from '@/lib/auth'
+import { getUserProfile, signOut } from '@/lib/auth'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -55,6 +55,16 @@ function ExpensesPageContent() {
   const [showForm, setShowForm] = useState(false)
   const [editingExpense, setEditingExpense] = useState<AgentExpense | null>(null)
   const [formData, setFormData] = useState(DEFAULT_FORM)
+
+  async function handleSignOut() {
+    try {
+      await signOut()
+      window.location.href = '/login'
+    } catch (error) {
+      console.error('Erreur lors de la déconnexion:', error)
+      window.location.href = '/login'
+    }
+  }
 
   useEffect(() => {
     ;(async () => {
@@ -275,7 +285,7 @@ function ExpensesPageContent() {
   const canManage = userProfile.role !== 'manager' ? isAdmin || userProfile.role === 'agent' : true
 
   return (
-    <DashboardLayout userProfile={userProfile} onSignOut={() => {}}>
+    <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
       <div className="space-y-6">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
