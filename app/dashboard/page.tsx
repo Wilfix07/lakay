@@ -577,8 +577,7 @@ export default function DashboardPage() {
           value: stats.agents,
           icon: UserPlus,
           description: 'Total agents',
-          color: 'text-blue-600',
-          bgColor: 'bg-blue-50',
+          gradient: 'bg-gradient-to-r from-sky-500 to-blue-700',
         }]
       : []),
     {
@@ -586,72 +585,63 @@ export default function DashboardPage() {
       value: stats.membres,
       icon: Users,
       description: 'Total membres',
-      color: 'text-purple-600',
-      bgColor: 'bg-purple-50',
+      gradient: 'bg-gradient-to-r from-fuchsia-500 to-purple-700',
     },
     {
       title: 'Prêts',
       value: stats.prets,
       icon: CreditCard,
       description: 'Prêts actifs',
-      color: 'text-green-600',
-      bgColor: 'bg-green-50',
+      gradient: 'bg-gradient-to-r from-emerald-500 to-green-600',
     },
     {
       title: 'Remboursements',
       value: stats.todayRemboursementsCount,
       icon: DollarSign,
       description: `Montant du jour: ${formatCurrency(stats.todayRemboursementsAmount)}`,
-      color: 'text-orange-600',
-      bgColor: 'bg-orange-50',
+      gradient: 'bg-gradient-to-r from-orange-500 to-red-500',
       href: '/remboursements/aujourdhui',
-      badge: null,
+      badgeContent: null,
     },
     {
       title: "Taux d'impayés",
       value: `${stats.impayesRate.toFixed(1)}%`,
       icon: AlertTriangle,
       description: `Principal impayé: ${formatCurrency(stats.impayesPrincipal)}`,
-      color: 'text-red-600',
-      bgColor: 'bg-red-50',
+      gradient: 'bg-gradient-to-r from-rose-500 to-pink-600',
       href: '/impayes',
-      badge: stats.impayesCount > 0 ? (
-        <Badge variant="secondary" className="ml-2 bg-red-100 text-red-800">
-          {stats.impayesCount} impayé{stats.impayesCount > 1 ? 's' : ''}
-        </Badge>
-      ) : null,
+      badgeContent:
+        stats.impayesCount > 0
+          ? `${stats.impayesCount} impayé${stats.impayesCount > 1 ? 's' : ''}`
+          : null,
     },
     {
       title: 'Portefeuille actif',
       value: formatCurrency(stats.montantTotal),
       icon: TrendingUp,
       description: 'Principal restant sur prêts actifs',
-      color: 'text-indigo-600',
-      bgColor: 'bg-indigo-50',
+      gradient: 'bg-gradient-to-r from-cyan-500 to-teal-600',
     },
     {
       title: 'Intérêt brut',
       value: formatCurrency(interestSummary.total),
       icon: ArrowDownRight,
       description: `Intérêt (${baseInterestRateLabel}) collecté`,
-      color: 'text-rose-600',
-      bgColor: 'bg-rose-50',
+      gradient: 'bg-gradient-to-r from-violet-500 to-indigo-700',
     },
     {
       title: `Commission agents (${commissionRateLabel})`,
       value: formatCurrency(interestSummary.commissionTotal),
       icon: Wallet,
       description: `${commissionRateLabel} des intérêts nets mensuels`,
-      color: 'text-teal-600',
-      bgColor: 'bg-teal-50',
+      gradient: 'bg-gradient-to-r from-teal-500 to-emerald-600',
     },
     {
       title: 'Total dépenses',
       value: formatCurrency(expensesSummary),
       icon: ArrowUpRight,
       description: 'Dépenses opérationnelles',
-      color: 'text-slate-600',
-      bgColor: 'bg-slate-50',
+      gradient: 'bg-gradient-to-r from-slate-600 to-gray-900',
     },
   ]
 
@@ -757,24 +747,28 @@ export default function DashboardPage() {
           const Icon = stat.icon
           const cardContent = (
             <Card
-              className={`border-0 shadow-sm ${stat.href ? 'transition-transform hover:-translate-y-1 hover:shadow-md cursor-pointer' : ''}`}
+              className={`border-0 shadow-sm overflow-hidden text-white ${stat.gradient} ${stat.href ? 'transition-transform hover:-translate-y-1 hover:shadow-lg cursor-pointer' : ''}`}
             >
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
+                <CardTitle className="text-sm font-medium text-white/90">
                   {stat.title}
                 </CardTitle>
-                <div className={`p-2 rounded-lg ${stat.bgColor}`}>
-                  <Icon className={`w-4 h-4 ${stat.color}`} />
+                <div className="p-2 rounded-lg bg-white/20">
+                  <Icon className="w-4 h-4 text-white" />
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-foreground mb-1">
+                <div className="text-2xl font-bold text-white mb-1">
                   {stat.value}
                 </div>
-                <p className="text-xs text-muted-foreground flex items-center gap-2">
+                <p className="text-xs text-white/80 flex items-center gap-2">
                   {stat.description}
                 </p>
-                {stat.badge}
+                {stat.badgeContent ? (
+                  <Badge className="mt-3 bg-white/25 text-white border border-white/40 font-medium">
+                    {stat.badgeContent}
+                  </Badge>
+                ) : null}
               </CardContent>
             </Card>
           )
