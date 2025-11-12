@@ -298,17 +298,17 @@ function PretsPageContent() {
         return
       }
 
-      // Vérifier si le membre a déjà un prêt actif
+      // Vérifier si le membre a déjà un prêt actif ou en attente de garantie
       const { data: activeLoans, error: activeLoansError } = await supabase
         .from('prets')
         .select('id')
         .eq('membre_id', formData.membre_id)
-        .eq('statut', 'actif')
+        .in('statut', ['actif', 'en_attente_garantie'])
         .limit(1)
 
       if (activeLoansError) throw activeLoansError
       if (activeLoans && activeLoans.length > 0) {
-        alert('Ce membre a déjà un prêt actif. Il doit terminer de le rembourser avant de contracter un nouveau prêt.')
+        alert('Ce membre a déjà un prêt actif ou en attente de garantie. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.')
         return
       }
 
@@ -344,7 +344,8 @@ function PretsPageContent() {
         }
       }
 
-      // Créer le prêt
+      // Créer le prêt avec statut "en_attente_garantie"
+      // Le prêt ne sera activé qu'après le dépôt complet de la garantie
       const { error: pretError } = await supabase
         .from('prets')
         .insert([{
@@ -358,31 +359,12 @@ function PretsPageContent() {
           date_premier_remboursement: plan.datePremierRemboursement
             .toISOString()
             .split('T')[0],
-          statut: 'actif',
+          statut: 'en_attente_garantie',
           capital_restant: montantPret,
           frequence_remboursement: frequency,
         }])
 
       if (pretError) throw pretError
-
-      // Créer les remboursements selon le plan
-      const remboursements = plan.schedule.map((entry) => ({
-        pret_id: newPretId,
-        membre_id: formData.membre_id,
-        agent_id: formData.agent_id,
-        numero_remboursement: entry.numero,
-        montant: entry.montant,
-        principal: entry.principal,
-        interet: entry.interet,
-        date_remboursement: entry.date.toISOString().split('T')[0],
-        statut: 'en_attente',
-      }))
-
-      const { error: rembError } = await supabase
-        .from('remboursements')
-        .insert(remboursements)
-
-      if (rembError) throw rembError
 
       // Créer la garantie (collateral) automatiquement
       const montantGarantieRequis = await calculateCollateralAmount(montantPret)
@@ -400,11 +382,19 @@ function PretsPageContent() {
 
       if (collateralError) {
         console.error('Erreur lors de la création de la garantie:', collateralError)
-        // Ne pas bloquer la création du prêt si la garantie échoue
+        throw new Error('Erreur lors de la création de la garantie. Le prêt ne peut pas être créé.')
       }
 
+      // Les remboursements seront créés automatiquement lors de l'activation du prêt
+      // (après dépôt complet de la garantie)
+
       alert(
-        `Prêt créé avec succès! ${nombreRemboursements} échéance(s) ${frequency === 'mensuel' ? 'mensuelle(s)' : 'quotidienne(s)'} ont été générées. Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG`,
+        `✅ Prêt créé avec succès!\n\n` +
+        `📋 Prêt: ${newPretId}\n` +
+        `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
+        `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)\n\n` +
+        `⚠️ IMPORTANT: Le membre doit déposer la garantie avant le décaissement.\n` +
+        `Allez dans "Garanties" pour enregistrer le dépôt.`,
       )
       setShowForm(false)
       setFormData({
@@ -502,12 +492,12 @@ function PretsPageContent() {
           .from('prets')
           .select('id')
           .eq('membre_id', formData.membre_id)
-          .eq('statut', 'actif')
+          .in('statut', ['actif', 'en_attente_garantie'])
           .limit(1)
 
         if (activeLoansError) throw activeLoansError
         if (activeLoans && activeLoans.length > 0) {
-          alert('Le membre sélectionné a déjà un prêt actif. Terminez-le ou choisissez un autre membre.')
+          alert('Le membre sélectionné a déjà un prêt actif ou en attente de garantie. Terminez-le ou complétez la garantie avant de modifier ce prêt.')
           return
         }
       }

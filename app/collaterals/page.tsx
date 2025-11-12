@@ -29,6 +29,7 @@ import {
   Wallet,
 } from 'lucide-react'
 import { formatCurrency, formatDate } from '@/lib/utils'
+import { calculateLoanPlan, type FrequenceRemboursement } from '@/lib/loanUtils'
 import Link from 'next/link'
 
 function CollateralsPageContent() {
@@ -77,14 +78,14 @@ function CollateralsPageContent() {
     setLoading(true)
     setError(null)
     try {
-      // Charger tous les prêts (actifs et terminés) pour vérifier le statut
+      // Charger tous les prêts (actifs, terminés, et en attente de garantie) pour vérifier le statut
       const pretsQuery =
         userProfile?.role === 'admin' || userProfile?.role === 'manager'
-          ? supabase.from('prets').select('*').in('statut', ['actif', 'termine']).order('pret_id', { ascending: true })
+          ? supabase.from('prets').select('*').in('statut', ['actif', 'termine', 'en_attente_garantie']).order('pret_id', { ascending: true })
           : supabase
               .from('prets')
               .select('*')
-              .in('statut', ['actif', 'termine'])
+              .in('statut', ['actif', 'termine', 'en_attente_garantie'])
               .eq('agent_id', userProfile?.agent_id ?? '')
               .order('pret_id', { ascending: true })
 
@@ -116,6 +117,75 @@ function CollateralsPageContent() {
       setError(err.message || 'Erreur lors du chargement des données.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  /**
+   * Active un prêt et crée les remboursements après que la garantie soit complète
+   */
+  async function activateLoanAfterCollateral(pretId: string) {
+    try {
+      // Récupérer les informations du prêt
+      const { data: pret, error: pretError } = await supabase
+        .from('prets')
+        .select('*')
+        .eq('pret_id', pretId)
+        .single()
+
+      if (pretError) throw pretError
+      if (!pret) throw new Error('Prêt non trouvé')
+
+      // Vérifier que le prêt est en attente de garantie
+      if (pret.statut !== 'en_attente_garantie') {
+        console.log(`Le prêt ${pretId} n'est pas en attente de garantie (statut: ${pret.statut})`)
+        return
+      }
+
+      // Calculer le plan de remboursement
+      const frequency: FrequenceRemboursement = 
+        pret.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'
+      
+      const plan = await calculateLoanPlan(
+        pret.montant_pret,
+        frequency,
+        pret.nombre_remboursements,
+        pret.date_decaissement,
+      )
+
+      // Créer les remboursements
+      const remboursements = plan.schedule.map((entry) => ({
+        pret_id: pret.pret_id,
+        membre_id: pret.membre_id,
+        agent_id: pret.agent_id,
+        numero_remboursement: entry.numero,
+        montant: entry.montant,
+        principal: entry.principal,
+        interet: entry.interet,
+        date_remboursement: entry.date.toISOString().split('T')[0],
+        statut: 'en_attente',
+      }))
+
+      const { error: rembError } = await supabase
+        .from('remboursements')
+        .insert(remboursements)
+
+      if (rembError) throw rembError
+
+      // Activer le prêt
+      const { error: updateError } = await supabase
+        .from('prets')
+        .update({ 
+          statut: 'actif',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('pret_id', pretId)
+
+      if (updateError) throw updateError
+
+      console.log(`✅ Prêt ${pretId} activé avec ${remboursements.length} remboursements créés`)
+    } catch (error) {
+      console.error('Erreur lors de l\'activation du prêt:', error)
+      throw new Error('Impossible d\'activer le prêt. Veuillez contacter l\'administrateur.')
     }
   }
 
@@ -163,7 +233,16 @@ function CollateralsPageContent() {
 
       if (updateError) throw updateError
 
-      setSuccess('Dépôt de garantie enregistré avec succès !')
+      // Si la garantie est maintenant complète, activer le prêt et créer les remboursements
+      if (nouveauStatut === 'complet' && existingCollateral.statut !== 'complet') {
+        await activateLoanAfterCollateral(formData.pret_id)
+      }
+
+      const message = nouveauStatut === 'complet' 
+        ? '✅ Garantie complète ! Le prêt a été activé et les remboursements ont été créés. Le décaissement peut maintenant être effectué.'
+        : 'Dépôt de garantie enregistré avec succès !'
+      
+      setSuccess(message)
       setShowForm(false)
       setFormData({
         pret_id: '',
@@ -570,6 +649,8 @@ function CollateralsPageContent() {
                                 <div className="text-xs text-muted-foreground mt-1">
                                   Prêt: {pret.statut === 'termine' ? (
                                     <span className="text-green-600 font-semibold">✓ Terminé</span>
+                                  ) : pret.statut === 'en_attente_garantie' ? (
+                                    <span className="text-orange-600 font-semibold">⏳ En attente de garantie</span>
                                   ) : (
                                     <span className="text-amber-600">En cours</span>
                                   )}
