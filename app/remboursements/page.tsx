@@ -744,7 +744,39 @@ function computeScheduledAmounts(remboursement: Remboursement) {
 
         {showPaymentForm && (
           <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-            <h2 className="text-xl font-semibold mb-4">Enregistrer un paiement</h2>
+            <div className="flex items-start gap-4 mb-6">
+              {paymentPretId && (() => {
+                const pretRecord = getPretById(paymentPretId)
+                const membre = membres.find((m) => m.membre_id === pretRecord?.membre_id)
+                return membre ? (
+                  <div className="flex-shrink-0">
+                    {membre.photo_url ? (
+                      <img
+                        src={membre.photo_url}
+                        alt={`${membre.prenom} ${membre.nom}`}
+                        className="w-16 h-16 rounded-full object-cover border-4 border-primary/20"
+                      />
+                    ) : (
+                      <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center border-4 border-primary/20">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      </div>
+                    )}
+                  </div>
+                ) : null
+              })()}
+              <div className="flex-1">
+                <h2 className="text-xl font-semibold">Enregistrer un paiement</h2>
+                {paymentPretId && (() => {
+                  const pretRecord = getPretById(paymentPretId)
+                  const membre = membres.find((m) => m.membre_id === pretRecord?.membre_id)
+                  return membre ? (
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {membre.prenom} {membre.nom} ({membre.membre_id})
+                    </p>
+                  ) : null
+                })()}
+              </div>
+            </div>
             {paymentError && (
               <div className="mb-3 bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded">
                 {paymentError}

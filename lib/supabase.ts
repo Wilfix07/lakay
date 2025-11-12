@@ -47,6 +47,7 @@ export interface Membre {
   prenom: string
   telephone?: string
   adresse?: string
+  photo_url?: string | null
   created_at: string
   updated_at: string
 }

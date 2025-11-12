@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, X, Loader2 } from 'lucide-react'
+import { Plus, X, Loader2, User } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -33,6 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { PhotoUpload } from '@/components/PhotoUpload'
 
 type MemberLoanHistory = {
   pret_id: string
@@ -76,6 +77,7 @@ function MembresPageContent() {
     prenom: '',
     telephone: '',
     adresse: '',
+    photo_url: null as string | null,
   })
 
   const currentLoan =
@@ -359,7 +361,7 @@ function MembresPageContent() {
 
       alert('Membre créé avec succès!')
       setShowForm(false)
-      setFormData({ agent_id: '', nom: '', prenom: '', telephone: '', adresse: '' })
+      setFormData({ agent_id: '', nom: '', prenom: '', telephone: '', adresse: '', photo_url: null })
       loadMembres()
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
@@ -548,6 +550,16 @@ function MembresPageContent() {
                     />
                   </div>
                 </div>
+                
+                {/* Photo Upload */}
+                <div className="space-y-2">
+                  <Label>Photo du membre (optionnel)</Label>
+                  <PhotoUpload
+                    currentPhotoUrl={formData.photo_url}
+                    onPhotoChange={(photoUrl) => setFormData({ ...formData, photo_url: photoUrl })}
+                  />
+                </div>
+                
                 <Button type="submit" disabled={submitting} className="w-full md:w-auto">
                   {submitting ? (
                     <>
@@ -629,13 +641,30 @@ function MembresPageContent() {
 {selectedMember && (
           <Card>
             <CardHeader>
-              <CardTitle>
-        Historique des prêts – {selectedMember.prenom} {selectedMember.nom} (
-        {selectedMember.membre_id})
-              </CardTitle>
-              <CardDescription>
-                Suivi des décaissements et remboursements effectués par ce membre.
-              </CardDescription>
+              <div className="flex items-start gap-4">
+                <div className="flex-shrink-0">
+                  {selectedMember.photo_url ? (
+                    <img
+                      src={selectedMember.photo_url}
+                      alt={`${selectedMember.prenom} ${selectedMember.nom}`}
+                      className="w-20 h-20 rounded-full object-cover border-4 border-primary/20"
+                    />
+                  ) : (
+                    <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center border-4 border-primary/20">
+                      <User className="w-10 h-10 text-muted-foreground" />
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1">
+                  <CardTitle>
+            Historique des prêts – {selectedMember.prenom} {selectedMember.nom} (
+            {selectedMember.membre_id})
+                  </CardTitle>
+                  <CardDescription>
+                    Suivi des décaissements et remboursements effectués par ce membre.
+                  </CardDescription>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="space-y-6">
               {historyLoading ? (
