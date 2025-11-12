@@ -15,6 +15,7 @@ import {
   validateLoanAmount,
   calculateCollateralAmount,
   getLoanAmountBrackets,
+  getCollateralSettings,
 } from '@/lib/systemSettings'
 
 type FrequenceRemboursement = 'journalier' | 'mensuel'
@@ -46,6 +47,7 @@ function PretsPageContent() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [systemInterestRate, setSystemInterestRate] = useState(0.15)
   const [systemDefaultInstallments, setSystemDefaultInstallments] = useState(23)
+  const [collateralRatePercent, setCollateralRatePercent] = useState(10)
   const [loanBrackets, setLoanBrackets] = useState<any[]>([])
   const [amountValidationMessage, setAmountValidationMessage] = useState<string | null>(null)
   const [formData, setFormData] = useState({
@@ -194,6 +196,10 @@ function PretsPageContent() {
       // Charger les barèmes de montants
       const brackets = await getLoanAmountBrackets()
       setLoanBrackets(brackets)
+
+      // Charger le taux de garantie
+      const collateralSettings = await getCollateralSettings()
+      setCollateralRatePercent(collateralSettings.collateralRate)
     } catch (error) {
       console.error('Erreur lors du chargement des paramètres système:', error)
     }
@@ -578,6 +584,10 @@ function PretsPageContent() {
     ? membres.filter(m => m.agent_id === formData.agent_id)
     : membres
 
+  const systemInterestRatePercent = Number.isFinite(systemInterestRate)
+    ? Number((systemInterestRate * 100).toFixed(2))
+    : 0
+
   const loanPreview = (() => {
     const montant = parseFloat(formData.montant_pret)
     const count = parseInt(formData.nombre_remboursements, 10)
@@ -636,6 +646,17 @@ function PretsPageContent() {
             <h2 className="text-xl font-semibold mb-4">
               {editingPret ? 'Modifier le décaissement' : 'Créer un nouveau prêt'}
             </h2>
+            <div className="rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900 mb-6">
+              <p className="font-medium">
+                Taux d'intérêt actuel : {systemInterestRatePercent.toLocaleString('fr-FR', { maximumFractionDigits: 2 })}%
+              </p>
+              <p className="mt-1">
+                Taux de garantie requis : {collateralRatePercent.toLocaleString('fr-FR', { maximumFractionDigits: 2 })}% du montant du prêt.
+              </p>
+              <p className="mt-2 text-blue-800">
+                Vous pouvez ajuster ces taux dans <Link href="/parametres" className="underline font-semibold">Paramètres &gt; Taux</Link> (réservé aux administrateurs).
+              </p>
+            </div>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div>

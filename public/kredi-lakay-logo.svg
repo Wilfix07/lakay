@@ -1,0 +1,12 @@
+<svg width="240" height="80" viewBox="0 0 240 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="240" height="80" rx="16" fill="#0F172A"/>
+  <circle cx="36" cy="40" r="16" fill="#38BDF8"/>
+  <path d="M29 40L34 45L43 33" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="68" y="46" fill="#F8FAFC" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="600" letter-spacing="1">
+    Kredi
+  </text>
+  <text x="158" y="46" fill="#38BDF8" font-family="Segoe UI, Arial, sans-serif" font-size="32" font-weight="700" letter-spacing="1">
+    Lakay
+  </text>
+</svg>
+

@@ -1,7 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
+import { useState } from 'react'
 import { signIn } from '@/lib/auth'
 
 export default function LoginPage() {
@@ -88,13 +89,14 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="mt-6 text-center text-sm text-gray-600">
-          <p>Rôles disponibles :</p>
-          <ul className="mt-2 space-y-1">
-            <li>• <strong>Admin</strong> : Accès complet</li>
-            <li>• <strong>Manager</strong> : Création d'agents</li>
-            <li>• <strong>Agent</strong> : Gestion membres/prêts</li>
-          </ul>
+        <div className="mt-6 flex justify-center">
+          <Image
+            src="/kredi-lakay-logo.svg"
+            alt="Kredi Lakay"
+            width={160}
+            height={60}
+            priority
+          />
         </div>
       </div>
     </div>

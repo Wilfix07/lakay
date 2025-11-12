@@ -15,6 +15,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { formatCurrency } from '@/lib/utils'
+import { getInterestRates } from '@/lib/systemSettings'
 import { AlertTriangle, Loader2, TrendingUp, ArrowDownRight, Wallet, PiggyBank } from 'lucide-react'
 
 type MonthlyRow = {
@@ -57,6 +58,14 @@ export default function ProfitLossPage() {
   })
   const [monthlyRows, setMonthlyRows] = useState<MonthlyRow[]>([])
   const [agentRows, setAgentRows] = useState<AgentRow[]>([])
+  const [commissionRatePercent, setCommissionRatePercent] = useState<number>(30)
+  const [baseInterestRatePercent, setBaseInterestRatePercent] = useState<number>(15)
+  const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
+    maximumFractionDigits: 2,
+  })}%`
+  const baseInterestRateLabel = `${baseInterestRatePercent.toLocaleString('fr-FR', {
+    maximumFractionDigits: 2,
+  })}%`
 
   useEffect(() => {
     loadUserProfile()
@@ -99,11 +108,13 @@ export default function ProfitLossPage() {
 
   async function loadProfitLossForAdmin() {
     const [
+      interestRates,
       agentsRes,
       pretsRes,
       remboursementsRes,
       expensesRes,
     ] = await Promise.all([
+      getInterestRates(),
       supabase.from('agents').select('agent_id, nom, prenom'),
       supabase.from('prets').select('pret_id, montant_pret, nombre_remboursements, agent_id'),
       supabase
@@ -118,17 +129,33 @@ export default function ProfitLossPage() {
     if (pretsRes.error) throw pretsRes.error
     if (remboursementsRes.error) throw remboursementsRes.error
     if (expensesRes.error) throw expensesRes.error
+    const commissionRate =
+      interestRates?.commissionRate !== undefined && !Number.isNaN(interestRates.commissionRate)
+        ? interestRates.commissionRate
+        : 0.3
+    const commissionRatePercentValue = Number((commissionRate * 100).toFixed(2))
+    setCommissionRatePercent(commissionRatePercentValue)
+    const baseRate =
+      interestRates?.baseInterestRate !== undefined && !Number.isNaN(interestRates.baseInterestRate)
+        ? interestRates.baseInterestRate
+        : 0.15
+    const baseRatePercentValue = Number((baseRate * 100).toFixed(2))
+    setBaseInterestRatePercent(baseRatePercentValue)
 
-    computeProfitLoss({
-      agents: agentsRes.data || [],
-      prets: pretsRes.data || [],
-      remboursements: remboursementsRes.data || [],
-      expenses: expensesRes.data || [],
-    })
+    computeProfitLoss(
+      {
+        agents: agentsRes.data || [],
+        prets: pretsRes.data || [],
+        remboursements: remboursementsRes.data || [],
+        expenses: expensesRes.data || [],
+      },
+      commissionRate,
+    )
   }
 
   async function loadProfitLossForAgent(agentId: string) {
-    const [pretsRes, remboursementsRes, expensesRes] = await Promise.all([
+    const [interestRates, pretsRes, remboursementsRes, expensesRes] = await Promise.all([
+      getInterestRates(),
       supabase
         .from('prets')
         .select('pret_id, montant_pret, nombre_remboursements, agent_id')
@@ -145,21 +172,36 @@ export default function ProfitLossPage() {
     if (pretsRes.error) throw pretsRes.error
     if (remboursementsRes.error) throw remboursementsRes.error
     if (expensesRes.error) throw expensesRes.error
+    const commissionRate =
+      interestRates?.commissionRate !== undefined && !Number.isNaN(interestRates.commissionRate)
+        ? interestRates.commissionRate
+        : 0.3
+    const commissionRatePercentValue = Number((commissionRate * 100).toFixed(2))
+    setCommissionRatePercent(commissionRatePercentValue)
+    const baseRate =
+      interestRates?.baseInterestRate !== undefined && !Number.isNaN(interestRates.baseInterestRate)
+        ? interestRates.baseInterestRate
+        : 0.15
+    const baseRatePercentValue = Number((baseRate * 100).toFixed(2))
+    setBaseInterestRatePercent(baseRatePercentValue)
 
-    computeProfitLoss({
-      agents: userProfile && userProfile.agent_id
-        ? [
-            {
-              agent_id: userProfile.agent_id,
-              nom: userProfile.nom ?? '',
-              prenom: userProfile.prenom ?? '',
-            },
-          ]
-        : [],
-      prets: pretsRes.data || [],
-      remboursements: remboursementsRes.data || [],
-      expenses: expensesRes.data || [],
-    })
+    computeProfitLoss(
+      {
+        agents: userProfile && userProfile.agent_id
+          ? [
+              {
+                agent_id: userProfile.agent_id,
+                nom: userProfile.nom ?? '',
+                prenom: userProfile.prenom ?? '',
+              },
+            ]
+          : [],
+        prets: pretsRes.data || [],
+        remboursements: remboursementsRes.data || [],
+        expenses: expensesRes.data || [],
+      },
+      commissionRate,
+    )
   }
 
   type ComputeProfitLossArgs = {
@@ -183,7 +225,10 @@ export default function ProfitLossPage() {
     expenses: { agent_id: string | null; amount: number | null; expense_date: string | null }[]
   }
 
-  function computeProfitLoss({ agents, prets, remboursements, expenses }: ComputeProfitLossArgs) {
+  function computeProfitLoss(
+    { agents, prets, remboursements, expenses }: ComputeProfitLossArgs,
+    commissionRate: number,
+  ) {
     const pretMap = new Map(
       prets.map((pret) => [pret.pret_id, pret]),
     )
@@ -271,7 +316,7 @@ export default function ProfitLossPage() {
     }
 
     const net = totalInterest - totalExpenses
-    const commission = net > 0 ? net * 0.3 : 0
+    const commission = net > 0 ? net * commissionRate : 0
     const netAfterCommission = net - commission
 
     setSummary({
@@ -297,7 +342,7 @@ export default function ProfitLossPage() {
         const interest = monthlyInterestMap.get(key) ?? 0
         const expenses = monthlyExpensesMap.get(key) ?? 0
         const netValue = interest - expenses
-        const commissionValue = netValue > 0 ? netValue * 0.3 : 0
+        const commissionValue = netValue > 0 ? netValue * commissionRate : 0
         return {
           key,
           label,
@@ -322,7 +367,7 @@ export default function ProfitLossPage() {
         const interest = agentInterestTotals.get(agentId) ?? 0
         const expenses = agentExpensesTotals.get(agentId) ?? 0
         const netValue = interest - expenses
-        const commissionValue = netValue > 0 ? netValue * 0.3 : 0
+        const commissionValue = netValue > 0 ? netValue * commissionRate : 0
         return {
           agentId,
           displayName: agentDisplayMap.get(agentId) ?? agentId,
@@ -346,7 +391,7 @@ export default function ProfitLossPage() {
     {
       title: 'Intérêts collectés',
       value: formatCurrency(summary.interest),
-      description: 'Revenus bruts provenant des remboursements',
+      description: `Revenus bruts provenant des remboursements (${baseInterestRateLabel})`,
       icon: ArrowDownRight,
       color: 'text-rose-600',
       bgColor: 'bg-rose-50',
@@ -368,9 +413,9 @@ export default function ProfitLossPage() {
       bgColor: 'bg-green-50',
     },
     {
-      title: 'Commission agents (30%)',
+      title: `Commission agents (${commissionRateLabel})`,
       value: formatCurrency(summary.commission),
-      description: 'Part dédiée aux agents de crédit',
+      description: `Part dédiée aux agents de crédit (${commissionRateLabel})`,
       icon: Wallet,
       color: 'text-teal-600',
       bgColor: 'bg-teal-50',
@@ -383,7 +428,7 @@ export default function ProfitLossPage() {
       color: 'text-indigo-600',
       bgColor: 'bg-indigo-50',
     },
-  ], [summary])
+  ], [summary, commissionRateLabel, baseInterestRateLabel])
 
   async function handleSignOut() {
     try {
@@ -465,7 +510,7 @@ export default function ProfitLossPage() {
                       <TableHead className="text-right">Intérêts</TableHead>
                       <TableHead className="text-right">Dépenses</TableHead>
                       <TableHead className="text-right">Résultat net</TableHead>
-                      <TableHead className="text-right">Commission 30%</TableHead>
+                      <TableHead className="text-right">Commission {commissionRateLabel}</TableHead>
                       <TableHead className="text-right">Profit net</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -521,7 +566,7 @@ export default function ProfitLossPage() {
                       <TableHead className="text-right">Intérêts</TableHead>
                       <TableHead className="text-right">Dépenses</TableHead>
                       <TableHead className="text-right">Résultat net</TableHead>
-                      <TableHead className="text-right">Commission 30%</TableHead>
+                      <TableHead className="text-right">Commission {commissionRateLabel}</TableHead>
                       <TableHead className="text-right">Profit net</TableHead>
                     </TableRow>
                   </TableHeader>

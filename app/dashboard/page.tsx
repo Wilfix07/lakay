@@ -23,6 +23,7 @@ import {
   Wallet,
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
+import { getInterestRates } from '@/lib/systemSettings'
 import {
   Table,
   TableBody,
@@ -76,6 +77,14 @@ export default function DashboardPage() {
     }[]
   }>({ total: 0, commissionTotal: 0, monthly: [] })
   const [expensesSummary, setExpensesSummary] = useState<number>(0)
+  const [commissionRatePercent, setCommissionRatePercent] = useState<number>(30)
+  const [baseInterestRatePercent, setBaseInterestRatePercent] = useState<number>(15)
+  const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
+    maximumFractionDigits: 2,
+  })}%`
+  const baseInterestRateLabel = `${baseInterestRatePercent.toLocaleString('fr-FR', {
+    maximumFractionDigits: 2,
+  })}%`
   const agentBarColors = [
     '#2563eb', // blue-600
     '#16a34a', // green-600
@@ -122,12 +131,14 @@ export default function DashboardPage() {
       // Stats pour Admin et Manager (tous les agents)
       if (userProfile.role === 'admin' || userProfile.role === 'manager') {
         const [
+          interestRates,
           agentsRes,
           membresRes,
           pretsRes,
           remboursementsRes,
           expensesRes,
         ] = await Promise.all([
+          getInterestRates(),
           supabase.from('agents').select('agent_id, nom, prenom'),
           supabase.from('membres').select('id', { count: 'exact', head: true }),
           supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant'),
@@ -140,6 +151,19 @@ export default function DashboardPage() {
         if (pretsRes.error) throw pretsRes.error
         if (remboursementsRes.error) throw remboursementsRes.error
         if (expensesRes.error) throw expensesRes.error
+
+        const commissionRate =
+          interestRates?.commissionRate !== undefined && !Number.isNaN(interestRates.commissionRate)
+            ? interestRates.commissionRate
+            : 0.3
+        const commissionRatePercentValue = Number((commissionRate * 100).toFixed(2))
+        setCommissionRatePercent(commissionRatePercentValue)
+        const baseRate =
+          interestRates?.baseInterestRate !== undefined && !Number.isNaN(interestRates.baseInterestRate)
+            ? interestRates.baseInterestRate
+            : 0.15
+        const baseRatePercentValue = Number((baseRate * 100).toFixed(2))
+        setBaseInterestRatePercent(baseRatePercentValue)
 
         const agentsData = agentsRes.data || []
         const activePrets =
@@ -308,7 +332,7 @@ export default function DashboardPage() {
             const interest = interestMap.get(key) ?? 0
             const expenses = monthlyExpensesMap.get(key) ?? 0
             const net = interest - expenses
-            const commission = net > 0 ? net * 0.3 : 0
+            const commission = net > 0 ? net * commissionRate : 0
             return { key, label, interest, expenses, net, commission }
           })
           .sort((a, b) => a.key.localeCompare(b.key))
@@ -322,7 +346,8 @@ export default function DashboardPage() {
       } 
       // Stats pour Agent (seulement ses données)
       else if (userProfile.role === 'agent' && userProfile.agent_id) {
-        const [membresRes, pretsRes, remboursementsRes, expensesRes] = await Promise.all([
+        const [interestRates, membresRes, pretsRes, remboursementsRes, expensesRes] = await Promise.all([
+          getInterestRates(),
           supabase.from('membres').select('id', { count: 'exact', head: true }).eq('agent_id', userProfile.agent_id),
           supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant').eq('agent_id', userProfile.agent_id),
           supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet').eq('agent_id', userProfile.agent_id),
@@ -333,6 +358,19 @@ export default function DashboardPage() {
         if (pretsRes.error) throw pretsRes.error
         if (remboursementsRes.error) throw remboursementsRes.error
         if (expensesRes.error) throw expensesRes.error
+
+        const commissionRate =
+          interestRates?.commissionRate !== undefined && !Number.isNaN(interestRates.commissionRate)
+            ? interestRates.commissionRate
+            : 0.3
+        const commissionRatePercentValue = Number((commissionRate * 100).toFixed(2))
+        setCommissionRatePercent(commissionRatePercentValue)
+        const baseRate =
+          interestRates?.baseInterestRate !== undefined && !Number.isNaN(interestRates.baseInterestRate)
+            ? interestRates.baseInterestRate
+            : 0.15
+        const baseRatePercentValue = Number((baseRate * 100).toFixed(2))
+        setBaseInterestRatePercent(baseRatePercentValue)
 
         const activePrets =
           pretsRes.data?.filter((pret) => pret.statut === 'actif') || []
@@ -491,7 +529,7 @@ export default function DashboardPage() {
             const interest = interestMap.get(key) ?? 0
             const expenses = monthlyExpensesMap.get(key) ?? 0
             const net = interest - expenses
-            const commission = net > 0 ? net * 0.3 : 0
+            const commission = net > 0 ? net * commissionRate : 0
             return { key, label, interest, expenses, net, commission }
           })
           .sort((a, b) => a.key.localeCompare(b.key))
@@ -595,15 +633,15 @@ export default function DashboardPage() {
       title: 'Intérêt brut',
       value: formatCurrency(interestSummary.total),
       icon: ArrowDownRight,
-      description: 'Intérêt (15%) collecté',
+      description: `Intérêt (${baseInterestRateLabel}) collecté`,
       color: 'text-rose-600',
       bgColor: 'bg-rose-50',
     },
     {
-      title: 'Commission agents',
+      title: `Commission agents (${commissionRateLabel})`,
       value: formatCurrency(interestSummary.commissionTotal),
       icon: Wallet,
-      description: '30% des intérêts nets mensuels',
+      description: `${commissionRateLabel} des intérêts nets mensuels`,
       color: 'text-teal-600',
       bgColor: 'bg-teal-50',
     },
@@ -876,7 +914,7 @@ export default function DashboardPage() {
         <CardHeader>
           <div className="flex items-start justify-between flex-wrap gap-3">
             <div>
-              <CardTitle>Intérêt perçu (15%)</CardTitle>
+              <CardTitle>Intérêt perçu ({baseInterestRateLabel})</CardTitle>
               <CardDescription>
                 Total des intérêts collectés sur les remboursements payés
               </CardDescription>
@@ -889,7 +927,7 @@ export default function DashboardPage() {
                   Total: {formatCurrency(interestSummary.total)}
                 </Badge>
                 <Badge variant="secondary" className="bg-teal-50 text-teal-600">
-                  Commission (30%): {formatCurrency(interestSummary.commissionTotal)}
+                Commission ({commissionRateLabel}): {formatCurrency(interestSummary.commissionTotal)}
                 </Badge>
               </div>
             ) : null}
