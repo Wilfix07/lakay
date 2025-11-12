@@ -79,7 +79,7 @@ export interface Remboursement {
   interet?: number
   date_remboursement: string
   date_paiement?: string
-  statut: 'en_attente' | 'paye' | 'en_retard'
+  statut: 'en_attente' | 'paye' | 'en_retard' | 'paye_partiel'
   created_at: string
   updated_at: string
 }

@@ -86,7 +86,7 @@ function RemboursementsPageContent() {
     try {
       let query = supabase
         .from('membres')
-        .select('membre_id, nom, prenom, agent_id')
+        .select('*')
         .order('membre_id', { ascending: true })
 
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
