@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS membres (
     prenom VARCHAR(255) NOT NULL,
     telephone VARCHAR(20),
     adresse TEXT,
+    photo_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS remboursements (
     interet DECIMAL(10, 2) NOT NULL DEFAULT 0,
     date_remboursement DATE NOT NULL,
     date_paiement DATE, -- Date réelle du paiement (peut être différente de date_remboursement)
-    statut VARCHAR(20) DEFAULT 'en_attente', -- en_attente, paye, en_retard
+    statut VARCHAR(20) DEFAULT 'en_attente', -- en_attente, paye, en_retard, paye_partiel
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(pret_id, numero_remboursement)
@@ -106,6 +107,23 @@ CREATE TABLE IF NOT EXISTS expense_categories (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Table pour gérer les garanties (collateral) des prêts
+CREATE TABLE IF NOT EXISTS collaterals (
+    id SERIAL PRIMARY KEY,
+    pret_id VARCHAR(50) NOT NULL REFERENCES prets(pret_id) ON DELETE CASCADE,
+    membre_id VARCHAR(4) NOT NULL REFERENCES membres(membre_id) ON DELETE CASCADE,
+    montant_requis DECIMAL(12, 2) NOT NULL,
+    montant_depose DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    montant_restant DECIMAL(12, 2) NOT NULL,
+    statut VARCHAR(20) DEFAULT 'partiel',
+    date_depot DATE,
+    date_remboursement DATE,
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(pret_id)
+);
+
 -- Permissions de base
 GRANT SELECT, INSERT, UPDATE, DELETE ON system_settings TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON loan_amount_brackets TO authenticated;
@@ -124,6 +142,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_prets_membre_actif ON prets(membre_id) WH
 CREATE INDEX IF NOT EXISTS idx_system_settings_key ON system_settings(key);
 CREATE INDEX IF NOT EXISTS idx_loan_amount_brackets_active ON loan_amount_brackets(is_active);
 CREATE INDEX IF NOT EXISTS idx_expense_categories_active ON expense_categories(is_active);
+CREATE INDEX IF NOT EXISTS idx_collaterals_pret_id ON collaterals(pret_id);
+CREATE INDEX IF NOT EXISTS idx_collaterals_membre_id ON collaterals(membre_id);
+CREATE INDEX IF NOT EXISTS idx_collaterals_statut ON collaterals(statut);
 
 -- Fonction pour générer automatiquement l'agent_id
 CREATE OR REPLACE FUNCTION generate_agent_id()
@@ -216,10 +237,14 @@ CREATE TRIGGER update_loan_amount_brackets_updated_at BEFORE UPDATE ON loan_amou
 CREATE TRIGGER update_expense_categories_updated_at BEFORE UPDATE ON expense_categories
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_collaterals_updated_at BEFORE UPDATE ON collaterals
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Activer la RLS et définir les politiques pour un accès réservé aux administrateurs
 ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_amount_brackets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expense_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE collaterals ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY admin_manage_system_settings
     ON system_settings
@@ -269,3 +294,42 @@ CREATE POLICY admin_manage_expense_categories
         )
     );
 
+CREATE POLICY admin_manager_full_access_collaterals
+    ON collaterals
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM public.user_profiles
+            WHERE public.user_profiles.id = auth.uid()
+            AND public.user_profiles.role IN ('admin', 'manager')
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM public.user_profiles
+            WHERE public.user_profiles.id = auth.uid()
+            AND public.user_profiles.role IN ('admin', 'manager')
+        )
+    );
+
+CREATE POLICY agent_own_collaterals
+    ON collaterals
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM public.user_profiles
+            JOIN public.membres ON public.membres.agent_id = public.user_profiles.agent_id
+            WHERE public.user_profiles.id = auth.uid()
+            AND public.user_profiles.role = 'agent'
+            AND collaterals.membre_id = public.membres.membre_id
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM public.user_profiles
+            JOIN public.membres ON public.membres.agent_id = public.user_profiles.agent_id
+            WHERE public.user_profiles.id = auth.uid()
+            AND public.user_profiles.role = 'agent'
+            AND collaterals.membre_id = public.membres.membre_id
+        )
+    );

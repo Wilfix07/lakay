@@ -23,6 +23,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Loader2, RefreshCcw, Save, Trash, Pencil } from 'lucide-react'
+import { formatCurrency } from '@/lib/utils'
 
 type ScheduleSettings = {
   totalInstallments: number
@@ -80,6 +81,14 @@ function ParametresPageContent() {
   const [categoryMessage, setCategoryMessage] = useState<string | null>(null)
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null)
 
+  const [collateralForm, setCollateralForm] = useState({
+    collateralRate: 10,
+    refundPolicy: 'automatic',
+    description: '',
+  })
+  const [collateralSaving, setCollateralSaving] = useState(false)
+  const [collateralMessage, setCollateralMessage] = useState<string | null>(null)
+
   useEffect(() => {
     loadUserProfile()
   }, [])
@@ -112,7 +121,7 @@ function ParametresPageContent() {
           supabase
             .from('system_settings')
             .select('*')
-            .in('key', ['schedule', 'interest_rates']),
+            .in('key', ['schedule', 'interest_rates', 'collateral_settings']),
           supabase
             .from('loan_amount_brackets')
             .select('*')
@@ -129,6 +138,7 @@ function ParametresPageContent() {
 
       const scheduleSetting = settingsData?.find((item) => item.key === 'schedule')
       const interestSetting = settingsData?.find((item) => item.key === 'interest_rates')
+      const collateralSetting = settingsData?.find((item) => item.key === 'collateral_settings')
 
       if (scheduleSetting?.value) {
         const value = scheduleSetting.value as Partial<ScheduleSettings>
@@ -173,6 +183,21 @@ function ParametresPageContent() {
       )
 
       setCategories(categoriesData || [])
+
+      if (collateralSetting?.value) {
+        const value = collateralSetting.value as any
+        setCollateralForm({
+          collateralRate: Number(value.collateralRate ?? 10),
+          refundPolicy: String(value.refundPolicy ?? 'automatic'),
+          description: String(value.description ?? ''),
+        })
+      } else {
+        setCollateralForm({
+          collateralRate: 10,
+          refundPolicy: 'automatic',
+          description: 'Taux de garantie en pourcentage du montant du prêt',
+        })
+      }
     } catch (error) {
       console.error('Erreur lors du chargement des paramètres:', error)
       setScheduleMessage('Erreur lors du chargement des paramètres')
@@ -261,6 +286,45 @@ function ParametresPageContent() {
       setInterestMessage('Erreur lors de l’enregistrement des taux')
     } finally {
       setInterestSaving(false)
+    }
+  }
+
+  async function handleCollateralSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!userProfile) return
+    setCollateralMessage(null)
+
+    if (collateralForm.collateralRate < 0 || collateralForm.collateralRate > 100) {
+      setCollateralMessage('Le taux de garantie doit être entre 0 et 100%.')
+      return
+    }
+
+    try {
+      setCollateralSaving(true)
+      const { error } = await supabase.from('system_settings').upsert(
+        {
+          key: 'collateral_settings',
+          value: {
+            collateralRate: collateralForm.collateralRate,
+            refundPolicy: collateralForm.refundPolicy,
+            description: collateralForm.description || 'Taux de garantie en pourcentage du montant du prêt',
+          },
+          description: 'Paramètres de gestion des garanties (collateral) pour les prêts',
+          updated_by: userProfile.id,
+        },
+        {
+          onConflict: 'key',
+        },
+      )
+
+      if (error) throw error
+      setCollateralMessage('Paramètres de garantie enregistrés avec succès.')
+      loadAllSettings()
+    } catch (error) {
+      console.error('Erreur lors de la sauvegarde des paramètres de garantie:', error)
+      setCollateralMessage('Erreur lors de l\'enregistrement des paramètres de garantie')
+    } finally {
+      setCollateralSaving(false)
     }
   }
 
@@ -712,6 +776,104 @@ function ParametresPageContent() {
                     </Button>
                     {interestMessage && (
                       <span className="text-sm text-muted-foreground">{interestMessage}</span>
+                    )}
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+
+            {/* Garanties (Collateral) */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Garanties (Collateral)</CardTitle>
+                <CardDescription>
+                  Définissez le taux de garantie que les membres doivent déposer lors de l'obtention d'un prêt.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form onSubmit={handleCollateralSubmit} className="grid gap-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="collateralRate">Taux de garantie (%)</Label>
+                      <Input
+                        id="collateralRate"
+                        type="number"
+                        min={0}
+                        max={100}
+                        step="0.01"
+                        value={collateralForm.collateralRate}
+                        onChange={(e) =>
+                          setCollateralForm((prev) => ({
+                            ...prev,
+                            collateralRate: Number(e.target.value),
+                          }))
+                        }
+                        required
+                        className={loading ? 'bg-muted' : ''}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Actuel : {collateralForm.collateralRate}% du montant du prêt
+                      </p>
+                      <p className="text-xs text-muted-foreground italic">
+                        Exemple : Pour un prêt de 10,000 HTG, la garantie sera de {formatCurrency((10000 * collateralForm.collateralRate) / 100)}
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="refundPolicy">Politique de remboursement</Label>
+                      <select
+                        id="refundPolicy"
+                        value={collateralForm.refundPolicy}
+                        onChange={(e) =>
+                          setCollateralForm((prev) => ({
+                            ...prev,
+                            refundPolicy: e.target.value,
+                          }))
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                      >
+                        <option value="automatic">Remboursement automatique</option>
+                        <option value="manual">Remboursement manuel</option>
+                      </select>
+                      <p className="text-xs text-muted-foreground">
+                        {collateralForm.refundPolicy === 'automatic'
+                          ? 'La garantie sera remboursée automatiquement à la fin du prêt'
+                          : 'La garantie devra être remboursée manuellement par l\'admin'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="description">Description</Label>
+                    <Input
+                      id="description"
+                      type="text"
+                      value={collateralForm.description}
+                      onChange={(e) =>
+                        setCollateralForm((prev) => ({
+                          ...prev,
+                          description: e.target.value,
+                        }))
+                      }
+                      placeholder="Taux de garantie en pourcentage du montant du prêt"
+                    />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Button type="submit" disabled={collateralSaving}>
+                      {collateralSaving ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Enregistrement...
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-4 h-4 mr-2" />
+                          Enregistrer
+                        </>
+                      )}
+                    </Button>
+                    {collateralMessage && (
+                      <span className={`text-sm ${collateralMessage.includes('succès') ? 'text-green-600' : 'text-red-600'}`}>
+                        {collateralMessage}
+                      </span>
                     )}
                   </div>
                 </form>

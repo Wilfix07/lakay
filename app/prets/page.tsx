@@ -13,6 +13,7 @@ import {
   getScheduleSettings,
   getInterestRates,
   validateLoanAmount,
+  calculateCollateralAmount,
   getLoanAmountBrackets,
 } from '@/lib/systemSettings'
 
@@ -383,8 +384,27 @@ function PretsPageContent() {
 
       if (rembError) throw rembError
 
+      // Créer la garantie (collateral) automatiquement
+      const montantGarantieRequis = await calculateCollateralAmount(montantPret)
+      const { error: collateralError } = await supabase
+        .from('collaterals')
+        .insert([{
+          pret_id: newPretId,
+          membre_id: formData.membre_id,
+          montant_requis: montantGarantieRequis,
+          montant_depose: 0,
+          montant_restant: montantGarantieRequis,
+          statut: 'partiel',
+          notes: `Garantie générée automatiquement pour le prêt ${newPretId}`,
+        }])
+
+      if (collateralError) {
+        console.error('Erreur lors de la création de la garantie:', collateralError)
+        // Ne pas bloquer la création du prêt si la garantie échoue
+      }
+
       alert(
-        `Prêt créé avec succès! ${nombreRemboursements} échéance(s) ${frequency === 'mensuel' ? 'mensuelle(s)' : 'quotidienne(s)'} ont été générées.`,
+        `Prêt créé avec succès! ${nombreRemboursements} échéance(s) ${frequency === 'mensuel' ? 'mensuelle(s)' : 'quotidienne(s)'} ont été générées. Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG`,
       )
       setShowForm(false)
       setFormData({

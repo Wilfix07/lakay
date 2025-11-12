@@ -140,3 +140,18 @@ export interface AgentExpense {
   updated_at?: string
 }
 
+export interface Collateral {
+  id: number
+  pret_id: string
+  membre_id: string
+  montant_requis: number
+  montant_depose: number
+  montant_restant: number
+  statut: 'partiel' | 'complet' | 'rembourse'
+  date_depot?: string | null
+  date_remboursement?: string | null
+  notes?: string | null
+  created_at: string
+  updated_at: string
+}
+

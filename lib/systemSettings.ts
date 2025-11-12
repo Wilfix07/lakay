@@ -195,3 +195,53 @@ export async function validateLoanAmount(amount: number): Promise<{ valid: boole
   }
 }
 
+/**
+ * Récupère les paramètres de garantie (collateral) depuis la base de données
+ */
+export async function getCollateralSettings() {
+  try {
+    const { data, error } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'collateral_settings')
+      .single()
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('Erreur lors de la récupération des paramètres de garantie:', error)
+    }
+
+    if (data?.value) {
+      return {
+        collateralRate: Number(data.value.collateralRate ?? 10),
+        refundPolicy: String(data.value.refundPolicy ?? 'automatic'),
+        description: String(data.value.description ?? ''),
+      }
+    }
+
+    return {
+      collateralRate: 10, // 10% par défaut
+      refundPolicy: 'automatic',
+      description: 'Taux de garantie en pourcentage du montant du prêt',
+    }
+  } catch (error) {
+    console.error('Erreur lors de la récupération des paramètres de garantie:', error)
+    return {
+      collateralRate: 10,
+      refundPolicy: 'automatic',
+      description: 'Taux de garantie en pourcentage du montant du prêt',
+    }
+  }
+}
+
+/**
+ * Calcule le montant de garantie requis pour un prêt
+ */
+export async function calculateCollateralAmount(loanAmount: number, customRate?: number): Promise<number> {
+  if (customRate !== undefined) {
+    return (loanAmount * customRate) / 100
+  }
+
+  const settings = await getCollateralSettings()
+  return (loanAmount * settings.collateralRate) / 100
+}
+
