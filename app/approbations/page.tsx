@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase, type Pret, type Membre, type Agent, type UserProfile } from '@/lib/supabase'
+import { supabase, type Pret, type Membre, type Agent, type UserProfile, type Collateral } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
@@ -25,6 +25,7 @@ function ApprobationsPageContent() {
   const [prets, setPrets] = useState<Pret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
+  const [collaterals, setCollaterals] = useState<Collateral[]>([])
   const [loading, setLoading] = useState(true)
   const [approving, setApproving] = useState<string | null>(null)
   const [selectedPret, setSelectedPret] = useState<Pret | null>(null)
@@ -66,7 +67,7 @@ function ApprobationsPageContent() {
         agentQuery = agentQuery.eq('manager_id', userProfile.id)
       }
 
-      const [pretsRes, membresRes, agentsRes] = await Promise.all([
+      const [pretsRes, membresRes, agentsRes, collateralsRes] = await Promise.all([
         // Charger uniquement les prêts en attente d'approbation
         (async () => {
           let query = supabase
@@ -93,15 +94,18 @@ function ApprobationsPageContent() {
         })(),
         supabase.from('membres').select('*'),
         agentQuery,
+        supabase.from('collaterals').select('*'),
       ])
 
       if (pretsRes.error) throw pretsRes.error
       if (membresRes.error) throw membresRes.error
       if (agentsRes.error) throw agentsRes.error
+      if (collateralsRes.error) throw collateralsRes.error
 
       setPrets(pretsRes.data || [])
       setMembres(membresRes.data || [])
       setAgents(agentsRes.data || [])
+      setCollaterals(collateralsRes.data || [])
     } catch (error) {
       console.error('Erreur lors du chargement des données:', error)
       alert('Erreur lors du chargement des données')
@@ -118,37 +122,53 @@ function ApprobationsPageContent() {
     return agents.find((a) => a.agent_id === agent_id)
   }
 
+  function getCollateral(pret_id: string): Collateral | undefined {
+    return collaterals.find((c) => c.pret_id === pret_id)
+  }
+
   async function handleApprove(pret: Pret) {
-    if (!confirm(`Approuver le prêt ${pret.pret_id} ?\n\nMontant: ${formatCurrency(pret.montant_pret)}\nMembre: ${getMembre(pret.membre_id)?.prenom} ${getMembre(pret.membre_id)?.nom}`)) {
+    // Vérifier que la garantie existe et est complète
+    const collateral = getCollateral(pret.pret_id)
+    
+    if (!collateral) {
+      alert(`❌ Impossible d'approuver le prêt ${pret.pret_id}.\n\nLa garantie n'a pas été créée. Contactez l'administrateur.`)
+      return
+    }
+
+    // Vérifier que la garantie est complètement déposée
+    const montantDepose = Number(collateral.montant_depose || 0)
+    const montantRequis = Number(collateral.montant_requis || 0)
+    const montantRestant = Number(collateral.montant_restant || montantRequis)
+
+    if (montantDepose < montantRequis || montantRestant > 0) {
+      alert(
+        `❌ Impossible d'approuver le prêt ${pret.pret_id}.\n\n` +
+        `La garantie n'a pas été déposée en totalité.\n\n` +
+        `💰 Garantie requise: ${formatCurrency(montantRequis)}\n` +
+        `💵 Montant déposé: ${formatCurrency(montantDepose)}\n` +
+        `⚠️ Montant restant: ${formatCurrency(montantRestant)}\n\n` +
+        `Le membre doit déposer la garantie complète avant que vous puissiez approuver le prêt.\n` +
+        `Allez dans "Garanties" pour vérifier et enregistrer les dépôts.`
+      )
+      return
+    }
+
+    if (!confirm(`Approuver le prêt ${pret.pret_id} ?\n\nMontant: ${formatCurrency(pret.montant_pret)}\nMembre: ${getMembre(pret.membre_id)?.prenom} ${getMembre(pret.membre_id)?.nom}\nGarantie: ${formatCurrency(montantDepose)} déposée`)) {
       return
     }
 
     setApproving(pret.pret_id)
     try {
-      // Créer la garantie (collateral) si elle n'existe pas déjà
-      const { data: existingCollateral } = await supabase
-        .from('collaterals')
-        .select('id')
-        .eq('pret_id', pret.pret_id)
-        .single()
-
-      if (!existingCollateral) {
-        const montantGarantieRequis = await calculateCollateralAmount(pret.montant_pret)
-        const { error: collateralError } = await supabase
+      // Mettre à jour le statut de la garantie à "complet" si nécessaire
+      if (collateral.statut !== 'complet') {
+        const { error: collateralUpdateError } = await supabase
           .from('collaterals')
-          .insert([{
-            pret_id: pret.pret_id,
-            membre_id: pret.membre_id,
-            montant_requis: montantGarantieRequis,
-            montant_depose: 0,
-            montant_restant: montantGarantieRequis,
-            statut: 'partiel',
-            notes: `Garantie générée automatiquement pour le prêt ${pret.pret_id} après approbation`,
-          }])
+          .update({ statut: 'complet' })
+          .eq('pret_id', pret.pret_id)
 
-        if (collateralError) {
-          console.error('Erreur lors de la création de la garantie:', collateralError)
-          throw new Error('Erreur lors de la création de la garantie')
+        if (collateralUpdateError) {
+          console.error('Erreur lors de la mise à jour de la garantie:', collateralUpdateError)
+          throw new Error('Erreur lors de la mise à jour de la garantie')
         }
       }
 
@@ -160,7 +180,7 @@ function ApprobationsPageContent() {
 
       if (updateError) throw updateError
 
-      alert(`✅ Prêt ${pret.pret_id} approuvé avec succès!\n\nLe prêt est maintenant en attente de garantie.`)
+      alert(`✅ Prêt ${pret.pret_id} approuvé avec succès!\n\nLe prêt est maintenant en attente de garantie (garantie déjà complète).`)
       await loadData()
     } catch (error) {
       console.error('Erreur lors de l\'approbation:', error)
@@ -279,6 +299,7 @@ function ApprobationsPageContent() {
                     <TableHead>Échéances</TableHead>
                     <TableHead>Date décaissement</TableHead>
                     <TableHead>Date demande</TableHead>
+                    <TableHead>Garantie</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -286,7 +307,13 @@ function ApprobationsPageContent() {
                   {prets.map((pret) => {
                     const membre = getMembre(pret.membre_id)
                     const agent = getAgent(pret.agent_id)
+                    const collateral = getCollateral(pret.pret_id)
                     const isProcessing = approving === pret.pret_id
+                    
+                    const montantDepose = collateral ? Number(collateral.montant_depose || 0) : 0
+                    const montantRequis = collateral ? Number(collateral.montant_requis || 0) : 0
+                    const montantRestant = collateral ? Number(collateral.montant_restant || montantRequis) : 0
+                    const garantieComplete = montantDepose >= montantRequis && montantRestant <= 0
 
                     return (
                       <TableRow key={pret.id}>
@@ -305,12 +332,34 @@ function ApprobationsPageContent() {
                         </TableCell>
                         <TableCell>{formatDate(pret.date_decaissement)}</TableCell>
                         <TableCell>{formatDate(pret.created_at)}</TableCell>
+                        <TableCell>
+                          {collateral ? (
+                            <div className="space-y-1">
+                              <div className={`text-xs font-semibold ${
+                                garantieComplete ? 'text-green-600' : 'text-yellow-600'
+                              }`}>
+                                {garantieComplete ? '✅ Complète' : '⚠️ Incomplète'}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {formatCurrency(montantDepose)} / {formatCurrency(montantRequis)}
+                              </div>
+                              {!garantieComplete && (
+                                <div className="text-xs text-red-600">
+                                  Reste: {formatCurrency(montantRestant)}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-red-600">❌ Aucune garantie</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right space-x-2">
                           <Button
                             onClick={() => handleApprove(pret)}
-                            disabled={isProcessing}
+                            disabled={isProcessing || !garantieComplete}
                             size="sm"
-                            className="bg-green-600 hover:bg-green-700"
+                            className="bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={!garantieComplete ? 'La garantie doit être complète avant d\'approuver' : ''}
                           >
                             {isProcessing ? (
                               <Loader2 className="w-4 h-4 animate-spin" />

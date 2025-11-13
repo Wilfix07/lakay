@@ -58,6 +58,14 @@ function PretsPageContent() {
     frequence_remboursement: 'journalier',
     nombre_remboursements: '23',
   })
+  const [memberCollateralBalance, setMemberCollateralBalance] = useState(0)
+  const [collateralDeposit, setCollateralDeposit] = useState('')
+  const [showCollateralDeposit, setShowCollateralDeposit] = useState(false)
+  const [loadingCollateralBalance, setLoadingCollateralBalance] = useState(false)
+  const [collateralRequirement, setCollateralRequirement] = useState<{
+    montantRequis: number
+    montantRestant: number
+  } | null>(null)
 
   async function handleSignOut() {
     try {
@@ -177,6 +185,28 @@ function PretsPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
 
+  // Charger le solde de garantie du membre quand le membre est sélectionné
+  useEffect(() => {
+    if (formData.membre_id) {
+      loadMemberCollateralBalance(formData.membre_id)
+    } else {
+      setMemberCollateralBalance(0)
+      setShowCollateralDeposit(false)
+      setCollateralDeposit('')
+    }
+  }, [formData.membre_id])
+
+  // Vérifier si un dépôt de garantie est nécessaire quand le montant du prêt change
+  useEffect(() => {
+    if (formData.membre_id && formData.montant_pret) {
+      checkCollateralRequirement()
+    } else {
+      setShowCollateralDeposit(false)
+      setCollateralDeposit('')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.montant_pret, memberCollateralBalance, formData.membre_id])
+
   async function loadSystemSettings() {
     try {
       // Charger les taux d'intérêt
@@ -202,6 +232,79 @@ function PretsPageContent() {
       setCollateralRatePercent(collateralSettings.collateralRate)
     } catch (error) {
       console.error('Erreur lors du chargement des paramètres système:', error)
+    }
+  }
+
+  async function loadMemberCollateralBalance(membreId: string) {
+    setLoadingCollateralBalance(true)
+    try {
+      // Calculer le solde de garantie disponible du membre
+      // Somme de tous les montants déposés moins les montants remboursés
+      const { data: collaterals, error } = await supabase
+        .from('collaterals')
+        .select('montant_depose, statut')
+        .eq('membre_id', membreId)
+        .in('statut', ['partiel', 'complet'])
+
+      if (error) throw error
+
+      const balance = collaterals?.reduce((sum, c) => {
+        // Seulement les garanties non remboursées comptent
+        if (c.statut === 'partiel' || c.statut === 'complet') {
+          return sum + Number(c.montant_depose || 0)
+        }
+        return sum
+      }, 0) || 0
+
+      setMemberCollateralBalance(balance)
+    } catch (error) {
+      console.error('Erreur lors du chargement du solde de garantie:', error)
+      setMemberCollateralBalance(0)
+    } finally {
+      setLoadingCollateralBalance(false)
+    }
+  }
+
+  async function checkCollateralRequirement() {
+    if (!formData.membre_id || !formData.montant_pret) {
+      setShowCollateralDeposit(false)
+      setCollateralRequirement(null)
+      return
+    }
+
+    const montantPret = parseFloat(formData.montant_pret)
+    if (isNaN(montantPret) || montantPret <= 0) {
+      setShowCollateralDeposit(false)
+      setCollateralRequirement(null)
+      return
+    }
+
+    try {
+      // Calculer la garantie requise pour ce prêt
+      const montantGarantieRequis = await calculateCollateralAmount(montantPret)
+      
+      // Si le solde disponible + ce qui doit être déposé < requis, montrer le champ de dépôt
+      const soldeDisponible = memberCollateralBalance
+      const montantRestant = Math.max(montantGarantieRequis - soldeDisponible, 0)
+      
+      setCollateralRequirement({
+        montantRequis: montantGarantieRequis,
+        montantRestant,
+      })
+      
+      if (montantRestant > 0) {
+        setShowCollateralDeposit(true)
+        // Suggérer le montant restant comme valeur par défaut
+        if (!collateralDeposit || parseFloat(collateralDeposit) === 0) {
+          setCollateralDeposit(montantRestant.toFixed(2))
+        }
+      } else {
+        setShowCollateralDeposit(false)
+        setCollateralDeposit('')
+      }
+    } catch (error) {
+      console.error('Erreur lors de la vérification de la garantie:', error)
+      setCollateralRequirement(null)
     }
   }
 
@@ -358,8 +461,20 @@ function PretsPageContent() {
 
       if (activeLoansError) throw activeLoansError
       if (activeLoans && activeLoans.length > 0) {
-        alert('Ce membre a déjà un prêt actif, en attente de garantie ou en attente d\'approbation. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.')
+        alert("Ce membre a déjà un prêt actif, en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.")
         return
+      }
+
+      // Vérifier que le dépôt de garantie est fourni si nécessaire
+      const montantGarantieRequisCheck = await calculateCollateralAmount(montantPret)
+      const montantRestantNecessaire = Math.max(montantGarantieRequisCheck - memberCollateralBalance, 0)
+      
+      if (montantRestantNecessaire > 0) {
+        const montantDeposeSaisi = collateralDeposit ? parseFloat(collateralDeposit) : 0
+        if (isNaN(montantDeposeSaisi) || montantDeposeSaisi < 0) {
+          alert(`Un dépôt de garantie est requis.\n\nMontant restant nécessaire: ${formatCurrency(montantRestantNecessaire)}\n\nVeuillez saisir le montant du dépôt avant de créer le prêt.`)
+          return
+        }
       }
 
       const plan = calculateLoanPlan(
@@ -422,40 +537,58 @@ function PretsPageContent() {
 
       if (pretError) throw pretError
 
-      // Créer la garantie (collateral) automatiquement seulement si le prêt n'est pas en attente d'approbation
-      if (initialStatus === 'en_attente_garantie') {
-        const montantGarantieRequis = await calculateCollateralAmount(montantPret)
-        const { error: collateralError } = await supabase
-          .from('collaterals')
-          .insert([{
-            pret_id: newPretId,
-            membre_id: formData.membre_id,
-            montant_requis: montantGarantieRequis,
-            montant_depose: 0,
-            montant_restant: montantGarantieRequis,
-            statut: 'partiel',
-            notes: `Garantie générée automatiquement pour le prêt ${newPretId}`,
-          }])
+      // Créer la garantie (collateral) automatiquement pour tous les prêts
+      // Même en attente d'approbation, la garantie doit être créée et déposée avant approbation
+      // Réutiliser le montant déjà calculé plus haut
+      const montantGarantieRequis = montantGarantieRequisCheck
+      
+      // Utiliser le dépôt fourni par l'agent si disponible
+      const montantDeposeInitial = collateralDeposit ? parseFloat(collateralDeposit) : 0
+      const montantDeposeFinal = Math.min(
+        Math.max(montantDeposeInitial, 0),
+        montantGarantieRequis
+      )
+      const montantRestantFinal = Math.max(montantGarantieRequis - montantDeposeFinal, 0)
+      const statutGarantie = montantDeposeFinal >= montantGarantieRequis ? 'complet' : 'partiel'
+      
+      const { error: collateralError } = await supabase
+        .from('collaterals')
+        .insert([{
+          pret_id: newPretId,
+          membre_id: formData.membre_id,
+          montant_requis: montantGarantieRequis,
+          montant_depose: montantDeposeFinal,
+          montant_restant: montantRestantFinal,
+          statut: statutGarantie,
+          date_depot: montantDeposeFinal > 0 ? formData.date_decaissement : null,
+          notes: montantDeposeFinal > 0
+            ? `Garantie générée automatiquement pour le prêt ${newPretId}. Dépôt initial de ${formatCurrency(montantDeposeFinal)} effectué lors de la création.`
+            : `Garantie générée automatiquement pour le prêt ${newPretId}`,
+        }])
 
-        if (collateralError) {
-          console.error('Erreur lors de la création de la garantie:', collateralError)
-          throw new Error('Erreur lors de la création de la garantie. Le prêt ne peut pas être créé.')
-        }
+      if (collateralError) {
+        console.error('Erreur lors de la création de la garantie:', collateralError)
+        throw new Error('Erreur lors de la création de la garantie. Le prêt ne peut pas être créé.')
       }
 
       // Les remboursements seront créés automatiquement lors de l'activation du prêt
       // (après dépôt complet de la garantie)
 
       if (initialStatus === 'en_attente_approbation') {
+        const messageDepot = montantDeposeFinal > 0
+          ? `\n💰 Dépôt initial: ${formatCurrency(montantDeposeFinal)} HTG\n${montantRestantFinal > 0 ? `⚠️ Montant restant: ${formatCurrency(montantRestantFinal)} HTG\n` : '✅ Garantie complète!\n'}`
+          : '\n⚠️ Aucun dépôt effectué. Le membre doit déposer la garantie COMPLÈTE avant que le manager puisse approuver.\n'
+        
         alert(
           `✅ Demande de prêt créée avec succès!\n\n` +
           `📋 Prêt: ${newPretId}\n` +
           `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
+          `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)` +
+          messageDepot +
           `⏳ Statut: En attente d'approbation du manager\n\n` +
-          `Votre manager devra approuver ce prêt avant le décaissement.`
+          `${montantRestantFinal > 0 ? 'Le membre doit compléter le dépôt de garantie avant que le manager puisse approuver.\nAllez dans "Garanties" pour enregistrer les dépôts supplémentaires.' : 'La garantie est complète. Le manager peut approuver le prêt.'}`
         )
       } else {
-        const montantGarantieRequis = await calculateCollateralAmount(montantPret)
         alert(
           `✅ Prêt créé avec succès!\n\n` +
           `📋 Prêt: ${newPretId}\n` +
@@ -474,6 +607,10 @@ function PretsPageContent() {
         frequence_remboursement: 'journalier',
         nombre_remboursements: '23',
       })
+      setCollateralDeposit('')
+      setShowCollateralDeposit(false)
+      setMemberCollateralBalance(0)
+      setCollateralRequirement(null)
       loadPrets()
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
@@ -928,6 +1065,64 @@ function PretsPageContent() {
                   })()}
                 </div>
               </div>
+              
+              {/* Informations sur la garantie */}
+              {formData.membre_id && formData.montant_pret && parseFloat(formData.montant_pret) > 0 && collateralRequirement && (
+                <div className="border-t border-gray-200 pt-4 mt-4">
+                  <h3 className="text-sm font-semibold text-gray-700 mb-3">Garantie requise</h3>
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Garantie requise:</span>
+                      <span className="font-semibold">
+                        {formatCurrency(collateralRequirement.montantRequis)} ({((collateralRequirement.montantRequis / parseFloat(formData.montant_pret)) * 100).toFixed(0)}%)
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Solde disponible du membre:</span>
+                      <span className={memberCollateralBalance > 0 ? "font-semibold text-green-600" : "font-semibold text-gray-700"}>
+                        {loadingCollateralBalance ? 'Chargement...' : formatCurrency(memberCollateralBalance)}
+                      </span>
+                    </div>
+                    {collateralRequirement.montantRestant > 0 && (
+                      <>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-red-600 font-medium">Montant restant à déposer:</span>
+                          <span className="font-semibold text-red-600">{formatCurrency(collateralRequirement.montantRestant)}</span>
+                        </div>
+                        <div className="mt-3 pt-3 border-t border-blue-300">
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Dépôt de garantie (HTG) *
+                          </label>
+                          <input
+                            type="number"
+                            required={collateralRequirement.montantRestant > 0}
+                            min="0"
+                            step="0.01"
+                            value={collateralDeposit}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              if (value === '' || (!isNaN(parseFloat(value)) && parseFloat(value) >= 0)) {
+                                setCollateralDeposit(value)
+                              }
+                            }}
+                            className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            placeholder={collateralRequirement.montantRestant.toFixed(2)}
+                          />
+                          <p className="text-xs text-gray-600 mt-1">
+                            Montant suggéré: {formatCurrency(collateralRequirement.montantRestant)}. Le membre doit déposer au moins ce montant pour respecter le taux de garantie requis.
+                          </p>
+                        </div>
+                      </>
+                    )}
+                    {collateralRequirement.montantRestant <= 0 && (
+                      <div className="text-sm text-green-600 font-medium mt-2">
+                        ✅ Le solde de garantie disponible est suffisant pour ce prêt.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <button
                 type="submit"
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"

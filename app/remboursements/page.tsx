@@ -157,6 +157,8 @@ function RemboursementsPageContent() {
 
       if (error) throw error
       const list = data || []
+      
+      // Vérifier s'il y a un remboursement partiel - il doit être complété en premier
       const partial = list.find((r) => r.statut === 'paye_partiel')
       if (partial) {
         setPaymentRemboursements([partial])
@@ -169,10 +171,39 @@ function RemboursementsPageContent() {
             remaining,
           )} doit être réglé avant de passer à une autre échéance.`,
         })
-      } else {
-        setPaymentRemboursements(list)
-        setPartialLockInfo({ active: false })
+        return
       }
+
+      // Charger tous les remboursements pour vérifier l'ordre séquentiel
+      const allQuery = supabase
+        .from('remboursements')
+        .select('numero_remboursement, statut')
+        .eq('pret_id', pretId)
+        .order('numero_remboursement', { ascending: true })
+
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        allQuery.eq('agent_id', userProfile.agent_id)
+      }
+
+      const { data: allRemboursements, error: allError } = await allQuery
+      if (allError) throw allError
+
+      // Filtrer pour ne garder que les remboursements qui peuvent être payés
+      // (tous les précédents sont payés)
+      const payableRemboursements = list.filter((r) => {
+        // Trouver le numéro de remboursement actuel
+        const currentNum = r.numero_remboursement
+        
+        // Vérifier que tous les remboursements précédents sont payés
+        const previousUnpaid = allRemboursements?.find(
+          (prev) => prev.numero_remboursement < currentNum && prev.statut !== 'paye'
+        )
+        
+        return !previousUnpaid
+      })
+
+      setPaymentRemboursements(payableRemboursements)
+      setPartialLockInfo({ active: false })
     } catch (error) {
       console.error('Erreur lors du chargement des remboursements pour le formulaire:', error)
       setPaymentRemboursements([])
@@ -571,8 +602,40 @@ function computeScheduledAmounts(remboursement: Remboursement) {
     }
     if (partialLockInfo.active && remboursement.statut !== 'paye_partiel') {
       setPaymentError(
-        'Ce prêt possède une échéance partiellement payée. Veuillez solder cette échéance avant d’en payer une autre.',
+        "Ce prêt possède une échéance partiellement payée. Veuillez solder cette échéance avant d'en payer une autre.",
       )
+      return
+    }
+
+    // Vérifier que tous les remboursements précédents sont complètement payés
+    try {
+      const { data: previousRemboursements, error: checkError } = await supabase
+        .from('remboursements')
+        .select('numero_remboursement, statut')
+        .eq('pret_id', remboursement.pret_id)
+        .lt('numero_remboursement', remboursement.numero_remboursement)
+        .order('numero_remboursement', { ascending: true })
+
+      if (checkError) throw checkError
+
+      // Vérifier qu'il n'y a pas de remboursements précédents non payés
+      const unpaidPrevious = previousRemboursements?.find((r) => r.statut !== 'paye')
+      if (unpaidPrevious) {
+        const unpaidNumbers = previousRemboursements
+          ?.filter((r) => r.statut !== 'paye')
+          .map((r) => r.numero_remboursement)
+          .join(', ')
+        
+        setPaymentError(
+          `Impossible de payer le remboursement #${remboursement.numero_remboursement}.\n\n` +
+          `Vous devez d'abord compléter le paiement des remboursements précédents : #${unpaidNumbers}\n\n` +
+          "Les remboursements doivent être payés dans l'ordre séquentiel."
+        )
+        return
+      }
+    } catch (error: any) {
+      console.error('Erreur lors de la vérification des remboursements précédents:', error)
+      setPaymentError('Erreur lors de la vérification. Veuillez réessayer.')
       return
     }
     const montant = parseFloat(paymentForm.montant)
