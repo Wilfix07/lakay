@@ -1,0 +1,37 @@
+# Fichiers à ignorer lors du déploiement sur Vercel
+
+# Fichiers d'environnement locaux
+.env
+.env.local
+.env*.local
+
+# Documentation
+*.md
+!README.md
+
+# Scripts de configuration
+setup-*.sh
+setup-*.ps1
+configure-*.ps1
+*.ps1
+*.sh
+
+# Fichiers de configuration Netlify (ancien déploiement)
+netlify.toml
+public/_redirects
+
+# Fichiers de développement
+.vscode
+.idea
+*.log
+.DS_Store
+
+# Node modules (déjà ignoré par défaut, mais explicite)
+node_modules
+
+# Fichiers de test et vérification
+check-deploy-readiness.js
+
+# Fichiers SQL (peuvent être volumineux)
+*.sql
+

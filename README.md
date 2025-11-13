@@ -49,7 +49,54 @@ npm run dev
 
 L'application sera accessible sur [http://localhost:3000](http://localhost:3000)
 
-## 📦 Déploiement sur Netlify
+## 📦 Déploiement
+
+### 🚀 Déploiement sur Vercel (Recommandé)
+
+L'application est configurée pour être déployée sur Vercel. Consultez le guide complet dans [DEPLOIEMENT_VERCEL.md](./DEPLOIEMENT_VERCEL.md).
+
+**Déploiement rapide :**
+
+1. **Connecter votre repository à Vercel**
+   - Allez sur [vercel.com](https://vercel.com)
+   - Importez votre repository Git
+   - Vercel détectera automatiquement Next.js
+
+2. **Configurer les variables d'environnement**
+   - Dans Vercel Dashboard → Settings → Environment Variables
+   - Ajoutez :
+     ```
+     NEXT_PUBLIC_SUPABASE_URL=votre_url_supabase
+     NEXT_PUBLIC_SUPABASE_ANON_KEY=votre_cle_anon_supabase
+     SUPABASE_SERVICE_ROLE_KEY=votre_cle_service_role
+     ```
+   - ⚠️ Pour `SUPABASE_SERVICE_ROLE_KEY` : ajoutez uniquement à Production et Preview (pas Development)
+
+3. **Déployer**
+   - Vercel déploiera automatiquement à chaque push sur la branche principale
+   - Les branches créent automatiquement des preview deployments
+
+**Configuration Vercel CLI :**
+```bash
+# Installer Vercel CLI
+npm install -g vercel
+
+# Se connecter
+vercel login
+
+# Déployer
+vercel
+
+# Configurer les variables d'environnement
+vercel env add NEXT_PUBLIC_SUPABASE_URL production
+vercel env add NEXT_PUBLIC_SUPABASE_ANON_KEY production
+vercel env add SUPABASE_SERVICE_ROLE_KEY production
+
+# Déployer en production
+vercel --prod
+```
+
+### 📦 Déploiement sur Netlify
 
 ### Option 1 : Déploiement via l'interface Netlify (Recommandé)
 
@@ -218,6 +265,7 @@ lakay-1/
 ├── supabase/
 │   └── schema.sql        # Schéma de base de données
 ├── public/               # Assets statiques
+├── vercel.json           # Configuration Vercel
 ├── netlify.toml          # Configuration Netlify
 └── next.config.ts        # Configuration Next.js
 ```
@@ -225,13 +273,16 @@ lakay-1/
 ## 🐛 Dépannage
 
 ### Erreur : "Variables d'environnement manquantes"
-- Vérifiez que `.env.local` existe et contient les bonnes clés
-- Sur Netlify, vérifiez les variables d'environnement dans les settings
+- Vérifiez que `.env.local` existe et contient les bonnes clés (développement local)
+- Sur Vercel : vérifiez les variables d'environnement dans Settings → Environment Variables
+- Sur Netlify : vérifiez les variables d'environnement dans les settings
+- ⚠️ Assurez-vous que `SUPABASE_SERVICE_ROLE_KEY` est configurée uniquement côté serveur (pas de préfixe `NEXT_PUBLIC_`)
 
-### Erreur de build sur Netlify
+### Erreur de build
 - Vérifiez que Node.js 20 est bien configuré
 - Assurez-vous que toutes les dépendances sont dans `package.json`
 - Vérifiez les logs de build pour identifier l'erreur
+- Sur Vercel : vérifiez que `next.config.ts` ne contient pas `output: 'standalone'` (Vercel gère automatiquement)
 
 ### Erreur de connexion Supabase
 - Vérifiez que l'URL et les clés sont correctes

@@ -653,18 +653,14 @@ export default function DashboardPage() {
             description: userProfile.role === 'admin' ? 'Créer managers et agents' : 'Créer des agents',
             href: '/utilisateurs',
             icon: Users,
-            color: 'text-purple-600',
-            bgColor: 'bg-purple-50',
-            hoverColor: 'hover:bg-purple-100',
+            gradient: 'bg-gradient-to-r from-purple-500 to-fuchsia-600',
           },
           {
             title: 'Gérer les Agents',
             description: 'Créer et modifier les agents',
             href: '/agents',
             icon: UserPlus,
-            color: 'text-blue-600',
-            bgColor: 'bg-blue-50',
-            hoverColor: 'hover:bg-blue-100',
+            gradient: 'bg-gradient-to-r from-sky-500 to-blue-600',
           },
           ...(userProfile.role === 'manager'
             ? [
@@ -673,9 +669,7 @@ export default function DashboardPage() {
                   description: 'Analyser les dépenses des agents',
                   href: '/expenses',
                   icon: ArrowDownRight,
-                  color: 'text-rose-600',
-                  bgColor: 'bg-rose-50',
-                  hoverColor: 'hover:bg-rose-100',
+                  gradient: 'bg-gradient-to-r from-rose-500 to-orange-500',
                 },
               ]
             : []),
@@ -688,27 +682,21 @@ export default function DashboardPage() {
             description: 'Créer et modifier les membres',
             href: '/membres',
             icon: Users,
-            color: 'text-green-600',
-            bgColor: 'bg-green-50',
-            hoverColor: 'hover:bg-green-100',
+            gradient: 'bg-gradient-to-r from-emerald-500 to-teal-600',
           },
           {
             title: 'Gérer les Prêts',
             description: 'Créer et décaisser les prêts',
             href: '/prets',
             icon: CreditCard,
-            color: 'text-indigo-600',
-            bgColor: 'bg-indigo-50',
-            hoverColor: 'hover:bg-indigo-100',
+            gradient: 'bg-gradient-to-r from-indigo-500 to-violet-600',
           },
           {
             title: 'Remboursements',
             description: 'Enregistrer les paiements',
             href: '/remboursements',
             icon: DollarSign,
-            color: 'text-orange-600',
-            bgColor: 'bg-orange-50',
-            hoverColor: 'hover:bg-orange-100',
+            gradient: 'bg-gradient-to-r from-amber-500 to-orange-600',
           },
           ...(userProfile.role === 'agent'
             ? [
@@ -717,9 +705,7 @@ export default function DashboardPage() {
                   description: 'Enregistrer et suivre vos dépenses',
                   href: '/expenses',
                   icon: ArrowDownRight,
-                  color: 'text-rose-600',
-                  bgColor: 'bg-rose-50',
-                  hoverColor: 'hover:bg-rose-100',
+                  gradient: 'bg-gradient-to-r from-pink-500 to-red-500',
                 },
               ]
             : []),
@@ -797,18 +783,18 @@ export default function DashboardPage() {
             const Icon = action.icon
             return (
               <Link key={index} href={action.href}>
-                <Card className={`border transition-all cursor-pointer ${action.hoverColor} hover:shadow-md`}>
+                <Card className={`border-0 shadow-sm text-white overflow-hidden ${action.gradient} transition-transform hover:-translate-y-1 hover:shadow-lg`}>
                   <CardHeader>
                     <div className="flex items-center justify-between">
-                      <div className={`p-3 rounded-lg ${action.bgColor}`}>
-                        <Icon className={`w-5 h-5 ${action.color}`} />
+                      <div className="p-3 rounded-lg bg-white/20">
+                        <Icon className="w-5 h-5 text-white" />
                       </div>
-                      <ArrowUpRight className="w-4 h-4 text-muted-foreground" />
+                      <ArrowUpRight className="w-4 h-4 text-white/70" />
                     </div>
-                    <CardTitle className="text-base font-semibold mt-4">
+                    <CardTitle className="text-base font-semibold mt-4 text-white">
                       {action.title}
                     </CardTitle>
-                    <CardDescription className="text-sm mt-1">
+                    <CardDescription className="text-sm mt-1 text-white/80">
                       {action.description}
                     </CardDescription>
                   </CardHeader>
