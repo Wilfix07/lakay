@@ -44,6 +44,7 @@ function PretsPageContent() {
   const [prets, setPrets] = useState<Pret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
+  const [collaterals, setCollaterals] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingPret, setEditingPret] = useState<Pret | null>(null)
@@ -424,6 +425,21 @@ function PretsPageContent() {
 
       if (error) throw error
       setPrets(data || [])
+
+      // Charger aussi les garanties pour vérifier leur statut
+      if (data && data.length > 0) {
+        const pretIds = data.map(p => p.pret_id)
+        const { data: collateralsData, error: collateralsError } = await supabase
+          .from('collaterals')
+          .select('pret_id, statut, montant_restant')
+          .in('pret_id', pretIds)
+
+        if (!collateralsError && collateralsData) {
+          setCollaterals(collateralsData)
+        }
+      } else {
+        setCollaterals([])
+      }
     } catch (error) {
       console.error('Erreur lors du chargement des prêts:', error)
       alert('Erreur lors du chargement des prêts')
@@ -439,6 +455,31 @@ function PretsPageContent() {
     }
     e.preventDefault()
     try {
+      // Pour les agents, s'assurer que l'agent_id est automatiquement assigné
+      // IMPORTANT: Les agents peuvent créer des prêts sans autorisation du manager
+      let finalAgentId = formData.agent_id
+      
+      if (userProfile?.role === 'agent') {
+        // Pour les agents, utiliser directement l'agent_id du profil utilisateur
+        if (userProfile.agent_id) {
+          finalAgentId = userProfile.agent_id
+        } else if (formData.agent_id) {
+          // Fallback: utiliser formData si disponible
+          finalAgentId = formData.agent_id
+        }
+      }
+
+      // Vérifier que l'agent_id est présent
+      if (!finalAgentId) {
+        if (userProfile?.role === 'agent') {
+          alert('Erreur: Votre profil agent n\'a pas d\'agent_id assigné. Veuillez contacter l\'administrateur pour corriger votre profil utilisateur.')
+          return
+        } else {
+          alert('Erreur: Agent de crédit non spécifié. Veuillez sélectionner un agent.')
+          return
+        }
+      }
+
       const montantPret = parseFloat(formData.montant_pret)
       const nombreRemboursements = parseInt(formData.nombre_remboursements, 10)
       const frequency: FrequenceRemboursement =
@@ -451,7 +492,7 @@ function PretsPageContent() {
       }
 
       if (isNaN(nombreRemboursements) || nombreRemboursements <= 0) {
-        alert('Veuillez saisir une durée valide (nombre d’échéances).')
+        alert('Veuillez saisir une durée valide (nombre d\'échéances).')
         return
       }
 
@@ -526,11 +567,10 @@ function PretsPageContent() {
       }
 
       // Déterminer le statut initial selon le rôle de l'utilisateur
-      // Si c'est un agent, le prêt doit être approuvé par le manager
-      // Si c'est un admin/manager, le prêt peut aller directement en attente de garantie
-      const initialStatus = userProfile?.role === 'agent' 
-        ? 'en_attente_approbation' 
-        : 'en_attente_garantie'
+      // Les agents peuvent créer des prêts directement en attente de garantie
+      // Ils peuvent collecter le collateral sans approbation du manager
+      // L'approbation du manager sera nécessaire seulement pour activer le prêt après collecte complète du collateral
+      const initialStatus = 'en_attente_garantie'
 
       // Créer le prêt
       const { error: pretError } = await supabase
@@ -538,7 +578,7 @@ function PretsPageContent() {
         .insert([{
           pret_id: newPretId,
           membre_id: formData.membre_id,
-          agent_id: formData.agent_id,
+          agent_id: finalAgentId, // Utiliser l'agent_id final (automatique pour les agents)
           montant_pret: montantPret,
           montant_remboursement: plan.montantEcheance,
           nombre_remboursements: nombreRemboursements,
@@ -588,40 +628,34 @@ function PretsPageContent() {
       }
 
       // Les remboursements seront créés automatiquement lors de l'activation du prêt
-      // (après dépôt complet de la garantie)
+      // (après dépôt complet de la garantie et approbation du manager)
 
-      if (initialStatus === 'en_attente_approbation') {
-        const messageDepot = montantDeposeFinal > 0
-          ? `\n💰 Dépôt initial: ${formatCurrency(montantDeposeFinal)} HTG\n${montantRestantFinal > 0 ? `⚠️ Montant restant: ${formatCurrency(montantRestantFinal)} HTG\n` : '✅ Garantie complète!\n'}`
-          : '\n⚠️ Aucun dépôt effectué. Le membre doit déposer la garantie COMPLÈTE avant que le manager puisse approuver.\n'
-        
-        alert(
-          `✅ Demande de prêt créée avec succès!\n\n` +
-          `📋 Prêt: ${newPretId}\n` +
-          `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
-          `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)` +
-          messageDepot +
-          `⏳ Statut: En attente d'approbation du manager\n\n` +
-          `${montantRestantFinal > 0 ? 'Le membre doit compléter le dépôt de garantie avant que le manager puisse approuver.\nAllez dans "Garanties" pour enregistrer les dépôts supplémentaires.' : 'La garantie est complète. Le manager peut approuver le prêt.'}`
-        )
-      } else {
-        alert(
-          `✅ Prêt créé avec succès!\n\n` +
-          `📋 Prêt: ${newPretId}\n` +
-          `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
-          `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)\n\n` +
-          `⚠️ IMPORTANT: Le membre doit déposer la garantie avant le décaissement.\n` +
-          `Allez dans "Garanties" pour enregistrer le dépôt.`
-        )
-      }
+      const messageDepot = montantDeposeFinal > 0
+        ? `\n💰 Dépôt initial: ${formatCurrency(montantDeposeFinal)} HTG\n${montantRestantFinal > 0 ? `⚠️ Montant restant: ${formatCurrency(montantRestantFinal)} HTG\n` : '✅ Garantie complète!\n'}`
+        : '\n⚠️ Aucun dépôt effectué. Vous pouvez collecter la garantie dans la page "Garanties".\n'
+      
+      const messageStatut = montantRestantFinal > 0
+        ? `⏳ Statut: En attente de garantie\n\nVous pouvez collecter le collateral (partiel ou total) dans la page "Garanties". Une fois la garantie complète, le manager pourra approuver le prêt pour l'activer.`
+        : `⏳ Statut: En attente de garantie (garantie complète)\n\nLe manager peut maintenant approuver le prêt dans la page "Approbations" pour l'activer.`
+      
+      alert(
+        `✅ Prêt créé avec succès!\n\n` +
+        `📋 Prêt: ${newPretId}\n` +
+        `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
+        `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)` +
+        messageDepot +
+        messageStatut
+      )
       setShowForm(false)
+      // Réinitialiser le formulaire, mais garder l'agent_id pour les agents
+      const resetAgentId = userProfile?.role === 'agent' && userProfile.agent_id ? userProfile.agent_id : ''
       setFormData({
         membre_id: '',
-        agent_id: '',
+        agent_id: resetAgentId,
         montant_pret: '',
         date_decaissement: new Date().toISOString().split('T')[0],
         frequence_remboursement: 'journalier',
-        nombre_remboursements: '23',
+        nombre_remboursements: systemDefaultInstallments.toString(),
       })
       setCollateralDeposit('')
       setShowCollateralDeposit(false)
@@ -706,7 +740,7 @@ function PretsPageContent() {
       }
 
       if (isNaN(nombreRemboursements) || nombreRemboursements <= 0) {
-        alert('Veuillez saisir une durée valide (nombre d’échéances).')
+        alert('Veuillez saisir une durée valide (nombre d\'échéances).')
         return
       }
 
@@ -742,11 +776,19 @@ function PretsPageContent() {
         return
       }
 
+      // Pour les agents, s'assurer qu'ils ne peuvent pas modifier l'agent_id
+      // Les agents ne peuvent modifier que leurs propres prêts
+      let finalAgentIdForUpdate = formData.agent_id
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        // Les agents ne peuvent pas changer l'agent_id, utiliser celui du profil
+        finalAgentIdForUpdate = userProfile.agent_id
+      }
+
       const { error: pretError } = await supabase
         .from('prets')
         .update({
           membre_id: formData.membre_id,
-          agent_id: formData.agent_id,
+          agent_id: finalAgentIdForUpdate,
           montant_pret: montantPret,
           montant_remboursement: plan.montantEcheance,
           nombre_remboursements: nombreRemboursements,
@@ -765,7 +807,7 @@ function PretsPageContent() {
       const remboursements = plan.schedule.map((entry) => ({
         pret_id: editingPret.pret_id,
         membre_id: formData.membre_id,
-        agent_id: formData.agent_id,
+        agent_id: finalAgentIdForUpdate,
         numero_remboursement: entry.numero,
         montant: entry.montant,
         principal: entry.principal,
@@ -802,7 +844,11 @@ function PretsPageContent() {
     }
   }
 
-  const filteredMembres = formData.agent_id
+  // Pour les agents, les membres sont déjà filtrés par leur agent_id dans loadMembres
+  // Pour les admins/managers, filtrer par l'agent_id sélectionné
+  const filteredMembres = userProfile?.role === 'agent'
+    ? membres // Les agents voient déjà seulement leurs membres
+    : formData.agent_id
     ? membres.filter(m => m.agent_id === formData.agent_id)
     : membres
 
@@ -846,13 +892,15 @@ function PretsPageContent() {
               onClick={() => {
                 setShowForm(!showForm)
                 setEditingPret(null)
+                // Réinitialiser le formulaire, mais garder l'agent_id pour les agents
+                const resetAgentId = userProfile?.role === 'agent' && userProfile.agent_id ? userProfile.agent_id : ''
                 setFormData({
                   membre_id: '',
-                  agent_id: '',
+                  agent_id: resetAgentId,
                   montant_pret: '',
                   date_decaissement: new Date().toISOString().split('T')[0],
                   frequence_remboursement: 'journalier',
-                  nombre_remboursements: '23',
+                  nombre_remboursements: systemDefaultInstallments.toString(),
                 })
               }}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -881,24 +929,27 @@ function PretsPageContent() {
             </div>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Agent de Crédit *
-                  </label>
-                  <select
-                    required
-                    value={formData.agent_id}
-                    onChange={(e) => setFormData({ ...formData, agent_id: e.target.value, membre_id: '' })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  >
-                    <option value="">Sélectionner un agent</option>
-                    {agents.map((agent) => (
-                      <option key={agent.id} value={agent.agent_id}>
-                        {agent.agent_id} - {agent.prenom} {agent.nom}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {/* Le champ agent_id est masqué pour les agents car ils ne peuvent créer que pour eux-mêmes */}
+                {userProfile?.role !== 'agent' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Agent de Crédit *
+                    </label>
+                    <select
+                      required
+                      value={formData.agent_id}
+                      onChange={(e) => setFormData({ ...formData, agent_id: e.target.value, membre_id: '' })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="">Sélectionner un agent</option>
+                      {agents.map((agent) => (
+                        <option key={agent.id} value={agent.agent_id}>
+                          {agent.agent_id} - {agent.prenom} {agent.nom}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Membre *
@@ -907,11 +958,11 @@ function PretsPageContent() {
                     required
                     value={formData.membre_id}
                     onChange={(e) => setFormData({ ...formData, membre_id: e.target.value })}
-                    disabled={!formData.agent_id}
+                    disabled={!formData.agent_id && userProfile?.role !== 'agent'}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
                   >
                     <option value="">
-                      {formData.agent_id ? 'Sélectionner un membre' : 'Sélectionnez d\'abord un agent'}
+                      {formData.agent_id || userProfile?.role === 'agent' ? 'Sélectionner un membre' : 'Sélectionnez d\'abord un agent'}
                     </option>
                     {filteredMembres.map((membre) => (
                       (() => {
@@ -1240,15 +1291,26 @@ function PretsPageContent() {
                         {formatDate(pret.date_decaissement)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                          pret.statut === 'actif' ? 'bg-green-100 text-green-800' :
-                          pret.statut === 'en_attente_approbation' ? 'bg-yellow-100 text-yellow-800' :
-                          pret.statut === 'en_attente_garantie' ? 'bg-blue-100 text-blue-800' :
-                          pret.statut === 'termine' ? 'bg-gray-100 text-gray-800' :
-                          'bg-red-100 text-red-800'
-                        }`}>
-                          {pret.statut}
-                        </span>
+                        {(() => {
+                          const collateral = collaterals.find(c => c.pret_id === pret.pret_id)
+                          const isCollateralComplete = collateral?.statut === 'complet' && collateral?.montant_restant === 0
+                          const displayStatus = pret.statut === 'en_attente_garantie' && isCollateralComplete
+                            ? 'Garantie complète - En attente d\'approbation'
+                            : pret.statut
+                          
+                          return (
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                              pret.statut === 'actif' ? 'bg-green-100 text-green-800' :
+                              pret.statut === 'en_attente_approbation' ? 'bg-yellow-100 text-yellow-800' :
+                              pret.statut === 'en_attente_garantie' && isCollateralComplete ? 'bg-purple-100 text-purple-800' :
+                              pret.statut === 'en_attente_garantie' ? 'bg-blue-100 text-blue-800' :
+                              pret.statut === 'termine' ? 'bg-gray-100 text-gray-800' :
+                              'bg-red-100 text-red-800'
+                            }`}>
+                              {displayStatus}
+                            </span>
+                          )
+                        })()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <div className="flex gap-2">

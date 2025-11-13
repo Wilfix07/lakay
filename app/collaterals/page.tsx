@@ -106,8 +106,9 @@ function CollateralsPageContent() {
         }
       }
 
-      // Charger tous les prêts (actifs, terminés, et en attente de garantie) pour vérifier le statut
-      let pretsQuery = supabase.from('prets').select('*').in('statut', ['actif', 'termine', 'en_attente_garantie']).order('pret_id', { ascending: true })
+      // Charger tous les prêts (actifs, terminés, en attente de garantie, et en attente d'approbation) pour vérifier le statut
+      // Permettre aux agents de faire des dépôts même avant l'approbation du manager
+      let pretsQuery = supabase.from('prets').select('*').in('statut', ['actif', 'termine', 'en_attente_garantie', 'en_attente_approbation']).order('pret_id', { ascending: true })
       if (userProfile?.role === 'agent') {
         pretsQuery = pretsQuery.eq('agent_id', userProfile.agent_id ?? '')
       } else if (userProfile?.role === 'manager' && managerAgentIds) {
@@ -178,6 +179,7 @@ function CollateralsPageContent() {
 
   /**
    * Active un prêt et crée les remboursements après que la garantie soit complète
+   * Ne s'active PAS automatiquement si le prêt est en attente d'approbation (le manager doit d'abord approuver)
    */
   async function activateLoanAfterCollateral(pretId: string) {
     try {
@@ -190,6 +192,9 @@ function CollateralsPageContent() {
 
       if (pretError) throw pretError
       if (!pret) throw new Error('Prêt non trouvé')
+
+      // Le prêt doit être en attente de garantie pour être activé
+      // L'activation se fait après l'approbation du manager
 
       // Vérifier que le prêt est en attente de garantie
       if (pret.statut !== 'en_attente_garantie') {
@@ -289,14 +294,14 @@ function CollateralsPageContent() {
 
       if (updateError) throw updateError
 
-      // Si la garantie est maintenant complète, activer le prêt et créer les remboursements
-      if (nouveauStatut === 'complet' && existingCollateral.statut !== 'complet') {
-        await activateLoanAfterCollateral(formData.pret_id)
+      // Si la garantie est maintenant complète, le prêt peut être approuvé par le manager
+      // Le prêt ne sera pas activé automatiquement - le manager doit l'approuver dans la page Approbations
+      let message = ''
+      if (nouveauStatut === 'complet') {
+        message = '✅ Garantie complète ! Le prêt est maintenant prêt pour l\'approbation du manager. Le manager peut approuver le prêt dans la page "Approbations" pour l\'activer.'
+      } else {
+        message = 'Dépôt de garantie enregistré avec succès !'
       }
-
-      const message = nouveauStatut === 'complet' 
-        ? '✅ Garantie complète ! Le prêt a été activé et les remboursements ont été créés. Le décaissement peut maintenant être effectué.'
-        : 'Dépôt de garantie enregistré avec succès !'
       
       setSuccess(message)
       setShowForm(false)
@@ -946,8 +951,12 @@ function CollateralsPageContent() {
                                 <div className="text-xs text-muted-foreground mt-1">
                                   Prêt: {pret.statut === 'termine' ? (
                                     <span className="text-green-600 font-semibold">✓ Terminé</span>
+                                  ) : pret.statut === 'en_attente_garantie' && collateral.statut === 'complet' ? (
+                                    <span className="text-purple-600 font-semibold">✅ Garantie complète - En attente d'approbation</span>
                                   ) : pret.statut === 'en_attente_garantie' ? (
                                     <span className="text-orange-600 font-semibold">⏳ En attente de garantie</span>
+                                  ) : pret.statut === 'actif' ? (
+                                    <span className="text-blue-600 font-semibold">✓ Actif</span>
                                   ) : (
                                     <span className="text-amber-600">En cours</span>
                                   )}

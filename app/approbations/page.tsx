@@ -19,6 +19,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Loader2, CheckCircle2, XCircle, AlertCircle, Eye } from 'lucide-react'
 import { calculateCollateralAmount } from '@/lib/systemSettings'
+import { calculateLoanPlan, type FrequenceRemboursement } from '@/lib/loanUtils'
 
 function ApprobationsPageContent() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
@@ -68,12 +69,13 @@ function ApprobationsPageContent() {
       }
 
       const [pretsRes, membresRes, agentsRes, collateralsRes] = await Promise.all([
-        // Charger uniquement les prêts en attente d'approbation
+        // Charger les prêts en attente de garantie (les agents peuvent collecter le collateral sans approbation)
+        // Le manager doit approuver pour activer le prêt une fois le collateral complet
         (async () => {
           let query = supabase
             .from('prets')
             .select('*')
-            .eq('statut', 'en_attente_approbation')
+            .eq('statut', 'en_attente_garantie')
             .order('created_at', { ascending: false })
 
           if (userProfile.role === 'manager') {
@@ -138,7 +140,8 @@ function ApprobationsPageContent() {
     // Vérifier que la garantie est complètement déposée
     const montantDepose = Number(collateral.montant_depose || 0)
     const montantRequis = Number(collateral.montant_requis || 0)
-    const montantRestant = Number(collateral.montant_restant || montantRequis)
+    // Utiliser montant_restant directement (peut être 0, null ou undefined)
+    const montantRestant = collateral.montant_restant != null ? Number(collateral.montant_restant) : Math.max(0, montantRequis - montantDepose)
 
     if (montantDepose < montantRequis || montantRestant > 0) {
       alert(
@@ -172,7 +175,7 @@ function ApprobationsPageContent() {
         }
       }
 
-      // Mettre à jour le statut du prêt
+      // Mettre à jour le statut du prêt à "en_attente_garantie" d'abord
       const { error: updateError } = await supabase
         .from('prets')
         .update({ statut: 'en_attente_garantie' })
@@ -180,7 +183,55 @@ function ApprobationsPageContent() {
 
       if (updateError) throw updateError
 
-      alert(`✅ Prêt ${pret.pret_id} approuvé avec succès!\n\nLe prêt est maintenant en attente de garantie (garantie déjà complète).`)
+      // Si la garantie est complète, activer automatiquement le prêt
+      // (créer les remboursements et passer le statut à "actif")
+      if (montantDepose >= montantRequis && montantRestant <= 0) {
+        // Calculer le plan de remboursement
+        const frequency: FrequenceRemboursement = 
+          pret.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'
+        
+        const plan = await calculateLoanPlan(
+          pret.montant_pret,
+          frequency,
+          pret.nombre_remboursements,
+          pret.date_decaissement,
+        )
+
+        // Créer les remboursements
+        const remboursements = plan.schedule.map((entry) => ({
+          pret_id: pret.pret_id,
+          membre_id: pret.membre_id,
+          agent_id: pret.agent_id,
+          numero_remboursement: entry.numero,
+          montant: entry.montant,
+          principal: entry.principal,
+          interet: entry.interet,
+          date_remboursement: entry.date.toISOString().split('T')[0],
+          statut: 'en_attente',
+        }))
+
+        const { error: rembError } = await supabase
+          .from('remboursements')
+          .insert(remboursements)
+
+        if (rembError) throw rembError
+
+        // Activer le prêt
+        const { error: activateError } = await supabase
+          .from('prets')
+          .update({ 
+            statut: 'actif',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('pret_id', pret.pret_id)
+
+        if (activateError) throw activateError
+
+        alert(`✅ Prêt ${pret.pret_id} approuvé et activé avec succès!\n\nLa garantie est complète. Le prêt a été activé et les remboursements ont été créés. Le décaissement peut maintenant être effectué.`)
+      } else {
+        alert(`✅ Prêt ${pret.pret_id} approuvé avec succès!\n\nLe prêt est maintenant en attente de garantie.`)
+      }
+      
       await loadData()
     } catch (error) {
       console.error('Erreur lors de l\'approbation:', error)
@@ -247,7 +298,7 @@ function ApprobationsPageContent() {
               Approbations de prêts
             </h1>
             <p className="text-muted-foreground mt-2">
-              Approuvez ou rejetez les demandes de prêts de vos agents avant le décaissement.
+              Approuvez les prêts avec garantie complète pour les activer. Les agents peuvent collecter le collateral sans approbation.
             </p>
           </div>
           <Button
@@ -273,19 +324,19 @@ function ApprobationsPageContent() {
             <CardContent className="py-12 text-center">
               <AlertCircle className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
               <p className="text-lg font-medium text-foreground mb-2">
-                Aucune demande en attente
+                Aucun prêt en attente d'approbation
               </p>
               <p className="text-muted-foreground">
-                Il n'y a actuellement aucune demande de prêt en attente d'approbation.
+                Il n'y a actuellement aucun prêt avec garantie complète en attente d'activation.
               </p>
             </CardContent>
           </Card>
         ) : (
           <Card>
             <CardHeader>
-              <CardTitle>Demandes en attente ({prets.length})</CardTitle>
+              <CardTitle>Prêts en attente d'approbation ({prets.length})</CardTitle>
               <CardDescription>
-                Les prêts créés par vos agents nécessitent votre approbation avant le décaissement.
+                Prêts avec garantie complète en attente d'activation. Seuls les prêts avec garantie complète peuvent être approuvés.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -312,7 +363,13 @@ function ApprobationsPageContent() {
                     
                     const montantDepose = collateral ? Number(collateral.montant_depose || 0) : 0
                     const montantRequis = collateral ? Number(collateral.montant_requis || 0) : 0
-                    const montantRestant = collateral ? Number(collateral.montant_restant || montantRequis) : 0
+                    // Utiliser montant_restant directement (peut être 0, null ou undefined)
+                    // Si montant_restant est null/undefined, calculer: max(0, montantRequis - montantDepose)
+                    const montantRestant = collateral 
+                      ? (collateral.montant_restant != null 
+                          ? Number(collateral.montant_restant) 
+                          : Math.max(0, montantRequis - montantDepose))
+                      : montantRequis
                     const garantieComplete = montantDepose >= montantRequis && montantRestant <= 0
 
                     return (

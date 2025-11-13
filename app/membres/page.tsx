@@ -199,6 +199,8 @@ function MembresPageContent() {
     if (userProfile) {
       loadAgents()
       loadMembres()
+      // Pour les agents, définir automatiquement l'agent_id depuis le profil utilisateur
+      // IMPORTANT: Les agents peuvent créer des membres sans autorisation du manager
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
         setFormData(prev => ({ ...prev, agent_id: userProfile.agent_id! }))
       }
@@ -363,6 +365,33 @@ function MembresPageContent() {
     e.preventDefault()
     setSubmitting(true)
     try {
+      // Pour les agents, s'assurer que l'agent_id est automatiquement assigné
+      // IMPORTANT: Les agents peuvent créer des membres sans autorisation du manager
+      // Le membre est automatiquement assigné à l'agent_id de l'agent connecté
+      let finalAgentId = formData.agent_id
+      
+      if (userProfile?.role === 'agent') {
+        // Pour les agents, utiliser directement l'agent_id du profil utilisateur
+        // qui devrait être défini lors de la création du compte agent
+        if (userProfile.agent_id) {
+          finalAgentId = userProfile.agent_id
+        } else if (formData.agent_id) {
+          // Fallback: utiliser formData si disponible
+          finalAgentId = formData.agent_id
+        }
+      }
+
+      // Vérifier que l'agent_id est présent
+      if (!finalAgentId) {
+        if (userProfile?.role === 'agent') {
+          alert('Erreur: Votre profil agent n\'a pas d\'agent_id assigné. Veuillez contacter l\'administrateur pour corriger votre profil utilisateur.')
+        } else {
+          alert('Erreur: Agent de crédit non spécifié. Veuillez sélectionner un agent.')
+        }
+        setSubmitting(false)
+        return
+      }
+
       // Générer le membre_id automatiquement
       const { data: maxMembres } = await supabase
         .from('membres')
@@ -383,13 +412,16 @@ function MembresPageContent() {
         .insert([{
           membre_id: newMembreId,
           ...formData,
+          agent_id: finalAgentId, // Utiliser l'agent_id final (automatique pour les agents)
         }])
 
       if (error) throw error
 
       alert('Membre créé avec succès!')
       setShowForm(false)
-      setFormData({ agent_id: '', nom: '', prenom: '', telephone: '', adresse: '', photo_url: null })
+      // Réinitialiser le formulaire, mais garder l'agent_id pour les agents
+      const resetAgentId = userProfile?.role === 'agent' && userProfile.agent_id ? userProfile.agent_id : ''
+      setFormData({ agent_id: resetAgentId, nom: '', prenom: '', telephone: '', adresse: '', photo_url: null })
       loadMembres()
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
@@ -519,30 +551,36 @@ function MembresPageContent() {
           <Card>
             <CardHeader>
               <CardTitle>Créer un nouveau membre</CardTitle>
-              <CardDescription>Remplissez les informations pour créer un nouveau membre</CardDescription>
+              <CardDescription>
+                {userProfile?.role === 'agent' 
+                  ? 'Remplissez les informations pour créer un nouveau membre. Le membre sera automatiquement assigné à votre agent de crédit. Aucune autorisation du manager n\'est requise.'
+                  : 'Remplissez les informations pour créer un nouveau membre'}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="agent_id">Agent de Crédit *</Label>
-                  <Select
-                    required
-                    value={formData.agent_id}
-                    onValueChange={(value) => setFormData({ ...formData, agent_id: value })}
-                    disabled={userProfile?.role === 'agent'}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Sélectionner un agent" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {agents.map((agent) => (
-                        <SelectItem key={agent.id} value={agent.agent_id}>
-                          {agent.agent_id} - {agent.prenom} {agent.nom}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                {/* Le champ agent_id est masqué pour les agents car ils ne peuvent créer que pour eux-mêmes */}
+                {userProfile?.role !== 'agent' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="agent_id">Agent de Crédit *</Label>
+                    <Select
+                      required
+                      value={formData.agent_id}
+                      onValueChange={(value) => setFormData({ ...formData, agent_id: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Sélectionner un agent" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {agents.map((agent) => (
+                          <SelectItem key={agent.id} value={agent.agent_id}>
+                            {agent.agent_id} - {agent.prenom} {agent.nom}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
                 <div className="grid md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="nom">Nom *</Label>
