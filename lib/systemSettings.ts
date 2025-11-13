@@ -18,6 +18,46 @@ export const DEFAULT_SETTINGS = {
 }
 
 /**
+ * Fonction utilitaire pour obtenir le manager_id de l'utilisateur actuel
+ * Retourne le manager_id si l'utilisateur est un manager ou un agent
+ */
+async function getCurrentUserManagerId(): Promise<string | null> {
+  try {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return null
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role, id, agent_id')
+      .eq('id', user.id)
+      .single()
+
+    if (!profile) return null
+
+    // Si c'est un manager, retourner son id
+    if (profile.role === 'manager') {
+      return profile.id
+    }
+
+    // Si c'est un agent, obtenir le manager_id via son agent_id
+    if (profile.role === 'agent' && profile.agent_id) {
+      const { data: agent } = await supabase
+        .from('agents')
+        .select('manager_id')
+        .eq('agent_id', profile.agent_id)
+        .single()
+
+      return agent?.manager_id || null
+    }
+
+    return null
+  } catch (error) {
+    console.error('Erreur lors de la récupération du manager_id:', error)
+    return null
+  }
+}
+
+/**
  * Récupère les paramètres d'échéancier depuis la base de données
  * @param managerId - ID du manager (optionnel). Si null, charge les paramètres globaux ou du manager actuel
  */
@@ -29,25 +69,17 @@ export async function getScheduleSettings(managerId?: string | null) {
       .eq('key', 'schedule')
 
     // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
-    // Sinon, chercher les paramètres globaux (manager_id IS NULL)
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
     if (managerId !== undefined) {
       query = query.eq('manager_id', managerId)
     } else {
-      // Charger les paramètres du manager actuel si on est manager, sinon globaux
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('role, id')
-          .eq('id', user.id)
-          .single()
-
-        if (profile?.role === 'manager') {
-          query = query.eq('manager_id', profile.id)
-        } else {
-          query = query.is('manager_id', null)
-        }
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
       } else {
+        // Si aucun manager détecté, charger les paramètres globaux
         query = query.is('manager_id', null)
       }
     }
@@ -86,25 +118,17 @@ export async function getInterestRates(managerId?: string | null) {
       .eq('key', 'interest_rates')
 
     // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
-    // Sinon, chercher les paramètres globaux (manager_id IS NULL)
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
     if (managerId !== undefined) {
       query = query.eq('manager_id', managerId)
     } else {
-      // Charger les paramètres du manager actuel si on est manager, sinon globaux
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('role, id')
-          .eq('id', user.id)
-          .single()
-
-        if (profile?.role === 'manager') {
-          query = query.eq('manager_id', profile.id)
-        } else {
-          query = query.is('manager_id', null)
-        }
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
       } else {
+        // Si aucun manager détecté, charger les paramètres globaux
         query = query.is('manager_id', null)
       }
     }
@@ -132,14 +156,32 @@ export async function getInterestRates(managerId?: string | null) {
 
 /**
  * Récupère les barèmes de montants actifs
+ * @param managerId - ID du manager (optionnel). Si null, charge les barèmes globaux ou du manager actuel
  */
-export async function getLoanAmountBrackets() {
+export async function getLoanAmountBrackets(managerId?: string | null) {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('loan_amount_brackets')
       .select('*')
       .eq('is_active', true)
-      .order('min_amount', { ascending: true })
+
+    // Si managerId est fourni, chercher les barèmes spécifiques à ce manager
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
+    if (managerId !== undefined) {
+      query = query.eq('manager_id', managerId)
+    } else {
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
+      } else {
+        // Si aucun manager détecté, charger les barèmes globaux
+        query = query.is('manager_id', null)
+      }
+    }
+
+    const { data, error } = await query.order('min_amount', { ascending: true })
 
     if (error) {
       console.error('Erreur lors de la récupération des barèmes:', error)
@@ -153,6 +195,7 @@ export async function getLoanAmountBrackets() {
       max_amount: item.max_amount === null ? null : Number(item.max_amount),
       default_interest_rate: item.default_interest_rate === null ? null : Number(item.default_interest_rate),
       is_active: item.is_active,
+      manager_id: item.manager_id,
     }))
   } catch (error) {
     console.error('Erreur lors de la récupération des barèmes:', error)
@@ -177,14 +220,32 @@ export function findBracketForAmount(brackets: any[], amount: number) {
 
 /**
  * Récupère les catégories de dépenses actives
+ * @param managerId - ID du manager (optionnel). Si null, charge les catégories globales ou du manager actuel
  */
-export async function getExpenseCategories() {
+export async function getExpenseCategories(managerId?: string | null) {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('expense_categories')
       .select('*')
       .eq('is_active', true)
-      .order('name', { ascending: true })
+
+    // Si managerId est fourni, chercher les catégories spécifiques à ce manager
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
+    if (managerId !== undefined) {
+      query = query.eq('manager_id', managerId)
+    } else {
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
+      } else {
+        // Si aucun manager détecté, charger les catégories globales
+        query = query.is('manager_id', null)
+      }
+    }
+
+    const { data, error } = await query.order('name', { ascending: true })
 
     if (error) {
       console.error('Erreur lors de la récupération des catégories:', error)
@@ -259,25 +320,17 @@ export async function getCollateralSettings(managerId?: string | null) {
       .eq('key', 'collateral_settings')
 
     // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
-    // Sinon, chercher les paramètres globaux (manager_id IS NULL)
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
     if (managerId !== undefined) {
       query = query.eq('manager_id', managerId)
     } else {
-      // Charger les paramètres du manager actuel si on est manager, sinon globaux
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('role, id')
-          .eq('id', user.id)
-          .single()
-
-        if (profile?.role === 'manager') {
-          query = query.eq('manager_id', profile.id)
-        } else {
-          query = query.is('manager_id', null)
-        }
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
       } else {
+        // Si aucun manager détecté, charger les paramètres globaux
         query = query.is('manager_id', null)
       }
     }

@@ -98,6 +98,15 @@ function ParametresPageContent() {
   const [collateralSaving, setCollateralSaving] = useState(false)
   const [collateralMessage, setCollateralMessage] = useState<string | null>(null)
 
+  // Paramètres business du manager (logo et nom)
+  const [businessForm, setBusinessForm] = useState({
+    business_name: '',
+    logo_url: '',
+  })
+  const [businessSaving, setBusinessSaving] = useState(false)
+  const [businessMessage, setBusinessMessage] = useState<string | null>(null)
+  const [logoUploading, setLogoUploading] = useState(false)
+
   useEffect(() => {
     loadUserProfile()
   }, [])
@@ -150,6 +159,36 @@ function ParametresPageContent() {
     }
   }
 
+  async function loadBusinessSettings(managerId?: string | null) {
+    if (!managerId) return
+    
+    try {
+      const { data, error } = await supabase
+        .from('manager_business_settings')
+        .select('*')
+        .eq('manager_id', managerId)
+        .single()
+
+      if (error && error.code !== 'PGRST116') {
+        console.error('Erreur lors du chargement des paramètres business:', error)
+      }
+
+      if (data) {
+        setBusinessForm({
+          business_name: data.business_name || '',
+          logo_url: data.logo_url || '',
+        })
+      } else {
+        setBusinessForm({
+          business_name: '',
+          logo_url: '',
+        })
+      }
+    } catch (error) {
+      console.error('Erreur lors du chargement des paramètres business:', error)
+    }
+  }
+
   async function loadAllSettings(managerId?: string | null) {
     try {
       setLoading(true)
@@ -157,6 +196,13 @@ function ParametresPageContent() {
       setInterestMessage(null)
       setBracketMessage(null)
       setCategoryMessage(null)
+      
+      // Charger les paramètres business si c'est un manager
+      if (userProfile?.role === 'manager') {
+        await loadBusinessSettings(userProfile.id)
+      } else if (userProfile?.role === 'admin' && managerId) {
+        await loadBusinessSettings(managerId)
+      }
 
       // Charger les paramètres système pour le manager spécifié (ou globaux si null)
       let settingsQuery = supabase
@@ -170,17 +216,32 @@ function ParametresPageContent() {
         settingsQuery = settingsQuery.is('manager_id', null)
       }
 
+      // Charger les barèmes et catégories avec filtrage par manager_id
+      let bracketsQuery = supabase
+        .from('loan_amount_brackets')
+        .select('*')
+        .eq('is_active', true)
+        .order('min_amount', { ascending: true })
+      
+      let categoriesQuery = supabase
+        .from('expense_categories')
+        .select('*')
+        .eq('is_active', true)
+        .order('name', { ascending: true })
+
+      if (managerId !== null && managerId !== undefined) {
+        bracketsQuery = bracketsQuery.eq('manager_id', managerId)
+        categoriesQuery = categoriesQuery.eq('manager_id', managerId)
+      } else {
+        bracketsQuery = bracketsQuery.is('manager_id', null)
+        categoriesQuery = categoriesQuery.is('manager_id', null)
+      }
+
       const [{ data: settingsData, error: settingsError }, { data: bracketsData, error: bracketsError }, { data: categoriesData, error: categoriesError }] =
         await Promise.all([
           settingsQuery,
-          supabase
-            .from('loan_amount_brackets')
-            .select('*')
-            .order('min_amount', { ascending: true }),
-          supabase
-            .from('expense_categories')
-            .select('*')
-            .order('name', { ascending: true }),
+          bracketsQuery,
+          categoriesQuery,
         ])
 
       if (settingsError) throw settingsError
@@ -298,11 +359,11 @@ function ParametresPageContent() {
       )
 
       if (error) throw error
-      setScheduleMessage('Paramètres d'échéancier enregistrés avec succès.')
+      setScheduleMessage("Paramètres d'échéancier enregistrés avec succès.")
       loadAllSettings(managerId)
     } catch (error) {
-      console.error('Erreur lors de la sauvegarde de l’échéancier:', error)
-      setScheduleMessage("Erreur lors de l'enregistrement de l’échéancier")
+      console.error("Erreur lors de la sauvegarde de l'échéancier:", error)
+      setScheduleMessage("Erreur lors de l'enregistrement de l'échéancier")
     } finally {
       setScheduleSaving(false)
     }
@@ -335,7 +396,7 @@ function ParametresPageContent() {
             penaltyRate: interestForm.penaltyRate,
             commissionRate: interestForm.commissionRate,
           },
-          description: 'Taux d'intérêts appliqués aux prêts',
+          description: "Taux d'intérêts appliqués aux prêts",
           updated_by: userProfile.id,
         },
         {
@@ -344,7 +405,7 @@ function ParametresPageContent() {
       )
 
       if (error) throw error
-      setInterestMessage('Taux d'intérêts enregistrés avec succès.')
+      setInterestMessage("Taux d'intérêts enregistrés avec succès.")
       loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors de la sauvegarde des taux:', error)
@@ -423,6 +484,13 @@ function ParametresPageContent() {
 
     try {
       setBracketSaving(true)
+      if (!userProfile) return
+
+      // Déterminer le manager_id pour la sauvegarde
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       if (editingBracketId) {
         const { error } = await supabase
           .from('loan_amount_brackets')
@@ -431,6 +499,7 @@ function ParametresPageContent() {
             min_amount: min,
             max_amount: max,
             default_interest_rate: rate,
+            manager_id: managerId,
           })
           .eq('id', editingBracketId)
 
@@ -442,6 +511,7 @@ function ParametresPageContent() {
           min_amount: min,
           max_amount: max,
           default_interest_rate: rate,
+          manager_id: managerId,
         })
         if (error) throw error
         setBracketMessage('Barème ajouté.')
@@ -449,7 +519,7 @@ function ParametresPageContent() {
 
       setBracketForm({ label: '', minAmount: '', maxAmount: '', rate: '' })
       setEditingBracketId(null)
-      loadAllSettings()
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors de la sauvegarde du barème:', error)
       setBracketMessage('Erreur lors de la sauvegarde du barème')
@@ -470,12 +540,18 @@ function ParametresPageContent() {
 
   async function handleToggleBracket(id: number, isActive: boolean) {
     try {
+      if (!userProfile) return
+      
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       const { error } = await supabase
         .from('loan_amount_brackets')
         .update({ is_active: !isActive })
         .eq('id', id)
       if (error) throw error
-      loadAllSettings()
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors du changement de statut du barème:', error)
       setBracketMessage('Erreur lors du changement de statut')
@@ -485,13 +561,19 @@ function ParametresPageContent() {
   async function handleDeleteBracket(id: number) {
     if (!confirm('Supprimer ce barème ?')) return
     try {
+      if (!userProfile) return
+      
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       const { error } = await supabase.from('loan_amount_brackets').delete().eq('id', id)
       if (error) throw error
       if (editingBracketId === id) {
         setEditingBracketId(null)
         setBracketForm({ label: '', minAmount: '', maxAmount: '', rate: '' })
       }
-      loadAllSettings()
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors de la suppression du barème:', error)
       setBracketMessage('Erreur lors de la suppression')
@@ -509,12 +591,20 @@ function ParametresPageContent() {
 
     try {
       setCategorySaving(true)
+      if (!userProfile) return
+
+      // Déterminer le manager_id pour la sauvegarde
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       if (editingCategoryId) {
         const { error } = await supabase
           .from('expense_categories')
           .update({
             name: categoryForm.name.trim(),
             description: categoryForm.description.trim() || null,
+            manager_id: managerId,
           })
           .eq('id', editingCategoryId)
         if (error) throw error
@@ -523,6 +613,7 @@ function ParametresPageContent() {
         const { error } = await supabase.from('expense_categories').insert({
           name: categoryForm.name.trim(),
           description: categoryForm.description.trim() || null,
+          manager_id: managerId,
         })
         if (error) throw error
         setCategoryMessage('Catégorie créée.')
@@ -530,7 +621,7 @@ function ParametresPageContent() {
 
       setCategoryForm({ name: '', description: '' })
       setEditingCategoryId(null)
-      loadAllSettings()
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors de la sauvegarde de la catégorie:', error)
       setCategoryMessage('Erreur lors de la sauvegarde de la catégorie')
@@ -549,12 +640,18 @@ function ParametresPageContent() {
 
   async function handleToggleCategory(id: number, isActive: boolean) {
     try {
+      if (!userProfile) return
+      
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       const { error } = await supabase
         .from('expense_categories')
         .update({ is_active: !isActive })
         .eq('id', id)
       if (error) throw error
-      loadAllSettings()
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors du changement de statut de la catégorie:', error)
       setCategoryMessage('Erreur lors du changement de statut')
@@ -564,16 +661,120 @@ function ParametresPageContent() {
   async function handleDeleteCategory(id: number) {
     if (!confirm('Supprimer cette catégorie ?')) return
     try {
+      if (!userProfile) return
+      
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       const { error } = await supabase.from('expense_categories').delete().eq('id', id)
       if (error) throw error
       if (editingCategoryId === id) {
         setEditingCategoryId(null)
         setCategoryForm({ name: '', description: '' })
       }
-      loadAllSettings()
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors de la suppression de la catégorie:', error)
       setCategoryMessage('Erreur lors de la suppression')
+    }
+  }
+
+  async function handleLogoUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    if (!file.type.startsWith('image/')) {
+      setBusinessMessage('Veuillez sélectionner une image valide')
+      return
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setBusinessMessage('L\'image ne doit pas dépasser 5 MB')
+      return
+    }
+
+    try {
+      setLogoUploading(true)
+      setBusinessMessage(null)
+
+      if (!userProfile) return
+
+      const fileExt = file.name.split('.').pop()
+      const fileName = `logo_${userProfile.id}_${Date.now()}.${fileExt}`
+      const filePath = `logos/${fileName}`
+
+      // Upload vers Supabase Storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('business-assets')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: true,
+        })
+
+      if (uploadError) {
+        // Si le bucket n'existe pas, utiliser base64
+        console.warn('Storage upload failed, using base64:', uploadError)
+        const reader = new FileReader()
+        reader.onloadend = () => {
+          const base64String = reader.result as string
+          setBusinessForm(prev => ({ ...prev, logo_url: base64String }))
+        }
+        reader.readAsDataURL(file)
+        setLogoUploading(false)
+        return
+      }
+
+      // Récupérer l'URL publique
+      const { data: urlData } = supabase.storage
+        .from('business-assets')
+        .getPublicUrl(filePath)
+
+      setBusinessForm(prev => ({ ...prev, logo_url: urlData.publicUrl }))
+    } catch (error) {
+      console.error('Erreur lors de l\'upload du logo:', error)
+      setBusinessMessage('Erreur lors de l\'upload du logo')
+    } finally {
+      setLogoUploading(false)
+    }
+  }
+
+  async function handleBusinessSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!userProfile) return
+    
+    setBusinessMessage(null)
+
+    try {
+      setBusinessSaving(true)
+      
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
+      if (!managerId) {
+        setBusinessMessage('Manager ID requis')
+        return
+      }
+
+      const { error } = await supabase
+        .from('manager_business_settings')
+        .upsert({
+          manager_id: managerId,
+          business_name: businessForm.business_name.trim(),
+          logo_url: businessForm.logo_url || null,
+        }, {
+          onConflict: 'manager_id',
+        })
+
+      if (error) throw error
+      setBusinessMessage('Paramètres business enregistrés avec succès.')
+      await loadBusinessSettings(managerId)
+    } catch (error) {
+      console.error('Erreur lors de la sauvegarde des paramètres business:', error)
+      setBusinessMessage('Erreur lors de l\'enregistrement des paramètres business')
+    } finally {
+      setBusinessSaving(false)
     }
   }
 
@@ -813,10 +1014,96 @@ function ParametresPageContent() {
               </CardContent>
             </Card>
 
+            {/* Paramètres Business (Logo et Nom) - Seulement pour les managers */}
+            {(userProfile?.role === 'manager' || (userProfile?.role === 'admin' && selectedManagerId)) && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Informations Business</CardTitle>
+                  <CardDescription>
+                    Configurez le nom de votre entreprise et votre logo.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <form onSubmit={handleBusinessSubmit} className="space-y-6">
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label>Nom de l'entreprise</Label>
+                        <Input
+                          type="text"
+                          value={businessForm.business_name}
+                          onChange={(e) =>
+                            setBusinessForm((prev) => ({ ...prev, business_name: e.target.value }))
+                          }
+                          placeholder="Entrez le nom de votre entreprise"
+                          className={loading ? 'bg-muted' : ''}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Logo</Label>
+                        <div className="flex items-center gap-4">
+                          {businessForm.logo_url && (
+                            <div className="relative w-32 h-32 rounded-lg overflow-hidden border-2 border-gray-300">
+                              <img
+                                src={businessForm.logo_url}
+                                alt="Logo"
+                                className="w-full h-full object-contain"
+                              />
+                            </div>
+                          )}
+                          <div className="flex flex-col gap-2">
+                            <label className="cursor-pointer">
+                              <span className="inline-flex items-center px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium">
+                                {businessForm.logo_url ? 'Changer le logo' : 'Télécharger un logo'}
+                              </span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={handleLogoUpload}
+                                className="hidden"
+                                disabled={logoUploading}
+                              />
+                            </label>
+                            {logoUploading && (
+                              <p className="text-xs text-muted-foreground">Upload en cours...</p>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Formats acceptés : JPG, PNG, GIF (max 5 MB)
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Button type="submit" disabled={businessSaving}>
+                        {businessSaving ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Enregistrement...
+                          </>
+                        ) : (
+                          <>
+                            <Save className="w-4 h-4 mr-2" />
+                            Enregistrer
+                          </>
+                        )}
+                      </Button>
+                      {businessMessage && (
+                        <span className={`text-sm ${businessMessage.includes('Erreur') ? 'text-red-600' : 'text-green-600'}`}>
+                          {businessMessage}
+                        </span>
+                      )}
+                    </div>
+                  </form>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Taux d'intérêts */}
             <Card>
               <CardHeader>
-                <CardTitle>Taux d’intérêts</CardTitle>
+                <CardTitle>Taux d'intérêts</CardTitle>
                 <CardDescription>
                   Gérez les taux standard et pénalités appliqués aux prêts.
                 </CardDescription>

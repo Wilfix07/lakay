@@ -23,6 +23,32 @@ export async function DELETE(request: NextRequest) {
       },
     })
 
+    // Vérifier l'authentification de l'utilisateur
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return NextResponse.json({ error: 'Non autorisé' }, { status: 401 })
+    }
+
+    const token = authHeader.replace('Bearer ', '')
+    
+    // Utiliser la service_role key pour vérifier le token (plus sécurisé)
+    // On peut aussi utiliser la clé anon, mais service_role fonctionne aussi
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token)
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Non autorisé' }, { status: 401 })
+    }
+
+    // Récupérer le profil de l'utilisateur authentifié
+    const { data: currentUserProfile, error: profileError } = await supabaseAdmin
+      .from('user_profiles')
+      .select('role, id')
+      .eq('id', user.id)
+      .single()
+
+    if (profileError || !currentUserProfile) {
+      return NextResponse.json({ error: 'Profil utilisateur non trouvé' }, { status: 403 })
+    }
+
     let body
     try {
       body = await request.json()
@@ -34,6 +60,64 @@ export async function DELETE(request: NextRequest) {
 
     if (!id) {
       return NextResponse.json({ error: 'Identifiant utilisateur requis' }, { status: 400 })
+    }
+
+    // Vérifier les permissions : seul admin peut supprimer tous les utilisateurs
+    // Les managers peuvent supprimer uniquement leurs agents
+    if (currentUserProfile.role !== 'admin') {
+      if (currentUserProfile.role === 'manager') {
+        // Vérifier que l'utilisateur à supprimer est un agent qui appartient au manager
+        const { data: targetUserProfile, error: targetError } = await supabaseAdmin
+          .from('user_profiles')
+          .select('role, agent_id')
+          .eq('id', id)
+          .single()
+
+        if (targetError || !targetUserProfile) {
+          return NextResponse.json({ error: 'Utilisateur non trouvé' }, { status: 404 })
+        }
+
+        // Un manager ne peut supprimer que les agents
+        if (targetUserProfile.role !== 'agent') {
+          return NextResponse.json(
+            { error: 'Vous n\'êtes pas autorisé à supprimer cet utilisateur' },
+            { status: 403 },
+          )
+        }
+
+        // Vérifier que l'agent appartient au manager
+        if (targetUserProfile.agent_id) {
+          const { data: agent, error: agentError } = await supabaseAdmin
+            .from('agents')
+            .select('manager_id')
+            .eq('agent_id', targetUserProfile.agent_id)
+            .single()
+
+          if (agentError || !agent) {
+            return NextResponse.json(
+              { error: 'Agent non trouvé' },
+              { status: 404 },
+            )
+          }
+
+          if (agent.manager_id !== currentUserProfile.id) {
+            return NextResponse.json(
+              { error: 'Vous n\'êtes pas autorisé à supprimer cet agent' },
+              { status: 403 },
+            )
+          }
+        } else {
+          return NextResponse.json(
+            { error: 'Agent invalide' },
+            { status: 400 },
+          )
+        }
+      } else {
+        return NextResponse.json(
+          { error: 'Vous n\'êtes pas autorisé à supprimer des utilisateurs' },
+          { status: 403 },
+        )
+      }
     }
 
     // Supprimer le profil (ignore erreurs si aucune ligne)

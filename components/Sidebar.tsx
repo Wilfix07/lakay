@@ -51,7 +51,7 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Utilisateurs',
       href: '/utilisateurs',
       icon: Users,
-      roles: ['admin', 'manager'] as UserRole[],
+      roles: ['admin'] as UserRole[],
     },
     {
       title: 'Agents',
@@ -105,7 +105,7 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Paramètres',
       href: '/parametres',
       icon: Settings,
-      roles: ['admin'] as UserRole[],
+      roles: ['admin', 'manager'] as UserRole[],
     },
     {
       title: 'Dépenses',

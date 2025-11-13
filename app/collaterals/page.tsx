@@ -18,6 +18,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Loader2,
   Plus,
@@ -27,6 +28,7 @@ import {
   AlertCircle,
   Clock,
   Wallet,
+  ArrowDownCircle,
 } from 'lucide-react'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { calculateLoanPlan, type FrequenceRemboursement } from '@/lib/loanUtils'
@@ -40,12 +42,19 @@ function CollateralsPageContent() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
+  const [showWithdrawalForm, setShowWithdrawalForm] = useState(false)
+  const [selectedCollateral, setSelectedCollateral] = useState<Collateral | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [formData, setFormData] = useState({
     pret_id: '',
     montant_depose: '',
     date_depot: new Date().toISOString().split('T')[0],
+    notes: '',
+  })
+  const [withdrawalFormData, setWithdrawalFormData] = useState({
+    montant_retire: '',
+    date_retrait: new Date().toISOString().split('T')[0],
     notes: '',
   })
 
@@ -306,68 +315,104 @@ function CollateralsPageContent() {
     }
   }
 
-  async function handleRefund(collateral: Collateral) {
+  function openWithdrawalForm(collateral: Collateral) {
+    // Vérifier d'abord que le prêt est entièrement remboursé
+    const pret = getPret(collateral.pret_id)
+    
+    if (!pret) {
+      setError('Prêt non trouvé.')
+      return
+    }
+
+    // Vérifier que le prêt est terminé
+    if (pret.statut !== 'termine') {
+      setError('Le retrait de la garantie n\'est autorisé que lorsque le prêt est entièrement remboursé. Le membre doit d\'abord terminer de payer son prêt.')
+      return
+    }
+
+    // Vérifier que la garantie est complète
+    if (collateral.statut !== 'complet') {
+      setError('La garantie doit être complète avant d\'être remboursée.')
+      return
+    }
+
+    setSelectedCollateral(collateral)
+    setWithdrawalFormData({
+      montant_retire: collateral.montant_depose.toString(),
+      date_retrait: new Date().toISOString().split('T')[0],
+      notes: '',
+    })
+    setShowWithdrawalForm(true)
+    setError(null)
+  }
+
+  async function handleWithdrawalSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!selectedCollateral) return
+
+    setSaving(true)
+    setError(null)
+    setSuccess(null)
+
     try {
-      // Vérifier d'abord que le prêt est entièrement remboursé
-      const { data: pretData, error: pretError } = await supabase
-        .from('prets')
-        .select('statut, montant_pret')
-        .eq('pret_id', collateral.pret_id)
-        .single()
-
-      if (pretError) throw pretError
-
-      if (!pretData) {
-        setError('Prêt non trouvé.')
-        return
+      const montantRetire = parseFloat(withdrawalFormData.montant_retire)
+      if (isNaN(montantRetire) || montantRetire <= 0) {
+        throw new Error('Le montant retiré doit être supérieur à 0')
       }
 
-      // Vérifier que le prêt est terminé
-      if (pretData.statut !== 'termine') {
-        setError('Le retrait de la garantie n\'est autorisé que lorsque le prêt est entièrement remboursé. Le membre doit d\'abord terminer de payer son prêt.')
-        return
+      if (montantRetire > selectedCollateral.montant_depose) {
+        throw new Error(`Le montant retiré ne peut pas dépasser le montant déposé (${formatCurrency(selectedCollateral.montant_depose)})`)
       }
 
       // Vérifier que tous les remboursements sont payés
       const { data: remboursements, error: rembError } = await supabase
         .from('remboursements')
         .select('statut')
-        .eq('pret_id', collateral.pret_id)
+        .eq('pret_id', selectedCollateral.pret_id)
 
       if (rembError) throw rembError
 
       const allPaid = remboursements?.every((r) => r.statut === 'paye')
       if (!allPaid) {
-        setError('Tous les remboursements doivent être payés avant de retirer la garantie.')
-        return
+        throw new Error('Tous les remboursements doivent être payés avant de retirer la garantie.')
       }
 
-      // Vérifier que la garantie est complète
-      if (collateral.statut !== 'complet') {
-        setError('La garantie doit être complète avant d\'être remboursée.')
-        return
+      // Mettre à jour la garantie
+      const updateData: any = {
+        statut: 'rembourse',
+        date_remboursement: withdrawalFormData.date_retrait,
+        updated_at: new Date().toISOString(),
       }
 
-      if (!confirm(`Confirmer le retrait de la garantie de ${formatCurrency(collateral.montant_depose)} ?\n\nLe membre a terminé de rembourser son prêt et peut récupérer sa garantie.`)) {
-        return
+      // Si des notes sont ajoutées, les combiner avec les notes existantes
+      if (withdrawalFormData.notes) {
+        const existingNotes = selectedCollateral.notes || ''
+        updateData.notes = existingNotes 
+          ? `${existingNotes}\n\n[Retrait ${withdrawalFormData.date_retrait}]: ${withdrawalFormData.notes}`
+          : `[Retrait ${withdrawalFormData.date_retrait}]: ${withdrawalFormData.notes}`
       }
 
       const { error } = await supabase
         .from('collaterals')
-        .update({
-          statut: 'rembourse',
-          date_remboursement: new Date().toISOString().split('T')[0],
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', collateral.id)
+        .update(updateData)
+        .eq('id', selectedCollateral.id)
 
       if (error) throw error
 
-      setSuccess('Garantie remboursée avec succès ! Le membre peut récupérer son dépôt.')
+      setSuccess(`Garantie de ${formatCurrency(montantRetire)} remboursée avec succès ! Le membre peut récupérer son dépôt.`)
+      setShowWithdrawalForm(false)
+      setSelectedCollateral(null)
+      setWithdrawalFormData({
+        montant_retire: '',
+        date_retrait: new Date().toISOString().split('T')[0],
+        notes: '',
+      })
       await loadData()
     } catch (err: any) {
-      console.error('Erreur lors du remboursement:', err)
-      setError(err.message || 'Erreur lors du remboursement de la garantie.')
+      console.error('Erreur lors du retrait:', err)
+      setError(err.message || 'Erreur lors du retrait de la garantie.')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -511,20 +556,48 @@ function CollateralsPageContent() {
               </div>
             </CardHeader>
             <CardContent>
-              <Button
-                onClick={() => setShowForm(!showForm)}
-                variant="default"
-                className="w-full"
-                disabled={availablePretsForDeposit.length === 0}
-                title={
-                  availablePretsForDeposit.length === 0
-                    ? 'Aucune garantie partielle disponible. Créez un prêt d\'abord ou attendez qu\'une garantie ne soit pas complète.'
-                    : ''
-                }
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                {showForm ? 'Annuler' : 'Enregistrer dépôt'}
-              </Button>
+              <div className="space-y-2">
+                <Button
+                  onClick={() => {
+                    setShowForm(!showForm)
+                    setShowWithdrawalForm(false)
+                    setError(null)
+                  }}
+                  variant="default"
+                  className="w-full"
+                  disabled={availablePretsForDeposit.length === 0}
+                  title={
+                    availablePretsForDeposit.length === 0
+                      ? 'Aucune garantie partielle disponible. Créez un prêt d\'abord ou attendez qu\'une garantie ne soit pas complète.'
+                      : ''
+                  }
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  {showForm ? 'Annuler' : 'Enregistrer dépôt'}
+                </Button>
+                {(() => {
+                  const availableForWithdrawal = collaterals.filter(
+                    c => c.statut === 'complet' && !c.date_remboursement && getPret(c.pret_id)?.statut === 'termine'
+                  )
+                  if (availableForWithdrawal.length > 0) {
+                    return (
+                      <Button
+                        onClick={() => {
+                          setShowWithdrawalForm(!showWithdrawalForm)
+                          setShowForm(false)
+                          setError(null)
+                        }}
+                        variant="outline"
+                        className="w-full bg-green-50 hover:bg-green-100 text-green-700 border-green-300"
+                      >
+                        <ArrowDownCircle className="w-4 h-4 mr-2" />
+                        {showWithdrawalForm ? 'Annuler' : 'Enregistrer retrait'}
+                      </Button>
+                    )
+                  }
+                  return null
+                })()}
+              </div>
               {availablePretsForDeposit.length === 0 && collaterals.length === 0 && (
                 <p className="text-xs text-muted-foreground mt-2 text-center">
                   💡 Créez d'abord un prêt dans la page "Prêts". Une garantie sera créée automatiquement.
@@ -557,7 +630,15 @@ function CollateralsPageContent() {
                       id="pret_id"
                       required
                       value={formData.pret_id}
-                      onChange={(e) => setFormData({ ...formData, pret_id: e.target.value })}
+                      onChange={(e) => {
+                        const selectedCollateral = availablePretsForDeposit.find(
+                          c => c.pret_id === e.target.value
+                        )
+                        setFormData({ ...formData, pret_id: e.target.value })
+                        if (selectedCollateral) {
+                          setError(null)
+                        }
+                      }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
                     >
                       <option value="">Sélectionner un prêt</option>
@@ -571,10 +652,24 @@ function CollateralsPageContent() {
                         )
                       })}
                     </select>
+                    {formData.pret_id && (() => {
+                      const collateral = availablePretsForDeposit.find(c => c.pret_id === formData.pret_id)
+                      if (!collateral) return null
+                      const pret = getPret(collateral.pret_id)
+                      const membre = getMembre(collateral.membre_id)
+                      return (
+                        <div className="text-xs text-muted-foreground mt-1 p-2 bg-muted rounded">
+                          <div><strong>Membre:</strong> {membre?.prenom} {membre?.nom}</div>
+                          <div><strong>Montant requis:</strong> {formatCurrency(collateral.montant_requis)}</div>
+                          <div><strong>Déjà déposé:</strong> {formatCurrency(collateral.montant_depose)}</div>
+                          <div><strong>Restant à déposer:</strong> {formatCurrency(collateral.montant_restant)}</div>
+                        </div>
+                      )
+                    })()}
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="montant_depose">Montant à déposer</Label>
+                    <Label htmlFor="montant_depose">Montant à déposer (HTG)</Label>
                     <Input
                       id="montant_depose"
                       type="number"
@@ -582,9 +677,34 @@ function CollateralsPageContent() {
                       min="0.01"
                       step="0.01"
                       value={formData.montant_depose}
-                      onChange={(e) => setFormData({ ...formData, montant_depose: e.target.value })}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        setFormData({ ...formData, montant_depose: value })
+                        // Validation en temps réel
+                        if (formData.pret_id) {
+                          const collateral = availablePretsForDeposit.find(c => c.pret_id === formData.pret_id)
+                          if (collateral && parseFloat(value) > collateral.montant_restant) {
+                            setError(`Le montant ne peut pas dépasser ${formatCurrency(collateral.montant_restant)}`)
+                          } else {
+                            setError(null)
+                          }
+                        }
+                      }}
                       placeholder="Ex: 500.00"
                     />
+                    {formData.pret_id && formData.montant_depose && (() => {
+                      const collateral = availablePretsForDeposit.find(c => c.pret_id === formData.pret_id)
+                      if (!collateral) return null
+                      const montant = parseFloat(formData.montant_depose)
+                      if (isNaN(montant) || montant <= 0) return null
+                      const nouveauTotal = collateral.montant_depose + montant
+                      const nouveauRestant = Math.max(collateral.montant_requis - nouveauTotal, 0)
+                      return (
+                        <div className="text-xs text-muted-foreground">
+                          Après ce dépôt: {formatCurrency(nouveauTotal)} déposé, {formatCurrency(nouveauRestant)} restant
+                        </div>
+                      )
+                    })()}
                   </div>
 
                   <div className="space-y-2">
@@ -598,20 +718,20 @@ function CollateralsPageContent() {
                     />
                   </div>
 
-                  <div className="space-y-2">
+                  <div className="space-y-2 md:col-span-2">
                     <Label htmlFor="notes">Notes (optionnel)</Label>
-                    <Input
+                    <Textarea
                       id="notes"
-                      type="text"
                       value={formData.notes}
                       onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                      placeholder="Notes additionnelles"
+                      placeholder="Notes additionnelles sur ce dépôt..."
+                      rows={3}
                     />
                   </div>
                 </div>
 
                 <div className="flex gap-3">
-                  <Button type="submit" disabled={saving}>
+                  <Button type="submit" disabled={saving || !!error}>
                     {saving ? (
                       <>
                         <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -629,10 +749,140 @@ function CollateralsPageContent() {
                     variant="outline"
                     onClick={() => {
                       setShowForm(false)
+                      setError(null)
                       setFormData({
                         pret_id: '',
                         montant_depose: '',
                         date_depot: new Date().toISOString().split('T')[0],
+                        notes: '',
+                      })
+                    }}
+                  >
+                    Annuler
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Formulaire de retrait */}
+        {showWithdrawalForm && selectedCollateral && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Enregistrer un retrait de garantie</CardTitle>
+              <CardDescription>
+                Enregistrez le retrait de la garantie après que le membre ait terminé de rembourser son prêt
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleWithdrawalSubmit} className="space-y-4">
+                {/* Informations de la garantie */}
+                <div className="p-4 bg-muted rounded-lg space-y-2">
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Prêt:</span>
+                      <div className="font-semibold">{selectedCollateral.pret_id}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Membre:</span>
+                      <div className="font-semibold">
+                        {(() => {
+                          const membre = getMembre(selectedCollateral.membre_id)
+                          return membre ? `${membre.prenom} ${membre.nom}` : selectedCollateral.membre_id
+                        })()}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Montant déposé:</span>
+                      <div className="font-semibold text-green-600">
+                        {formatCurrency(selectedCollateral.montant_depose)}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Statut:</span>
+                      <div>
+                        <Badge className="bg-green-100 text-green-700">Complet</Badge>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="montant_retire">Montant à retirer (HTG)</Label>
+                    <Input
+                      id="montant_retire"
+                      type="number"
+                      required
+                      min="0.01"
+                      step="0.01"
+                      max={selectedCollateral.montant_depose}
+                      value={withdrawalFormData.montant_retire}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        const montant = parseFloat(value)
+                        if (montant > selectedCollateral.montant_depose) {
+                          setError(`Le montant ne peut pas dépasser ${formatCurrency(selectedCollateral.montant_depose)}`)
+                        } else {
+                          setError(null)
+                        }
+                        setWithdrawalFormData({ ...withdrawalFormData, montant_retire: value })
+                      }}
+                      placeholder="Ex: 500.00"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Maximum: {formatCurrency(selectedCollateral.montant_depose)}
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="date_retrait">Date du retrait</Label>
+                    <Input
+                      id="date_retrait"
+                      type="date"
+                      required
+                      value={withdrawalFormData.date_retrait}
+                      onChange={(e) => setWithdrawalFormData({ ...withdrawalFormData, date_retrait: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="withdrawal_notes">Notes (optionnel)</Label>
+                    <Textarea
+                      id="withdrawal_notes"
+                      value={withdrawalFormData.notes}
+                      onChange={(e) => setWithdrawalFormData({ ...withdrawalFormData, notes: e.target.value })}
+                      placeholder="Notes sur le retrait (ex: mode de paiement, références, etc.)..."
+                      rows={3}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <Button type="submit" disabled={saving || !!error} className="bg-green-600 hover:bg-green-700">
+                    {saving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Enregistrement...
+                      </>
+                    ) : (
+                      <>
+                        <ArrowDownCircle className="w-4 h-4 mr-2" />
+                        Enregistrer le retrait
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setShowWithdrawalForm(false)
+                      setSelectedCollateral(null)
+                      setError(null)
+                      setWithdrawalFormData({
+                        montant_retire: '',
+                        date_retrait: new Date().toISOString().split('T')[0],
                         notes: '',
                       })
                     }}
@@ -754,7 +1004,7 @@ function CollateralsPageContent() {
                           <TableCell>
                             {canRefund ? (
                               <Button
-                                onClick={() => handleRefund(collateral)}
+                                onClick={() => openWithdrawalForm(collateral)}
                                 variant="default"
                                 size="sm"
                                 className="bg-green-600 hover:bg-green-700"
@@ -769,6 +1019,23 @@ function CollateralsPageContent() {
                                 title="Le prêt doit être entièrement remboursé avant de retirer la garantie"
                               >
                                 Prêt en cours
+                              </Button>
+                            ) : collateral.statut === 'partiel' ? (
+                              <Button
+                                onClick={() => {
+                                  setFormData({
+                                    pret_id: collateral.pret_id,
+                                    montant_depose: '',
+                                    date_depot: new Date().toISOString().split('T')[0],
+                                    notes: '',
+                                  })
+                                  setShowForm(true)
+                                  setShowWithdrawalForm(false)
+                                }}
+                                variant="outline"
+                                size="sm"
+                              >
+                                Ajouter dépôt
                               </Button>
                             ) : null}
                           </TableCell>

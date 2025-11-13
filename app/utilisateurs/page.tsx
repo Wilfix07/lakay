@@ -67,10 +67,18 @@ function UtilisateursPageContent() {
 
   async function loadAgents() {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('agents')
         .select('*')
         .order('agent_id', { ascending: true })
+
+      // Les managers ne voient que leurs agents
+      if (userProfile?.role === 'manager') {
+        query = query.eq('manager_id', userProfile.id)
+      }
+      // Les admins voient tous les agents
+
+      const { data, error } = await query
 
       if (error) throw error
       setAgents(data || [])
@@ -87,9 +95,25 @@ function UtilisateursPageContent() {
         .select('*')
         .order('created_at', { ascending: false })
 
-      // Les managers ne voient que les agents
+      // Les managers ne voient que leurs agents
       if (userProfile?.role === 'manager') {
-        query = query.eq('role', 'agent')
+        // Récupérer d'abord les agent_id des agents du manager
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          // Filtrer les utilisateurs pour ne montrer que ceux qui ont un agent_id appartenant au manager
+          query = query.eq('role', 'agent').in('agent_id', agentIds)
+        } else {
+          // Si le manager n'a pas encore d'agents, retourner une liste vide
+          setUsers([])
+          return
+        }
       }
       // Les admins voient tous les utilisateurs sauf les admins
       else if (userProfile?.role === 'admin') {
@@ -179,20 +203,28 @@ function UtilisateursPageContent() {
   }
 
   function handleStartEdit(user: UserProfile) {
-    if (userProfile?.role !== 'admin') return
-    setEditingUser(user)
-    setEditData({
-      email: user.email,
-      role: (user.role as 'manager' | 'agent') ?? 'agent',
-      nom: user.nom ?? '',
-      prenom: user.prenom ?? '',
-      agent_id: user.agent_id ?? '',
-      password: '',
-    })
-    setShowEditForm(true)
-    setShowForm(false)
-    setError('')
-    setSuccess('')
+    // Vérifier les permissions : admin peut modifier tous les utilisateurs, manager peut modifier ses agents
+    if (userProfile?.role === 'admin' || userProfile?.role === 'manager') {
+      // Si c'est un manager, vérifier que l'utilisateur est un agent qui lui appartient
+      if (userProfile?.role === 'manager') {
+        if (user.role !== 'agent') return
+        // La vérification que l'agent appartient au manager sera faite côté serveur dans l'API
+      }
+      
+      setEditingUser(user)
+      setEditData({
+        email: user.email,
+        role: (user.role as 'manager' | 'agent') ?? 'agent',
+        nom: user.nom ?? '',
+        prenom: user.prenom ?? '',
+        agent_id: user.agent_id ?? '',
+        password: '',
+      })
+      setShowEditForm(true)
+      setShowForm(false)
+      setError('')
+      setSuccess('')
+    }
   }
 
   async function handleEditSubmit(e: React.FormEvent) {
@@ -212,6 +244,13 @@ function UtilisateursPageContent() {
     }
 
     try {
+      // Récupérer le token d'authentification
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        setError('Vous devez être connecté pour effectuer cette action')
+        return
+      }
+
       const payload: Record<string, any> = {
         id: editingUser.id,
         email: editData.email,
@@ -228,6 +267,7 @@ function UtilisateursPageContent() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
         },
         body: JSON.stringify(payload),
       })
@@ -260,18 +300,31 @@ function UtilisateursPageContent() {
   }
 
   async function handleDeleteUser(user: UserProfile) {
-    if (userProfile?.role !== 'admin') return
-    if (!confirm(`Êtes-vous sûr de vouloir supprimer l’utilisateur ${user.email} ?`)) {
+    // Vérifier les permissions : admin peut supprimer tous les utilisateurs, manager peut supprimer ses agents
+    if (userProfile?.role !== 'admin' && userProfile?.role !== 'manager') return
+    
+    // Si c'est un manager, vérifier que l'utilisateur est un agent (la vérification côté serveur confirmera qu'il appartient au manager)
+    if (userProfile?.role === 'manager' && user.role !== 'agent') return
+    
+    if (!confirm(`Êtes-vous sûr de vouloir supprimer l'utilisateur ${user.email} ?`)) {
       return
     }
     setError('')
     setSuccess('')
 
     try {
+      // Récupérer le token d'authentification
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        setError('Vous devez être connecté pour effectuer cette action')
+        return
+      }
+
       const response = await fetch('/api/users/delete', {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({ id: user.id }),
       })
@@ -622,7 +675,7 @@ function UtilisateursPageContent() {
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Date de création
                     </th>
-                    {userProfile?.role === 'admin' && (
+                    {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Actions
                       </th>
@@ -655,18 +708,22 @@ function UtilisateursPageContent() {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {new Date(user.created_at).toLocaleDateString('fr-FR')}
                       </td>
-                      {userProfile?.role === 'admin' && (
+                      {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
                           <div className="flex gap-2">
                             <button
                               onClick={() => handleStartEdit(user)}
                               className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                              disabled={userProfile?.role === 'manager' && user.role !== 'agent'}
+                              title={userProfile?.role === 'manager' && user.role !== 'agent' ? 'Vous ne pouvez modifier que vos agents' : ''}
                             >
                               Modifier
                             </button>
                             <button
                               onClick={() => handleDeleteUser(user)}
                               className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                              disabled={userProfile?.role === 'manager' && user.role !== 'agent'}
+                              title={userProfile?.role === 'manager' && user.role !== 'agent' ? 'Vous ne pouvez supprimer que vos agents' : ''}
                             >
                               Supprimer
                             </button>
@@ -696,7 +753,7 @@ function UtilisateursPageContent() {
 
 export default function UtilisateursPage() {
   return (
-    <ProtectedRoute requiredPermission="canCreateUsers">
+    <ProtectedRoute requiredRole="admin">
       <UtilisateursPageContent />
     </ProtectedRoute>
   )
