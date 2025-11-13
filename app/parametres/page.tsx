@@ -942,7 +942,7 @@ function ParametresPageContent() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={loadAllSettings}
+                    onClick={() => loadAllSettings(selectedManagerId)}
                     disabled={loading}
                   >
                     <RefreshCcw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />

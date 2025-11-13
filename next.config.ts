@@ -8,9 +8,7 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
-  eslint: {
-    ignoreDuringBuilds: false,
-  },
+  // Note: eslint configuration moved to eslint.config.js (Next.js 16)
   // Optimisations pour la production
   poweredByHeader: false,
   compress: true,
