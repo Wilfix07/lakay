@@ -376,3 +376,342 @@ export async function calculateCollateralAmount(loanAmount: number, customRate?:
   return (loanAmount * settings.collateralRate) / 100
 }
 
+/**
+ * Récupère les paramètres de localisation depuis manager_business_settings
+ * @param managerId - ID du manager (optionnel). Si null, charge les paramètres globaux ou du manager actuel
+ */
+export async function getLocalizationSettings(managerId?: string | null) {
+  try {
+    let query = supabase
+      .from('manager_business_settings')
+      .select('currency_code, currency_symbol, locale, date_format, timezone, app_language')
+
+    // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
+    if (managerId !== undefined) {
+      if (managerId === null) {
+        // Si null explicitement, chercher les paramètres globaux (premier manager ou default)
+        query = query.is('manager_id', null).limit(1)
+      } else {
+        query = query.eq('manager_id', managerId)
+      }
+    } else {
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
+      } else {
+        // Si aucun manager détecté, charger les paramètres globaux (premier manager ou default)
+        const { data: firstManager } = await supabase
+          .from('manager_business_settings')
+          .select('currency_code, currency_symbol, locale, date_format, timezone, app_language')
+          .limit(1)
+          .single()
+        
+        if (firstManager) {
+          return {
+            currencyCode: firstManager.currency_code || 'HTG',
+            currencySymbol: firstManager.currency_symbol || 'HTG',
+            locale: firstManager.locale || 'fr-FR',
+            dateFormat: firstManager.date_format || 'DD/MM/YYYY',
+            timezone: firstManager.timezone || 'America/Port-au-Prince',
+            appLanguage: firstManager.app_language || 'fr',
+          }
+        }
+        
+        // Fallback aux valeurs par défaut
+        return {
+          currencyCode: 'HTG',
+          currencySymbol: 'HTG',
+          locale: 'fr-FR',
+          dateFormat: 'DD/MM/YYYY',
+          timezone: 'America/Port-au-Prince',
+          appLanguage: 'fr',
+        }
+      }
+    }
+
+    const { data, error } = await query.single()
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('Erreur lors de la récupération des paramètres de localisation:', error)
+    }
+
+    if (data) {
+      return {
+        currencyCode: data.currency_code || 'HTG',
+        currencySymbol: data.currency_symbol || 'HTG',
+        locale: data.locale || 'fr-FR',
+        dateFormat: data.date_format || 'DD/MM/YYYY',
+        timezone: data.timezone || 'America/Port-au-Prince',
+        appLanguage: data.app_language || 'fr',
+      }
+    }
+
+    // Fallback aux valeurs par défaut
+    return {
+      currencyCode: 'HTG',
+      currencySymbol: 'HTG',
+      locale: 'fr-FR',
+      dateFormat: 'DD/MM/YYYY',
+      timezone: 'America/Port-au-Prince',
+      appLanguage: 'fr',
+    }
+  } catch (error) {
+    console.error('Erreur lors de la récupération des paramètres de localisation:', error)
+    return {
+      currencyCode: 'HTG',
+      currencySymbol: 'HTG',
+      locale: 'fr-FR',
+      dateFormat: 'DD/MM/YYYY',
+      timezone: 'America/Port-au-Prince',
+      appLanguage: 'fr',
+    }
+  }
+}
+
+/**
+ * Récupère les noms des mois depuis la base de données
+ * @param managerId - ID du manager (optionnel). Si null, charge les noms globaux ou du manager actuel
+ */
+export async function getMonthNames(managerId?: string | null) {
+  try {
+    let query = supabase
+      .from('month_names')
+      .select('month_number, short_name, long_name, locale')
+
+    // Si managerId est fourni, chercher les noms spécifiques à ce manager
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
+    if (managerId !== undefined) {
+      if (managerId === null) {
+        // Si null explicitement, chercher les noms globaux
+        query = query.is('manager_id', null)
+      } else {
+        query = query.eq('manager_id', managerId)
+      }
+    } else {
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
+      } else {
+        // Si aucun manager détecté, charger les noms globaux
+        query = query.is('manager_id', null)
+      }
+    }
+
+    const { data, error } = await query.order('month_number', { ascending: true })
+
+    if (error) {
+      console.error('Erreur lors de la récupération des noms des mois:', error)
+      // Fallback aux noms par défaut
+      return getDefaultMonthNames()
+    }
+
+    if (data && data.length > 0) {
+      // Récupérer aussi la locale depuis les paramètres de localisation
+      const localizationSettings = await getLocalizationSettings(managerId)
+      // Filtrer par locale
+      const filteredData = data.filter((item) => item.locale === localizationSettings.locale)
+      
+      if (filteredData.length > 0) {
+        return filteredData.map((item) => ({
+          monthNumber: item.month_number,
+          shortName: item.short_name,
+          longName: item.long_name,
+        }))
+      }
+      
+      // Si aucun mois trouvé pour cette locale, retourner les premiers disponibles
+      return data.map((item) => ({
+        monthNumber: item.month_number,
+        shortName: item.short_name,
+        longName: item.long_name,
+      }))
+    }
+
+    // Fallback aux noms par défaut
+    return getDefaultMonthNames()
+  } catch (error) {
+    console.error('Erreur lors de la récupération des noms des mois:', error)
+    return getDefaultMonthNames()
+  }
+}
+
+/**
+ * Retourne les noms des mois par défaut (français)
+ */
+function getDefaultMonthNames() {
+  return [
+    { monthNumber: 1, shortName: 'Janv', longName: 'Janvier' },
+    { monthNumber: 2, shortName: 'Fevr', longName: 'Février' },
+    { monthNumber: 3, shortName: 'Mars', longName: 'Mars' },
+    { monthNumber: 4, shortName: 'Avril', longName: 'Avril' },
+    { monthNumber: 5, shortName: 'Mai', longName: 'Mai' },
+    { monthNumber: 6, shortName: 'Juin', longName: 'Juin' },
+    { monthNumber: 7, shortName: 'Juillet', longName: 'Juillet' },
+    { monthNumber: 8, shortName: 'Aout', longName: 'Août' },
+    { monthNumber: 9, shortName: 'Sept', longName: 'Septembre' },
+    { monthNumber: 10, shortName: 'Oct', longName: 'Octobre' },
+    { monthNumber: 11, shortName: 'Nov', longName: 'Novembre' },
+    { monthNumber: 12, shortName: 'Dec', longName: 'Décembre' },
+  ]
+}
+
+/**
+ * Récupère les fréquences de remboursement depuis la base de données
+ * @param managerId - ID du manager (optionnel). Si null, charge les fréquences globales ou du manager actuel
+ */
+export async function getRepaymentFrequencies(managerId?: string | null) {
+  try {
+    let query = supabase
+      .from('repayment_frequencies')
+      .select('frequency_key, frequency_label, frequency_days, display_order')
+      .eq('is_active', true)
+
+    // Si managerId est fourni, chercher les fréquences spécifiques à ce manager
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
+    if (managerId !== undefined) {
+      if (managerId === null) {
+        // Si null explicitement, chercher les fréquences globales
+        query = query.is('manager_id', null)
+      } else {
+        query = query.eq('manager_id', managerId)
+      }
+    } else {
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
+      } else {
+        // Si aucun manager détecté, charger les fréquences globales
+        query = query.is('manager_id', null)
+      }
+    }
+
+    const { data, error } = await query.order('display_order', { ascending: true })
+
+    if (error) {
+      console.error('Erreur lors de la récupération des fréquences de remboursement:', error)
+      // Fallback aux fréquences par défaut
+      return [
+        { key: 'journalier', label: 'Journalier', days: 1 },
+        { key: 'mensuel', label: 'Mensuel', days: 30 },
+      ]
+    }
+
+    if (data && data.length > 0) {
+      return data.map((item) => ({
+        key: item.frequency_key,
+        label: item.frequency_label,
+        days: item.frequency_days,
+      }))
+    }
+
+    // Fallback aux fréquences par défaut
+    return [
+      { key: 'journalier', label: 'Journalier', days: 1 },
+      { key: 'mensuel', label: 'Mensuel', days: 30 },
+    ]
+  } catch (error) {
+    console.error('Erreur lors de la récupération des fréquences de remboursement:', error)
+    return [
+      { key: 'journalier', label: 'Journalier', days: 1 },
+      { key: 'mensuel', label: 'Mensuel', days: 30 },
+    ]
+  }
+}
+
+/**
+ * Récupère les paramètres de l'application (titre, description, logo) depuis manager_business_settings
+ * @param managerId - ID du manager (optionnel). Si null, charge les paramètres globaux ou du manager actuel
+ */
+export async function getAppSettings(managerId?: string | null) {
+  try {
+    let query = supabase
+      .from('manager_business_settings')
+      .select('business_name, logo_url, app_title, app_description, app_language')
+
+    // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
+    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
+    if (managerId !== undefined) {
+      if (managerId === null) {
+        // Si null explicitement, chercher les paramètres globaux (premier manager ou default)
+        query = query.is('manager_id', null).limit(1)
+      } else {
+        query = query.eq('manager_id', managerId)
+      }
+    } else {
+      // Détecter automatiquement le manager_id (pour managers et agents)
+      const detectedManagerId = await getCurrentUserManagerId()
+      
+      if (detectedManagerId) {
+        query = query.eq('manager_id', detectedManagerId)
+      } else {
+        // Si aucun manager détecté, charger les paramètres globaux (premier manager ou default)
+        const { data: firstManager } = await supabase
+          .from('manager_business_settings')
+          .select('business_name, logo_url, app_title, app_description, app_language')
+          .limit(1)
+          .single()
+        
+        if (firstManager) {
+          return {
+            businessName: firstManager.business_name || 'Lakay',
+            logoUrl: firstManager.logo_url || null,
+            appTitle: firstManager.app_title || 'Système de Microcrédit - Lakay',
+            appDescription: firstManager.app_description || 'Gestion de microcrédit avec remboursements quotidiens',
+            appLanguage: firstManager.app_language || 'fr',
+          }
+        }
+        
+        // Fallback aux valeurs par défaut
+        return {
+          businessName: 'Lakay',
+          logoUrl: null,
+          appTitle: 'Système de Microcrédit - Lakay',
+          appDescription: 'Gestion de microcrédit avec remboursements quotidiens',
+          appLanguage: 'fr',
+        }
+      }
+    }
+
+    const { data, error } = await query.single()
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('Erreur lors de la récupération des paramètres de l\'application:', error)
+    }
+
+    if (data) {
+      return {
+        businessName: data.business_name || 'Lakay',
+        logoUrl: data.logo_url || null,
+        appTitle: data.app_title || 'Système de Microcrédit - Lakay',
+        appDescription: data.app_description || 'Gestion de microcrédit avec remboursements quotidiens',
+        appLanguage: data.app_language || 'fr',
+      }
+    }
+
+    // Fallback aux valeurs par défaut
+    return {
+      businessName: 'Lakay',
+      logoUrl: null,
+      appTitle: 'Système de Microcrédit - Lakay',
+      appDescription: 'Gestion de microcrédit avec remboursements quotidiens',
+      appLanguage: 'fr',
+    }
+  } catch (error) {
+    console.error('Erreur lors de la récupération des paramètres de l\'application:', error)
+    return {
+      businessName: 'Lakay',
+      logoUrl: null,
+      appTitle: 'Système de Microcrédit - Lakay',
+      appDescription: 'Gestion de microcrédit avec remboursements quotidiens',
+      appLanguage: 'fr',
+    }
+  }
+}
+

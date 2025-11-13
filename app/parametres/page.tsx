@@ -98,10 +98,18 @@ function ParametresPageContent() {
   const [collateralSaving, setCollateralSaving] = useState(false)
   const [collateralMessage, setCollateralMessage] = useState<string | null>(null)
 
-  // Paramètres business du manager (logo et nom)
+  // Paramètres business du manager (logo, nom, localisation, application)
   const [businessForm, setBusinessForm] = useState({
     business_name: '',
     logo_url: '',
+    currency_code: 'HTG',
+    currency_symbol: 'HTG',
+    locale: 'fr-FR',
+    date_format: 'DD/MM/YYYY',
+    timezone: 'America/Port-au-Prince',
+    app_title: '',
+    app_description: '',
+    app_language: 'fr',
   })
   const [businessSaving, setBusinessSaving] = useState(false)
   const [businessMessage, setBusinessMessage] = useState<string | null>(null)
@@ -177,11 +185,27 @@ function ParametresPageContent() {
         setBusinessForm({
           business_name: data.business_name || '',
           logo_url: data.logo_url || '',
+          currency_code: data.currency_code || 'HTG',
+          currency_symbol: data.currency_symbol || 'HTG',
+          locale: data.locale || 'fr-FR',
+          date_format: data.date_format || 'DD/MM/YYYY',
+          timezone: data.timezone || 'America/Port-au-Prince',
+          app_title: data.app_title || '',
+          app_description: data.app_description || '',
+          app_language: data.app_language || 'fr',
         })
       } else {
         setBusinessForm({
           business_name: '',
           logo_url: '',
+          currency_code: 'HTG',
+          currency_symbol: 'HTG',
+          locale: 'fr-FR',
+          date_format: 'DD/MM/YYYY',
+          timezone: 'America/Port-au-Prince',
+          app_title: '',
+          app_description: '',
+          app_language: 'fr',
         })
       }
     } catch (error) {
@@ -761,8 +785,16 @@ function ParametresPageContent() {
         .from('manager_business_settings')
         .upsert({
           manager_id: managerId,
-          business_name: businessForm.business_name.trim(),
+          business_name: businessForm.business_name.trim() || null,
           logo_url: businessForm.logo_url || null,
+          currency_code: businessForm.currency_code || 'HTG',
+          currency_symbol: businessForm.currency_symbol || 'HTG',
+          locale: businessForm.locale || 'fr-FR',
+          date_format: businessForm.date_format || 'DD/MM/YYYY',
+          timezone: businessForm.timezone || 'America/Port-au-Prince',
+          app_title: businessForm.app_title.trim() || null,
+          app_description: businessForm.app_description.trim() || null,
+          app_language: businessForm.app_language || 'fr',
         }, {
           onConflict: 'manager_id',
         })
@@ -770,6 +802,11 @@ function ParametresPageContent() {
       if (error) throw error
       setBusinessMessage('Paramètres business enregistrés avec succès.')
       await loadBusinessSettings(managerId)
+      
+      // Recharger les données dynamiques pour mettre à jour le contexte
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('dynamicDataRefresh'))
+      }
     } catch (error) {
       console.error('Erreur lors de la sauvegarde des paramètres business:', error)
       setBusinessMessage('Erreur lors de l\'enregistrement des paramètres business')
@@ -1025,7 +1062,9 @@ function ParametresPageContent() {
                 </CardHeader>
                 <CardContent>
                   <form onSubmit={handleBusinessSubmit} className="space-y-6">
+                    {/* Section: Informations Business */}
                     <div className="space-y-4">
+                      <h3 className="text-lg font-semibold">Informations Business</h3>
                       <div className="space-y-2">
                         <Label>Nom de l'entreprise</Label>
                         <Input
@@ -1072,6 +1111,132 @@ function ParametresPageContent() {
                         <p className="text-xs text-muted-foreground">
                           Formats acceptés : JPG, PNG, GIF (max 5 MB)
                         </p>
+                      </div>
+                    </div>
+
+                    {/* Section: Localisation */}
+                    <div className="space-y-4 border-t pt-6">
+                      <h3 className="text-lg font-semibold">Localisation</h3>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>Code de devise</Label>
+                          <Input
+                            type="text"
+                            value={businessForm.currency_code}
+                            onChange={(e) =>
+                              setBusinessForm((prev) => ({ ...prev, currency_code: e.target.value.toUpperCase() }))
+                            }
+                            placeholder="HTG"
+                            maxLength={10}
+                          />
+                          <p className="text-xs text-muted-foreground">Ex: HTG, USD, EUR</p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Symbole de devise</Label>
+                          <Input
+                            type="text"
+                            value={businessForm.currency_symbol}
+                            onChange={(e) =>
+                              setBusinessForm((prev) => ({ ...prev, currency_symbol: e.target.value }))
+                            }
+                            placeholder="HTG"
+                            maxLength={10}
+                          />
+                          <p className="text-xs text-muted-foreground">Ex: HTG, $, €</p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Locale</Label>
+                          <Input
+                            type="text"
+                            value={businessForm.locale}
+                            onChange={(e) =>
+                              setBusinessForm((prev) => ({ ...prev, locale: e.target.value }))
+                            }
+                            placeholder="fr-FR"
+                          />
+                          <p className="text-xs text-muted-foreground">Ex: fr-FR, en-US, es-ES</p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Format de date</Label>
+                          <Select
+                            value={businessForm.date_format}
+                            onValueChange={(value) =>
+                              setBusinessForm((prev) => ({ ...prev, date_format: value }))
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="DD/MM/YYYY">DD/MM/YYYY</SelectItem>
+                              <SelectItem value="MM/DD/YYYY">MM/DD/YYYY</SelectItem>
+                              <SelectItem value="YYYY-MM-DD">YYYY-MM-DD</SelectItem>
+                              <SelectItem value="DD-MM-YYYY">DD-MM-YYYY</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <Label>Timezone</Label>
+                          <Input
+                            type="text"
+                            value={businessForm.timezone}
+                            onChange={(e) =>
+                              setBusinessForm((prev) => ({ ...prev, timezone: e.target.value }))
+                            }
+                            placeholder="America/Port-au-Prince"
+                          />
+                          <p className="text-xs text-muted-foreground">Ex: America/Port-au-Prince, America/New_York</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Section: Application */}
+                    <div className="space-y-4 border-t pt-6">
+                      <h3 className="text-lg font-semibold">Application</h3>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2 md:col-span-2">
+                          <Label>Titre de l'application</Label>
+                          <Input
+                            type="text"
+                            value={businessForm.app_title}
+                            onChange={(e) =>
+                              setBusinessForm((prev) => ({ ...prev, app_title: e.target.value }))
+                            }
+                            placeholder="Système de Microcrédit - Lakay"
+                          />
+                          <p className="text-xs text-muted-foreground">Le titre affiché dans l'onglet du navigateur</p>
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <Label>Description de l'application</Label>
+                          <textarea
+                            className="w-full h-24 px-3 py-2 border border-gray-300 rounded-md"
+                            value={businessForm.app_description}
+                            onChange={(e) =>
+                              setBusinessForm((prev) => ({ ...prev, app_description: e.target.value }))
+                            }
+                            placeholder="Gestion de microcrédit avec remboursements quotidiens"
+                          />
+                          <p className="text-xs text-muted-foreground">Description affichée dans les métadonnées</p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Langue de l'application</Label>
+                          <Select
+                            value={businessForm.app_language}
+                            onValueChange={(value) =>
+                              setBusinessForm((prev) => ({ ...prev, app_language: value }))
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="fr">Français</SelectItem>
+                              <SelectItem value="en">English</SelectItem>
+                              <SelectItem value="es">Español</SelectItem>
+                              <SelectItem value="ht">Kreyòl</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </div>
                     </div>
 

@@ -16,7 +16,9 @@ import {
   calculateCollateralAmount,
   getLoanAmountBrackets,
   getCollateralSettings,
+  getRepaymentFrequencies,
 } from '@/lib/systemSettings'
+import { useDynamicData } from '@/lib/contexts/DynamicDataContext'
 
 type FrequenceRemboursement = 'journalier' | 'mensuel'
 
@@ -38,6 +40,7 @@ interface LoanPlan {
 
 function PretsPageContent() {
   const router = useRouter()
+  const { repaymentFrequencies } = useDynamicData()
   const [prets, setPrets] = useState<Pret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
@@ -55,9 +58,22 @@ function PretsPageContent() {
     agent_id: '',
     montant_pret: '',
     date_decaissement: new Date().toISOString().split('T')[0],
-    frequence_remboursement: 'journalier',
+    frequence_remboursement: 'journalier' as FrequenceRemboursement,
     nombre_remboursements: '23',
   })
+  
+  // Mettre à jour la fréquence par défaut quand les fréquences sont chargées
+  useEffect(() => {
+    if (repaymentFrequencies.length > 0 && !editingPret && !showForm) {
+      const defaultFrequency = repaymentFrequencies[0].key as FrequenceRemboursement
+      const defaultInstallments = defaultFrequency === 'mensuel' ? '6' : systemDefaultInstallments.toString()
+      setFormData(prev => ({
+        ...prev,
+        frequence_remboursement: defaultFrequency,
+        nombre_remboursements: defaultInstallments,
+      }))
+    }
+  }, [repaymentFrequencies, systemDefaultInstallments, editingPret, showForm])
   const [memberCollateralBalance, setMemberCollateralBalance] = useState(0)
   const [collateralDeposit, setCollateralDeposit] = useState('')
   const [showCollateralDeposit, setShowCollateralDeposit] = useState(false)
@@ -956,9 +972,8 @@ function PretsPageContent() {
                     <div className="text-sm text-gray-600 mt-1 space-y-1">
                       <p>
                         <strong>Fréquence:</strong>{' '}
-                        {formData.frequence_remboursement === 'mensuel'
-                          ? 'Mensuelle'
-                          : 'Quotidienne'}
+                        {repaymentFrequencies.find(f => f.key === formData.frequence_remboursement)?.label || 
+                         (formData.frequence_remboursement === 'mensuel' ? 'Mensuelle' : 'Quotidienne')}
                       </p>
                       <p>
                         <strong>Échéances:</strong> {formData.nombre_remboursements}
@@ -984,22 +999,31 @@ function PretsPageContent() {
                     onChange={(e) =>
                       setFormData((prev) => {
                         const nextFrequency = e.target.value as FrequenceRemboursement
+                        // Trouver la fréquence sélectionnée dans la liste dynamique
+                        const selectedFrequency = repaymentFrequencies.find(f => f.key === nextFrequency)
                         let nextCount = prev.nombre_remboursements
-                        if (!nextCount) {
-                          nextCount = nextFrequency === 'mensuel' ? '6' : '23'
-                        } else if (
-                          prev.frequence_remboursement === 'journalier' &&
-                          nextFrequency === 'mensuel' &&
-                          nextCount === '23'
-                        ) {
-                          nextCount = '6'
-                        } else if (
-                          prev.frequence_remboursement === 'mensuel' &&
-                          nextFrequency === 'journalier' &&
-                          nextCount === '6'
-                        ) {
-                          nextCount = '23'
+                        
+                        // Ajuster le nombre de remboursements selon la fréquence sélectionnée
+                        if (!nextCount || !selectedFrequency) {
+                          // Utiliser des valeurs par défaut basées sur la fréquence
+                          if (nextFrequency === 'mensuel') {
+                            nextCount = '6'
+                          } else {
+                            nextCount = systemDefaultInstallments.toString()
+                          }
+                        } else {
+                          // Ajuster si on change de fréquence
+                          const currentFrequency = repaymentFrequencies.find(f => f.key === prev.frequence_remboursement)
+                          if (currentFrequency && currentFrequency.key !== nextFrequency) {
+                            // Changer de journalier à mensuel ou vice versa
+                            if (nextFrequency === 'mensuel' && prev.nombre_remboursements === '23') {
+                              nextCount = '6'
+                            } else if (nextFrequency === 'journalier' && prev.nombre_remboursements === '6') {
+                              nextCount = systemDefaultInstallments.toString()
+                            }
+                          }
                         }
+                        
                         return {
                           ...prev,
                           frequence_remboursement: nextFrequency,
@@ -1009,8 +1033,18 @@ function PretsPageContent() {
                     }
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
-                    <option value="journalier">Quotidienne</option>
-                    <option value="mensuel">Mensuelle</option>
+                    {repaymentFrequencies.length > 0 ? (
+                      repaymentFrequencies.map((freq) => (
+                        <option key={freq.key} value={freq.key}>
+                          {freq.label}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="journalier">Journalier</option>
+                        <option value="mensuel">Mensuel</option>
+                      </>
+                    )}
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
                     Choisissez la fréquence de remboursement (jours ouvrés pour le quotidien).

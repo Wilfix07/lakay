@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { DynamicDataWrapper } from "@/components/DynamicDataWrapper";
 
 export const metadata: Metadata = {
   title: "Système de Microcrédit - Lakay",
@@ -14,7 +15,9 @@ export default function RootLayout({
   return (
     <html lang="fr">
       <body className="antialiased bg-gray-50">
-        {children}
+        <DynamicDataWrapper>
+          {children}
+        </DynamicDataWrapper>
       </body>
     </html>
   );
