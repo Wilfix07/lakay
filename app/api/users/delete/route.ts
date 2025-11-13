@@ -33,19 +33,19 @@ export async function DELETE(request: NextRequest) {
     
     // Utiliser la service_role key pour vérifier le token (plus sécurisé)
     // On peut aussi utiliser la clé anon, mais service_role fonctionne aussi
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token)
-    if (authError || !user) {
+    const { data: { user }, error: currentUserAuthError } = await supabaseAdmin.auth.getUser(token)
+    if (currentUserAuthError || !user) {
       return NextResponse.json({ error: 'Non autorisé' }, { status: 401 })
     }
 
     // Récupérer le profil de l'utilisateur authentifié
-    const { data: currentUserProfile, error: profileError } = await supabaseAdmin
+    const { data: currentUserProfile, error: currentProfileError } = await supabaseAdmin
       .from('user_profiles')
       .select('role, id')
       .eq('id', user.id)
       .single()
 
-    if (profileError || !currentUserProfile) {
+    if (currentProfileError || !currentUserProfile) {
       return NextResponse.json({ error: 'Profil utilisateur non trouvé' }, { status: 403 })
     }
 
@@ -121,23 +121,23 @@ export async function DELETE(request: NextRequest) {
     }
 
     // Supprimer le profil (ignore erreurs si aucune ligne)
-    const { error: profileError } = await supabaseAdmin
+    const { error: profileDeleteError } = await supabaseAdmin
       .from('user_profiles')
       .delete()
       .eq('id', id)
 
-    if (profileError) {
+    if (profileDeleteError) {
       return NextResponse.json(
-        { error: `Erreur lors de la suppression du profil: ${profileError.message}` },
+        { error: `Erreur lors de la suppression du profil: ${profileDeleteError.message}` },
         { status: 500 },
       )
     }
 
-    const { error: authError } = await supabaseAdmin.auth.admin.deleteUser(id)
+    const { error: userDeleteError } = await supabaseAdmin.auth.admin.deleteUser(id)
 
-    if (authError) {
+    if (userDeleteError) {
       return NextResponse.json(
-        { error: `Erreur lors de la suppression Auth: ${authError.message}` },
+        { error: `Erreur lors de la suppression Auth: ${userDeleteError.message}` },
         { status: 500 },
       )
     }
