@@ -102,18 +102,30 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    // Mettre à jour l'email ou le mot de passe dans Supabase Auth si nécessaire
     if (email !== undefined || password !== undefined) {
-      const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(id, {
-        email,
-        password,
-        email_confirm: email !== undefined ? true : undefined,
-      })
+      const authUpdate: { email?: string; password?: string; email_confirm?: boolean } = {}
+      
+      if (email !== undefined) {
+        authUpdate.email = email
+        authUpdate.email_confirm = true
+      }
+      
+      // Ne mettre à jour le mot de passe que s'il est défini et non vide
+      if (password !== undefined && typeof password === 'string' && password.trim() !== '') {
+        authUpdate.password = password
+      }
 
-      if (authError) {
-        return NextResponse.json(
-          { error: `Erreur lors de la mise à jour de l'utilisateur Auth: ${authError.message}` },
-          { status: 500 },
-        )
+      // Ne faire la mise à jour que si on a quelque chose à mettre à jour
+      if (Object.keys(authUpdate).length > 0) {
+        const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(id, authUpdate)
+
+        if (authError) {
+          return NextResponse.json(
+            { error: `Erreur lors de la mise à jour de l'utilisateur Auth: ${authError.message}` },
+            { status: 500 },
+          )
+        }
       }
     }
 
