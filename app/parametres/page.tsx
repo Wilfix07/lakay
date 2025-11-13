@@ -24,6 +24,13 @@ import {
 } from '@/components/ui/table'
 import { Loader2, RefreshCcw, Save, Trash, Pencil } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 type ScheduleSettings = {
   totalInstallments: number
@@ -54,6 +61,8 @@ const DEFAULT_INTEREST: InterestSettings = {
 function ParametresPageContent() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [loading, setLoading] = useState(true)
+  const [selectedManagerId, setSelectedManagerId] = useState<string | null>(null) // null = paramètres globaux
+  const [managers, setManagers] = useState<UserProfile[]>([])
   const [scheduleForm, setScheduleForm] = useState<ScheduleSettings>(DEFAULT_SCHEDULE)
   const [interestForm, setInterestForm] = useState<InterestSettings>(DEFAULT_INTEREST)
   const [scheduleSaving, setScheduleSaving] = useState(false)
@@ -95,20 +104,53 @@ function ParametresPageContent() {
 
   useEffect(() => {
     if (!userProfile) return
-    if (userProfile.role !== 'admin') {
+    
+    // Si c'est un manager, charger ses propres paramètres
+    if (userProfile.role === 'manager') {
+      setSelectedManagerId(userProfile.id)
+      loadAllSettings(userProfile.id)
       setLoading(false)
       return
     }
-    loadAllSettings()
+    
+    // Si c'est un admin, charger les managers et les paramètres globaux
+    if (userProfile.role === 'admin') {
+      loadManagers()
+      loadAllSettings(null) // Charger les paramètres globaux par défaut
+    } else {
+      setLoading(false)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
+
+  useEffect(() => {
+    if (userProfile?.role === 'admin') {
+      loadAllSettings(selectedManagerId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedManagerId])
 
   async function loadUserProfile() {
     const profile = await getUserProfile()
     setUserProfile(profile)
   }
 
-  async function loadAllSettings() {
+  async function loadManagers() {
+    try {
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'manager')
+        .order('nom', { ascending: true })
+
+      if (error) throw error
+      setManagers(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement des managers:', error)
+    }
+  }
+
+  async function loadAllSettings(managerId?: string | null) {
     try {
       setLoading(true)
       setScheduleMessage(null)
@@ -116,12 +158,21 @@ function ParametresPageContent() {
       setBracketMessage(null)
       setCategoryMessage(null)
 
+      // Charger les paramètres système pour le manager spécifié (ou globaux si null)
+      let settingsQuery = supabase
+        .from('system_settings')
+        .select('*')
+        .in('key', ['schedule', 'interest_rates', 'collateral_settings'])
+      
+      if (managerId !== null && managerId !== undefined) {
+        settingsQuery = settingsQuery.eq('manager_id', managerId)
+      } else {
+        settingsQuery = settingsQuery.is('manager_id', null)
+      }
+
       const [{ data: settingsData, error: settingsError }, { data: bracketsData, error: bracketsError }, { data: categoriesData, error: categoriesError }] =
         await Promise.all([
-          supabase
-            .from('system_settings')
-            .select('*')
-            .in('key', ['schedule', 'interest_rates', 'collateral_settings']),
+          settingsQuery,
           supabase
             .from('loan_amount_brackets')
             .select('*')
@@ -222,9 +273,16 @@ function ParametresPageContent() {
 
     try {
       setScheduleSaving(true)
+      
+      // Déterminer le manager_id pour la sauvegarde
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       const { error } = await supabase.from('system_settings').upsert(
         {
           key: 'schedule',
+          manager_id: managerId,
           value: {
             totalInstallments: scheduleForm.totalInstallments,
             frequencyDays: scheduleForm.frequencyDays,
@@ -235,13 +293,13 @@ function ParametresPageContent() {
           updated_by: userProfile.id,
         },
         {
-          onConflict: 'key',
+          onConflict: 'key,manager_id',
         },
       )
 
       if (error) throw error
-      setScheduleMessage('Paramètres d’échéancier enregistrés avec succès.')
-      loadAllSettings()
+      setScheduleMessage('Paramètres d'échéancier enregistrés avec succès.')
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors de la sauvegarde de l’échéancier:', error)
       setScheduleMessage("Erreur lors de l'enregistrement de l’échéancier")
@@ -262,25 +320,32 @@ function ParametresPageContent() {
 
     try {
       setInterestSaving(true)
+      
+      // Déterminer le manager_id pour la sauvegarde
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       const { error } = await supabase.from('system_settings').upsert(
         {
           key: 'interest_rates',
+          manager_id: managerId,
           value: {
             baseInterestRate: interestForm.baseInterestRate,
             penaltyRate: interestForm.penaltyRate,
             commissionRate: interestForm.commissionRate,
           },
-          description: 'Taux d’intérêts appliqués aux prêts',
+          description: 'Taux d'intérêts appliqués aux prêts',
           updated_by: userProfile.id,
         },
         {
-          onConflict: 'key',
+          onConflict: 'key,manager_id',
         },
       )
 
       if (error) throw error
-      setInterestMessage('Taux d’intérêts enregistrés avec succès.')
-      loadAllSettings()
+      setInterestMessage('Taux d'intérêts enregistrés avec succès.')
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors de la sauvegarde des taux:', error)
       setInterestMessage('Erreur lors de l’enregistrement des taux')
@@ -301,9 +366,16 @@ function ParametresPageContent() {
 
     try {
       setCollateralSaving(true)
+      
+      // Déterminer le manager_id pour la sauvegarde
+      const managerId = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+
       const { error } = await supabase.from('system_settings').upsert(
         {
           key: 'collateral_settings',
+          manager_id: managerId,
           value: {
             collateralRate: collateralForm.collateralRate,
             refundPolicy: collateralForm.refundPolicy,
@@ -313,13 +385,13 @@ function ParametresPageContent() {
           updated_by: userProfile.id,
         },
         {
-          onConflict: 'key',
+          onConflict: 'key,manager_id',
         },
       )
 
       if (error) throw error
       setCollateralMessage('Paramètres de garantie enregistrés avec succès.')
-      loadAllSettings()
+      loadAllSettings(managerId)
     } catch (error) {
       console.error('Erreur lors de la sauvegarde des paramètres de garantie:', error)
       setCollateralMessage('Erreur lors de l\'enregistrement des paramètres de garantie')
@@ -523,7 +595,7 @@ function ParametresPageContent() {
     )
   }
 
-  if (userProfile.role !== 'admin') {
+  if (userProfile.role !== 'admin' && userProfile.role !== 'manager') {
     return (
       <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
         <div className="min-h-screen flex items-center justify-center">
@@ -531,8 +603,8 @@ function ParametresPageContent() {
             <CardHeader>
               <CardTitle>Accès restreint</CardTitle>
               <CardDescription>
-                Cette section est réservée aux administrateurs. Contactez un administrateur si vous
-                pensez qu’il s’agit d’une erreur.
+                Cette section est réservée aux administrateurs et managers. Contactez un administrateur si vous
+                pensez qu'il s'agit d'une erreur.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -548,15 +620,62 @@ function ParametresPageContent() {
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-foreground">Paramètres</h1>
             <p className="text-muted-foreground mt-2">
-              Configurez l’échéancier, les taux d’intérêts, le barème des montants et les catégories
-              de dépenses.
+              {userProfile.role === 'admin' 
+                ? 'Configurez l\'échéancier, les taux d\'intérêts, le barème des montants et les catégories de dépenses pour chaque manager séparément.'
+                : 'Configurez vos paramètres d\'échéancier, taux d\'intérêts et garanties.'
+              }
             </p>
           </div>
-          <Button variant="outline" onClick={loadAllSettings} disabled={loading}>
+          <Button variant="outline" onClick={() => loadAllSettings(selectedManagerId)} disabled={loading}>
             <RefreshCcw className="w-4 h-4 mr-2" />
             Actualiser
           </Button>
         </div>
+
+        {/* Sélecteur de manager pour les admins */}
+        {userProfile.role === 'admin' && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Gérer les paramètres par manager</CardTitle>
+              <CardDescription>
+                Sélectionnez un manager pour gérer ses paramètres spécifiques, ou "Paramètres globaux" pour les paramètres par défaut.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <Label htmlFor="manager-select">Manager</Label>
+                <Select
+                  value={selectedManagerId || 'global'}
+                  onValueChange={(value) => {
+                    setSelectedManagerId(value === 'global' ? null : value)
+                  }}
+                >
+                  <SelectTrigger id="manager-select">
+                    <SelectValue placeholder="Sélectionner un manager" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="global">Paramètres globaux (par défaut)</SelectItem>
+                    {managers.map((manager) => (
+                      <SelectItem key={manager.id} value={manager.id}>
+                        {manager.prenom} {manager.nom} ({manager.email})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedManagerId && (
+                  <p className="text-sm text-muted-foreground">
+                    Vous configurez les paramètres spécifiques pour ce manager. Ces paramètres remplaceront les paramètres globaux pour tous ses agents.
+                  </p>
+                )}
+                {!selectedManagerId && (
+                  <p className="text-sm text-muted-foreground">
+                    Vous configurez les paramètres globaux qui seront utilisés par défaut pour tous les managers n'ayant pas de paramètres spécifiques.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {loading ? (
           <div className="flex items-center justify-center py-12">
@@ -1215,7 +1334,7 @@ function ParametresPageContent() {
 
 export default function ParametresPage() {
   return (
-    <ProtectedRoute requiredRole="admin">
+    <ProtectedRoute requiredRole={['admin', 'manager']}>
       <ParametresPageContent />
     </ProtectedRoute>
   )

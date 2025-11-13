@@ -19,14 +19,40 @@ export const DEFAULT_SETTINGS = {
 
 /**
  * Récupère les paramètres d'échéancier depuis la base de données
+ * @param managerId - ID du manager (optionnel). Si null, charge les paramètres globaux ou du manager actuel
  */
-export async function getScheduleSettings() {
+export async function getScheduleSettings(managerId?: string | null) {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('system_settings')
       .select('value')
       .eq('key', 'schedule')
-      .single()
+
+    // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
+    // Sinon, chercher les paramètres globaux (manager_id IS NULL)
+    if (managerId !== undefined) {
+      query = query.eq('manager_id', managerId)
+    } else {
+      // Charger les paramètres du manager actuel si on est manager, sinon globaux
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('role, id')
+          .eq('id', user.id)
+          .single()
+
+        if (profile?.role === 'manager') {
+          query = query.eq('manager_id', profile.id)
+        } else {
+          query = query.is('manager_id', null)
+        }
+      } else {
+        query = query.is('manager_id', null)
+      }
+    }
+
+    const { data, error } = await query.single()
 
     if (error && error.code !== 'PGRST116') {
       console.error('Erreur lors de la récupération des paramètres d\'échéancier:', error)
@@ -50,14 +76,40 @@ export async function getScheduleSettings() {
 
 /**
  * Récupère les taux d'intérêt depuis la base de données
+ * @param managerId - ID du manager (optionnel). Si null, charge les paramètres globaux ou du manager actuel
  */
-export async function getInterestRates() {
+export async function getInterestRates(managerId?: string | null) {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('system_settings')
       .select('value')
       .eq('key', 'interest_rates')
-      .single()
+
+    // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
+    // Sinon, chercher les paramètres globaux (manager_id IS NULL)
+    if (managerId !== undefined) {
+      query = query.eq('manager_id', managerId)
+    } else {
+      // Charger les paramètres du manager actuel si on est manager, sinon globaux
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('role, id')
+          .eq('id', user.id)
+          .single()
+
+        if (profile?.role === 'manager') {
+          query = query.eq('manager_id', profile.id)
+        } else {
+          query = query.is('manager_id', null)
+        }
+      } else {
+        query = query.is('manager_id', null)
+      }
+    }
+
+    const { data, error } = await query.single()
 
     if (error && error.code !== 'PGRST116') {
       console.error('Erreur lors de la récupération des taux d\'intérêt:', error)
@@ -197,14 +249,40 @@ export async function validateLoanAmount(amount: number): Promise<{ valid: boole
 
 /**
  * Récupère les paramètres de garantie (collateral) depuis la base de données
+ * @param managerId - ID du manager (optionnel). Si null, charge les paramètres globaux ou du manager actuel
  */
-export async function getCollateralSettings() {
+export async function getCollateralSettings(managerId?: string | null) {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('system_settings')
       .select('value')
       .eq('key', 'collateral_settings')
-      .single()
+
+    // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
+    // Sinon, chercher les paramètres globaux (manager_id IS NULL)
+    if (managerId !== undefined) {
+      query = query.eq('manager_id', managerId)
+    } else {
+      // Charger les paramètres du manager actuel si on est manager, sinon globaux
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('role, id')
+          .eq('id', user.id)
+          .single()
+
+        if (profile?.role === 'manager') {
+          query = query.eq('manager_id', profile.id)
+        } else {
+          query = query.is('manager_id', null)
+        }
+      } else {
+        query = query.is('manager_id', null)
+      }
+    }
+
+    const { data, error } = await query.single()
 
     if (error && error.code !== 'PGRST116') {
       console.error('Erreur lors de la récupération des paramètres de garantie:', error)

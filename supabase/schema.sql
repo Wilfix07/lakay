@@ -77,14 +77,18 @@ CREATE TABLE IF NOT EXISTS agent_expenses (
 );
 
 -- Paramètres globaux du système (échéancier, taux d'intérêts, etc.)
+-- manager_id NULL = paramètres globaux (admin)
+-- manager_id spécifié = paramètres spécifiques à un manager
 CREATE TABLE IF NOT EXISTS system_settings (
     id SERIAL PRIMARY KEY,
-    key TEXT UNIQUE NOT NULL,
+    key TEXT NOT NULL,
+    manager_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     value JSONB NOT NULL,
     description TEXT,
     updated_by UUID REFERENCES auth.users(id),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(key, manager_id)
 );
 
 -- Barème des montants autorisés pour les prêts
@@ -143,6 +147,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_expenses_agent_id ON agent_expenses(agent_i
 CREATE INDEX IF NOT EXISTS idx_agent_expenses_date ON agent_expenses(expense_date);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_prets_membre_actif ON prets(membre_id) WHERE statut = 'actif';
 CREATE INDEX IF NOT EXISTS idx_system_settings_key ON system_settings(key);
+CREATE INDEX IF NOT EXISTS idx_system_settings_manager_id ON system_settings(manager_id);
 CREATE INDEX IF NOT EXISTS idx_loan_amount_brackets_active ON loan_amount_brackets(is_active);
 CREATE INDEX IF NOT EXISTS idx_expense_categories_active ON expense_categories(is_active);
 CREATE INDEX IF NOT EXISTS idx_collaterals_pret_id ON collaterals(pret_id);
