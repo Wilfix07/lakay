@@ -212,10 +212,18 @@ function PretsPageContent() {
 
   async function loadAgents() {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('agents')
         .select('*')
         .order('agent_id', { ascending: true })
+
+      // Filtrer par manager_id si l'utilisateur est un manager
+      if (userProfile?.role === 'manager') {
+        query = query.eq('manager_id', userProfile.id)
+      }
+      // Admin voit tous les agents, Agent voit seulement son agent
+
+      const { data, error } = await query
 
       if (error) throw error
       setAgents(data || [])
@@ -234,7 +242,25 @@ function PretsPageContent() {
       // Les agents ne voient que leurs propres membres
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
         query = query.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit seulement les membres de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          query = query.in('agent_id', agentIds)
+        } else {
+          // Si le manager n'a pas encore d'agents, retourner un tableau vide
+          setMembres([])
+          return
+        }
       }
+      // Admin voit tous les membres (pas de filtre)
 
       const { data, error } = await query
 
@@ -255,7 +281,25 @@ function PretsPageContent() {
       // Les agents ne voient que leurs propres prêts
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
         query = query.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit seulement les prêts de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          query = query.in('agent_id', agentIds)
+        } else {
+          // Si le manager n'a pas encore d'agents, retourner un tableau vide
+          setPrets([])
+          return
+        }
       }
+      // Admin voit tous les prêts (pas de filtre)
 
       const { data, error } = await query
 

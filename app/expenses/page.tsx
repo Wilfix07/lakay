@@ -82,14 +82,14 @@ function ExpensesPageContent() {
     setLoading(true)
     setError(null)
     try {
-      const agentQuery =
-        userProfile?.role === 'admin' || userProfile?.role === 'manager'
-          ? supabase.from('agents').select('*').order('agent_id', { ascending: true })
-          : supabase
-              .from('agents')
-              .select('*')
-              .eq('agent_id', userProfile?.agent_id ?? '')
-              .order('agent_id', { ascending: true })
+      let agentQuery = supabase.from('agents').select('*').order('agent_id', { ascending: true })
+      
+      if (userProfile?.role === 'manager') {
+        agentQuery = agentQuery.eq('manager_id', userProfile.id)
+      } else if (userProfile?.role === 'agent') {
+        agentQuery = agentQuery.eq('agent_id', userProfile?.agent_id ?? '')
+      }
+      // Admin voit tous les agents (pas de filtre)
 
       const [{ data: agentsData, error: agentsError }] = await Promise.all([agentQuery])
 
@@ -128,6 +128,35 @@ function ExpensesPageContent() {
 
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
         query = query.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit seulement les dépenses de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          if (activeFilters.agent_id) {
+            // Si un agent spécifique est filtré, vérifier qu'il appartient au manager
+            if (agentIds.includes(activeFilters.agent_id)) {
+              query = query.eq('agent_id', activeFilters.agent_id)
+            } else {
+              // Agent n'appartient pas au manager, retourner vide
+              setExpenses([])
+              return
+            }
+          } else {
+            // Filtrer par tous les agents du manager
+            query = query.in('agent_id', agentIds)
+          }
+        } else {
+          // Si le manager n'a pas encore d'agents, retourner un tableau vide
+          setExpenses([])
+          return
+        }
       } else if (activeFilters.agent_id) {
         query = query.eq('agent_id', activeFilters.agent_id)
       }

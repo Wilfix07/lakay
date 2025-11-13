@@ -51,10 +51,17 @@ function AgentsPageContent() {
   async function loadAgents() {
     try {
       setLoading(true)
-      const { data, error } = await supabase
+      let query = supabase
         .from('agents')
         .select('*')
-        .order('created_at', { ascending: false })
+      
+      // Filtrer par manager_id si l'utilisateur est un manager
+      if (userProfile?.role === 'manager') {
+        query = query.eq('manager_id', userProfile.id)
+      }
+      // Admin voit tous les agents (pas de filtre)
+      
+      const { data, error } = await query.order('created_at', { ascending: false })
 
       if (error) throw error
       setAgents(data || [])
@@ -70,12 +77,25 @@ function AgentsPageContent() {
     e.preventDefault()
     setSubmitting(true)
     try {
-      // Générer l'agent_id automatiquement
-      const { data: maxAgents } = await supabase
+      if (!userProfile) {
+        alert('Erreur: Profil utilisateur non trouvé')
+        setSubmitting(false)
+        return
+      }
+
+      // Pour les managers, générer l'agent_id uniquement parmi leurs agents
+      // Pour les admins, générer globalement
+      let query = supabase
         .from('agents')
         .select('agent_id')
         .order('agent_id', { ascending: false })
         .limit(1)
+
+      if (userProfile.role === 'manager') {
+        query = query.eq('manager_id', userProfile.id)
+      }
+
+      const { data: maxAgents } = await query
 
       let newAgentId = '00'
       if (maxAgents && maxAgents.length > 0 && maxAgents[0]) {
@@ -85,12 +105,21 @@ function AgentsPageContent() {
         }
       }
 
+      const insertData: any = {
+        agent_id: newAgentId,
+        ...formData,
+      }
+
+      // Assigner manager_id si l'utilisateur est un manager
+      if (userProfile.role === 'manager') {
+        insertData.manager_id = userProfile.id
+      }
+      // Admin peut créer des agents sans manager_id ou avec un manager_id spécifique
+      // Pour l'instant, on laisse null si admin (pour compatibilité)
+
       const { error } = await supabase
         .from('agents')
-        .insert([{
-          agent_id: newAgentId,
-          ...formData,
-        }])
+        .insert([insertData])
 
       if (error) throw error
 

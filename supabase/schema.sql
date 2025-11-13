@@ -3,13 +3,15 @@
 -- Table des agents de crédit
 CREATE TABLE IF NOT EXISTS agents (
     id SERIAL PRIMARY KEY,
-    agent_id VARCHAR(2) UNIQUE NOT NULL,
+    agent_id VARCHAR(2) NOT NULL,
+    manager_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     nom VARCHAR(255) NOT NULL,
     prenom VARCHAR(255) NOT NULL,
-    email VARCHAR(255) UNIQUE,
+    email VARCHAR(255),
     telephone VARCHAR(20),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(agent_id, manager_id)
 );
 
 -- Table des membres
@@ -130,6 +132,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON loan_amount_brackets TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON expense_categories TO authenticated;
 
 -- Index pour améliorer les performances
+CREATE INDEX IF NOT EXISTS idx_agents_manager_id ON agents(manager_id);
 CREATE INDEX IF NOT EXISTS idx_membres_agent_id ON membres(agent_id);
 CREATE INDEX IF NOT EXISTS idx_prets_membre_id ON prets(membre_id);
 CREATE INDEX IF NOT EXISTS idx_prets_agent_id ON prets(agent_id);

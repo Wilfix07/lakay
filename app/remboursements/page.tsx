@@ -84,7 +84,25 @@ function RemboursementsPageContent() {
       // Les agents ne voient que leurs propres prêts
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
         query = query.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit seulement les prêts de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          query = query.in('agent_id', agentIds)
+        } else {
+          // Si le manager n'a pas encore d'agents, retourner un tableau vide
+          setPrets([])
+          return
+        }
       }
+      // Admin voit tous les prêts (pas de filtre)
 
       const { data, error } = await query
 
@@ -175,7 +193,26 @@ function RemboursementsPageContent() {
       // Les agents ne voient que leurs propres remboursements
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
         query = query.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit seulement les remboursements de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          query = query.in('agent_id', agentIds)
+        } else {
+          // Si le manager n'a pas encore d'agents, retourner un tableau vide
+          setRemboursements([])
+          setLoading(false)
+          return
+        }
       }
+      // Admin voit tous les remboursements (pas de filtre)
 
       if (filterPret) {
         query = query.eq('pret_id', filterPret)

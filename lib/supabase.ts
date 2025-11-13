@@ -31,6 +31,7 @@ export const supabase = createClient(
 export interface Agent {
   id: number
   agent_id: string
+  manager_id?: string | null
   nom: string
   prenom: string
   email?: string

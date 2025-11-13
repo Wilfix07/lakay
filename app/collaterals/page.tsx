@@ -78,29 +78,76 @@ function CollateralsPageContent() {
     setLoading(true)
     setError(null)
     try {
+      // Récupérer les IDs des agents du manager si nécessaire
+      let managerAgentIds: string[] | null = null
+      if (userProfile?.role === 'manager') {
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+        managerAgentIds = managerAgents?.map(a => a.agent_id) || []
+        if (managerAgentIds.length === 0) {
+          // Si le manager n'a pas encore d'agents, initialiser les données vides
+          setPrets([])
+          setMembres([])
+          setCollaterals([])
+          return
+        }
+      }
+
       // Charger tous les prêts (actifs, terminés, et en attente de garantie) pour vérifier le statut
-      const pretsQuery =
-        userProfile?.role === 'admin' || userProfile?.role === 'manager'
-          ? supabase.from('prets').select('*').in('statut', ['actif', 'termine', 'en_attente_garantie']).order('pret_id', { ascending: true })
-          : supabase
-              .from('prets')
-              .select('*')
-              .in('statut', ['actif', 'termine', 'en_attente_garantie'])
-              .eq('agent_id', userProfile?.agent_id ?? '')
-              .order('pret_id', { ascending: true })
+      let pretsQuery = supabase.from('prets').select('*').in('statut', ['actif', 'termine', 'en_attente_garantie']).order('pret_id', { ascending: true })
+      if (userProfile?.role === 'agent') {
+        pretsQuery = pretsQuery.eq('agent_id', userProfile.agent_id ?? '')
+      } else if (userProfile?.role === 'manager' && managerAgentIds) {
+        pretsQuery = pretsQuery.in('agent_id', managerAgentIds)
+      }
+      // Admin voit tous les prêts (pas de filtre)
 
       // Charger les membres
-      const membresQuery =
-        userProfile?.role === 'admin' || userProfile?.role === 'manager'
-          ? supabase.from('membres').select('*').order('membre_id', { ascending: true })
-          : supabase
-              .from('membres')
-              .select('*')
-              .eq('agent_id', userProfile?.agent_id ?? '')
-              .order('membre_id', { ascending: true })
+      let membresQuery = supabase.from('membres').select('*').order('membre_id', { ascending: true })
+      if (userProfile?.role === 'agent') {
+        membresQuery = membresQuery.eq('agent_id', userProfile.agent_id ?? '')
+      } else if (userProfile?.role === 'manager' && managerAgentIds) {
+        membresQuery = membresQuery.in('agent_id', managerAgentIds)
+      }
+      // Admin voit tous les membres (pas de filtre)
 
       // Charger les garanties
-      const collateralsQuery = supabase.from('collaterals').select('*').order('created_at', { ascending: false })
+      // Les garanties seront filtrées automatiquement par RLS basé sur les prêts/membres
+      let collateralsQuery = supabase.from('collaterals').select('*').order('created_at', { ascending: false })
+      
+      // Filtrer les garanties par membre_id si manager ou agent
+      if (userProfile?.role === 'manager' && managerAgentIds) {
+        // Récupérer d'abord les membre_ids des membres du manager
+        const { data: managerMembres } = await supabase
+          .from('membres')
+          .select('membre_id')
+          .in('agent_id', managerAgentIds)
+
+        const membreIds = managerMembres?.map(m => m.membre_id) || []
+        if (membreIds.length > 0) {
+          collateralsQuery = collateralsQuery.in('membre_id', membreIds)
+        } else {
+          collateralsQuery = collateralsQuery.eq('membre_id', 'NON_EXISTANT') // Retourner vide
+        }
+      } else if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        // Récupérer les membre_ids des membres de l'agent
+        const { data: agentMembres } = await supabase
+          .from('membres')
+          .select('membre_id')
+          .eq('agent_id', userProfile.agent_id)
+
+        const membreIds = agentMembres?.map(m => m.membre_id) || []
+        if (membreIds.length > 0) {
+          collateralsQuery = collateralsQuery.in('membre_id', membreIds)
+        } else {
+          collateralsQuery = collateralsQuery.eq('membre_id', 'NON_EXISTANT') // Retourner vide
+        }
+      }
+      // Admin voit toutes les garanties (pas de filtre)
 
       const [{ data: pretsData, error: pretsError }, { data: membresData, error: membresError }, { data: collateralsData, error: collateralsError }] =
         await Promise.all([pretsQuery, membresQuery, collateralsQuery])

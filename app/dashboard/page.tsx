@@ -128,8 +128,56 @@ export default function DashboardPage() {
     if (!userProfile) return
 
     try {
-      // Stats pour Admin et Manager (tous les agents)
+      // Récupérer les IDs des agents du manager si nécessaire
+      let managerAgentIds: string[] | null = null
+      if (userProfile.role === 'manager') {
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+        managerAgentIds = managerAgents?.map(a => a.agent_id) || []
+        if (managerAgentIds.length === 0) {
+          // Si le manager n'a pas encore d'agents, initialiser les stats à zéro
+          setStats({
+            agents: 0,
+            membres: 0,
+            prets: 0,
+            remboursements: 0,
+            remboursementsPayes: 0,
+            montantTotal: 0,
+            impayesCount: 0,
+            impayesRate: 0,
+            impayesPrincipal: 0,
+            todayRemboursementsCount: 0,
+            todayRemboursementsAmount: 0,
+          })
+          setAgentCollections([])
+          setInterestSummary({ total: 0, commissionTotal: 0, monthly: [] })
+          setExpensesSummary(0)
+          return
+        }
+      }
+
+      // Stats pour Admin et Manager
       if (userProfile.role === 'admin' || userProfile.role === 'manager') {
+        // Construire les requêtes avec filtres appropriés
+        let agentsQuery = supabase.from('agents').select('agent_id, nom, prenom')
+        let membresQuery = supabase.from('membres').select('id', { count: 'exact', head: true })
+        let pretsQuery = supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant')
+        let remboursementsQuery = supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet')
+        let expensesQuery = supabase.from('agent_expenses').select('amount, expense_date')
+
+        // Filtrer par manager_id si nécessaire
+        if (userProfile.role === 'manager' && managerAgentIds) {
+          agentsQuery = agentsQuery.eq('manager_id', userProfile.id)
+          membresQuery = membresQuery.in('agent_id', managerAgentIds)
+          pretsQuery = pretsQuery.in('agent_id', managerAgentIds)
+          remboursementsQuery = remboursementsQuery.in('agent_id', managerAgentIds)
+          expensesQuery = expensesQuery.in('agent_id', managerAgentIds)
+        }
+
         const [
           interestRates,
           agentsRes,
@@ -139,11 +187,11 @@ export default function DashboardPage() {
           expensesRes,
         ] = await Promise.all([
           getInterestRates(),
-          supabase.from('agents').select('agent_id, nom, prenom'),
-          supabase.from('membres').select('id', { count: 'exact', head: true }),
-          supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant'),
-          supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet'),
-          supabase.from('agent_expenses').select('amount, expense_date'),
+          agentsQuery,
+          membresQuery,
+          pretsQuery,
+          remboursementsQuery,
+          expensesQuery,
         ])
 
         if (agentsRes.error) throw agentsRes.error
