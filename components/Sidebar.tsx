@@ -16,6 +16,7 @@ import {
   PiggyBank,
   Settings,
   Wallet,
+  CheckCircle2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -70,6 +71,12 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       href: '/prets',
       icon: CreditCard,
       roles: ['admin', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Approbations',
+      href: '/approbations',
+      icon: CheckCircle2,
+      roles: ['admin', 'manager'] as UserRole[],
     },
     {
       title: 'Remboursements',

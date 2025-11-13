@@ -63,7 +63,7 @@ export interface Pret {
   nombre_remboursements: number
   date_decaissement: string
   date_premier_remboursement: string
-  statut: 'en_attente_garantie' | 'actif' | 'termine' | 'annule'
+  statut: 'en_attente_approbation' | 'en_attente_garantie' | 'actif' | 'termine' | 'annule'
   capital_restant?: number
   frequence_remboursement?: 'journalier' | 'mensuel' | string
   created_at: string

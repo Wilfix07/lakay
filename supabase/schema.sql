@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS prets (
     frequence_remboursement VARCHAR(20) NOT NULL DEFAULT 'journalier',
     date_decaissement DATE NOT NULL,
     date_premier_remboursement DATE NOT NULL, -- 2ème jour après décaissement
-    statut VARCHAR(20) DEFAULT 'actif', -- actif, termine, annule
+    statut VARCHAR(50) DEFAULT 'actif', -- en_attente_approbation, en_attente_garantie, actif, termine, annule
     capital_restant DECIMAL(10, 2) NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()

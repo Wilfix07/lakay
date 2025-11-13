@@ -348,17 +348,17 @@ function PretsPageContent() {
         return
       }
 
-      // Vérifier si le membre a déjà un prêt actif ou en attente de garantie
+      // Vérifier si le membre a déjà un prêt actif, en attente de garantie ou en attente d'approbation
       const { data: activeLoans, error: activeLoansError } = await supabase
         .from('prets')
         .select('id')
         .eq('membre_id', formData.membre_id)
-        .in('statut', ['actif', 'en_attente_garantie'])
+        .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
         .limit(1)
 
       if (activeLoansError) throw activeLoansError
       if (activeLoans && activeLoans.length > 0) {
-        alert('Ce membre a déjà un prêt actif ou en attente de garantie. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.')
+        alert('Ce membre a déjà un prêt actif, en attente de garantie ou en attente d\'approbation. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.')
         return
       }
 
@@ -394,8 +394,14 @@ function PretsPageContent() {
         }
       }
 
-      // Créer le prêt avec statut "en_attente_garantie"
-      // Le prêt ne sera activé qu'après le dépôt complet de la garantie
+      // Déterminer le statut initial selon le rôle de l'utilisateur
+      // Si c'est un agent, le prêt doit être approuvé par le manager
+      // Si c'est un admin/manager, le prêt peut aller directement en attente de garantie
+      const initialStatus = userProfile?.role === 'agent' 
+        ? 'en_attente_approbation' 
+        : 'en_attente_garantie'
+
+      // Créer le prêt
       const { error: pretError } = await supabase
         .from('prets')
         .insert([{
@@ -409,43 +415,56 @@ function PretsPageContent() {
           date_premier_remboursement: plan.datePremierRemboursement
             .toISOString()
             .split('T')[0],
-          statut: 'en_attente_garantie',
+          statut: initialStatus,
           capital_restant: montantPret,
           frequence_remboursement: frequency,
         }])
 
       if (pretError) throw pretError
 
-      // Créer la garantie (collateral) automatiquement
-      const montantGarantieRequis = await calculateCollateralAmount(montantPret)
-      const { error: collateralError } = await supabase
-        .from('collaterals')
-        .insert([{
-          pret_id: newPretId,
-          membre_id: formData.membre_id,
-          montant_requis: montantGarantieRequis,
-          montant_depose: 0,
-          montant_restant: montantGarantieRequis,
-          statut: 'partiel',
-          notes: `Garantie générée automatiquement pour le prêt ${newPretId}`,
-        }])
+      // Créer la garantie (collateral) automatiquement seulement si le prêt n'est pas en attente d'approbation
+      if (initialStatus === 'en_attente_garantie') {
+        const montantGarantieRequis = await calculateCollateralAmount(montantPret)
+        const { error: collateralError } = await supabase
+          .from('collaterals')
+          .insert([{
+            pret_id: newPretId,
+            membre_id: formData.membre_id,
+            montant_requis: montantGarantieRequis,
+            montant_depose: 0,
+            montant_restant: montantGarantieRequis,
+            statut: 'partiel',
+            notes: `Garantie générée automatiquement pour le prêt ${newPretId}`,
+          }])
 
-      if (collateralError) {
-        console.error('Erreur lors de la création de la garantie:', collateralError)
-        throw new Error('Erreur lors de la création de la garantie. Le prêt ne peut pas être créé.')
+        if (collateralError) {
+          console.error('Erreur lors de la création de la garantie:', collateralError)
+          throw new Error('Erreur lors de la création de la garantie. Le prêt ne peut pas être créé.')
+        }
       }
 
       // Les remboursements seront créés automatiquement lors de l'activation du prêt
       // (après dépôt complet de la garantie)
 
-      alert(
-        `✅ Prêt créé avec succès!\n\n` +
-        `📋 Prêt: ${newPretId}\n` +
-        `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
-        `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)\n\n` +
-        `⚠️ IMPORTANT: Le membre doit déposer la garantie avant le décaissement.\n` +
-        `Allez dans "Garanties" pour enregistrer le dépôt.`,
-      )
+      if (initialStatus === 'en_attente_approbation') {
+        alert(
+          `✅ Demande de prêt créée avec succès!\n\n` +
+          `📋 Prêt: ${newPretId}\n` +
+          `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
+          `⏳ Statut: En attente d'approbation du manager\n\n` +
+          `Votre manager devra approuver ce prêt avant le décaissement.`
+        )
+      } else {
+        const montantGarantieRequis = await calculateCollateralAmount(montantPret)
+        alert(
+          `✅ Prêt créé avec succès!\n\n` +
+          `📋 Prêt: ${newPretId}\n` +
+          `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
+          `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)\n\n` +
+          `⚠️ IMPORTANT: Le membre doit déposer la garantie avant le décaissement.\n` +
+          `Allez dans "Garanties" pour enregistrer le dépôt.`
+        )
+      }
       setShowForm(false)
       setFormData({
         membre_id: '',
@@ -467,6 +486,12 @@ function PretsPageContent() {
   }
 
   async function handleEditPret(pret: Pret) {
+    // Empêcher la modification des prêts en attente d'approbation
+    if (pret.statut === 'en_attente_approbation') {
+      alert('Ce prêt est en attente d\'approbation. Veuillez d\'abord l\'approuver ou le rejeter depuis la page Approbations.')
+      return
+    }
+    
     if (!confirm('Voulez-vous modifier ce décaissement ? Les remboursements associés seront également mis à jour.')) {
       return
     }
@@ -542,7 +567,7 @@ function PretsPageContent() {
           .from('prets')
           .select('id')
           .eq('membre_id', formData.membre_id)
-          .in('statut', ['actif', 'en_attente_garantie'])
+          .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
           .limit(1)
 
         if (activeLoansError) throw activeLoansError
@@ -988,30 +1013,39 @@ function PretsPageContent() {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
                           pret.statut === 'actif' ? 'bg-green-100 text-green-800' :
+                          pret.statut === 'en_attente_approbation' ? 'bg-yellow-100 text-yellow-800' :
+                          pret.statut === 'en_attente_garantie' ? 'bg-blue-100 text-blue-800' :
                           pret.statut === 'termine' ? 'bg-gray-100 text-gray-800' :
                           'bg-red-100 text-red-800'
                         }`}>
                           {pret.statut}
                         </span>
                       </td>
-                      {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => handleEditPret(pret)}
-                              className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
-                            >
-                              Modifier
-                            </button>
-                            <button
-                              onClick={() => handleDeletePret(pret)}
-                              className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
-                            >
-                              Supprimer
-                            </button>
-                          </div>
-                        </td>
-                      )}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <div className="flex gap-2">
+                          {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                            <>
+                              <button
+                                onClick={() => handleEditPret(pret)}
+                                className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                              >
+                                Modifier
+                              </button>
+                              <button
+                                onClick={() => handleDeletePret(pret)}
+                                className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                              >
+                                Supprimer
+                              </button>
+                            </>
+                          )}
+                          {userProfile?.role === 'agent' && pret.statut === 'en_attente_approbation' && (
+                            <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">
+                              En attente d'approbation
+                            </span>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))
                 )}
