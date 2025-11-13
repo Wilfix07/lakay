@@ -8,6 +8,14 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
+  eslint: {
+    ignoreDuringBuilds: false,
+  },
+  // Optimisations pour la production
+  poweredByHeader: false,
+  compress: true,
+  // Compatibilité avec Next.js 16
+  reactStrictMode: true,
 };
 
 export default nextConfig;
