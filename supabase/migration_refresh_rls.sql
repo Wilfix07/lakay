@@ -20,18 +20,72 @@ DROP POLICY IF EXISTS manager_view_own_agents ON user_profiles;
 DROP POLICY IF EXISTS "Users can view own profile" ON user_profiles;
 DROP POLICY IF EXISTS "Users can update own profile limited" ON user_profiles;
 DROP POLICY IF EXISTS "Admins can insert profiles" ON user_profiles;
-
-CREATE POLICY "Users read own profile"
-  ON user_profiles
-  FOR SELECT
-  TO authenticated
-  USING (auth.uid() = id OR role = 'admin');
+DROP POLICY IF EXISTS manager_view_agents ON user_profiles;
+DROP POLICY IF EXISTS full_select_access ON user_profiles;
 
 CREATE POLICY "Users update own profile"
   ON user_profiles
   FOR UPDATE
   TO authenticated
   USING (auth.uid() = id);
+
+CREATE POLICY full_select_access
+  ON user_profiles
+  FOR SELECT
+  TO authenticated
+  USING (
+    auth.uid() = id
+    OR role = 'admin'
+    OR EXISTS (
+      SELECT 1
+      FROM agents a
+      WHERE a.agent_id = user_profiles.agent_id
+        AND a.manager_id = auth.uid()
+    )
+  );
+
+CREATE POLICY manager_view_agents
+  ON user_profiles
+  FOR SELECT
+  TO authenticated
+  USING (
+    get_user_role(auth.uid()) = 'manager'
+    AND role = 'agent'
+    AND EXISTS (
+      SELECT 1
+      FROM agents a
+      WHERE a.agent_id = user_profiles.agent_id
+        AND a.manager_id = auth.uid()
+    )
+  );
+
+-- ===================================================================
+-- agents
+-- ===================================================================
+DROP POLICY IF EXISTS manager_own_agents ON agents;
+
+CREATE POLICY manager_manage_agents
+  ON agents
+  FOR ALL
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM user_profiles up
+      WHERE up.id = auth.uid()
+        AND up.role = 'manager'
+        AND agents.manager_id = up.id
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM user_profiles up
+      WHERE up.id = auth.uid()
+        AND up.role = 'manager'
+        AND agents.manager_id = up.id
+    )
+  );
 
 -- ===================================================================
 -- manager_business_settings

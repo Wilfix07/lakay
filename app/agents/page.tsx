@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, X, Loader2 } from 'lucide-react'
+import { Plus, X, Loader2, Pencil, Trash } from 'lucide-react'
 import type { UserProfile } from '@/lib/supabase'
 
 function AgentsPageContent() {
@@ -26,6 +26,7 @@ function AgentsPageContent() {
   const [showForm, setShowForm] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null)
   const [formData, setFormData] = useState({
     nom: '',
     prenom: '',
@@ -73,6 +74,14 @@ function AgentsPageContent() {
     }
   }
 
+  const isManagerOrAdmin = userProfile?.role === 'manager' || userProfile?.role === 'admin'
+  const isEditing = Boolean(editingAgent)
+
+  function resetForm() {
+    setFormData({ nom: '', prenom: '', email: '', telephone: '' })
+    setEditingAgent(null)
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSubmitting(true)
@@ -83,55 +92,108 @@ function AgentsPageContent() {
         return
       }
 
-      // Pour les managers, générer l'agent_id uniquement parmi leurs agents
-      // Pour les admins, générer globalement
-      let query = supabase
-        .from('agents')
-        .select('agent_id')
-        .order('agent_id', { ascending: false })
-        .limit(1)
+      if (isEditing && editingAgent) {
+        const { error } = await supabase
+          .from('agents')
+          .update({
+            nom: formData.nom,
+            prenom: formData.prenom,
+            email: formData.email || null,
+            telephone: formData.telephone || null,
+          })
+          .eq('agent_id', editingAgent.agent_id)
 
-      if (userProfile.role === 'manager') {
-        query = query.eq('manager_id', userProfile.id)
-      }
+        if (error) throw error
+        alert('Agent mis à jour avec succès!')
+      } else {
+        // Pour les managers, générer l'agent_id uniquement parmi leurs agents
+        // Pour les admins, générer globalement
+        let query = supabase
+          .from('agents')
+          .select('agent_id')
+          .order('agent_id', { ascending: false })
+          .limit(1)
 
-      const { data: maxAgents } = await query
-
-      let newAgentId = '00'
-      if (maxAgents && maxAgents.length > 0 && maxAgents[0]) {
-        const maxNum = parseInt(maxAgents[0].agent_id, 10)
-        if (!isNaN(maxNum)) {
-          newAgentId = String(maxNum + 1).padStart(2, '0')
+        if (userProfile.role === 'manager') {
+          query = query.eq('manager_id', userProfile.id)
         }
+
+        const { data: maxAgents } = await query
+
+        let newAgentId = '00'
+        if (maxAgents && maxAgents.length > 0 && maxAgents[0]) {
+          const maxNum = parseInt(maxAgents[0].agent_id, 10)
+          if (!isNaN(maxNum)) {
+            newAgentId = String(maxNum + 1).padStart(2, '0')
+          }
+        }
+
+        const insertData: any = {
+          agent_id: newAgentId,
+          ...formData,
+        }
+
+        // Assigner manager_id si l'utilisateur est un manager
+        if (userProfile.role === 'manager') {
+          insertData.manager_id = userProfile.id
+        }
+
+        const { error } = await supabase
+          .from('agents')
+          .insert([insertData])
+
+        if (error) throw error
+        alert('Agent créé avec succès!')
       }
 
-      const insertData: any = {
-        agent_id: newAgentId,
-        ...formData,
-      }
-
-      // Assigner manager_id si l'utilisateur est un manager
-      if (userProfile.role === 'manager') {
-        insertData.manager_id = userProfile.id
-      }
-      // Admin peut créer des agents sans manager_id ou avec un manager_id spécifique
-      // Pour l'instant, on laisse null si admin (pour compatibilité)
-
-      const { error } = await supabase
-        .from('agents')
-        .insert([insertData])
-
-      if (error) throw error
-
-      alert('Agent créé avec succès!')
       setShowForm(false)
-      setFormData({ nom: '', prenom: '', email: '', telephone: '' })
+      resetForm()
       loadAgents()
     } catch (error: any) {
-      console.error('Erreur lors de la création:', error)
+      console.error('Erreur lors de la sauvegarde:', error)
       alert('Erreur: ' + (error.message || 'Erreur inconnue'))
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  function handleStartCreate() {
+    if (showForm && !isEditing) {
+      setShowForm(false)
+      resetForm()
+      return
+    }
+    resetForm()
+    setShowForm((prev) => !prev)
+  }
+
+  function handleEdit(agent: Agent) {
+    setEditingAgent(agent)
+    setFormData({
+      nom: agent.nom || '',
+      prenom: agent.prenom || '',
+      email: agent.email || '',
+      telephone: agent.telephone || '',
+    })
+    setShowForm(true)
+  }
+
+  async function handleDelete(agent: Agent) {
+    if (!confirm(`Supprimer l'agent ${agent.prenom} ${agent.nom} ?`)) {
+      return
+    }
+    try {
+      const { error } = await supabase.from('agents').delete().eq('agent_id', agent.agent_id)
+      if (error) throw error
+      alert('Agent supprimé avec succès.')
+      if (editingAgent?.agent_id === agent.agent_id) {
+        resetForm()
+        setShowForm(false)
+      }
+      loadAgents()
+    } catch (error: any) {
+      console.error('Erreur lors de la suppression:', error)
+      alert('Erreur lors de la suppression de l’agent.')
     }
   }
 
@@ -162,11 +224,11 @@ function AgentsPageContent() {
             <h1 className="text-3xl font-bold tracking-tight text-foreground">Agents de Crédit</h1>
             <p className="text-muted-foreground mt-2">Gérer les agents et leurs portefeuilles</p>
           </div>
-          <Button onClick={() => setShowForm(!showForm)} className="gap-2">
+          <Button onClick={handleStartCreate} className="gap-2">
             {showForm ? (
               <>
                 <X className="w-4 h-4" />
-                Annuler
+                {isEditing ? 'Fermer' : 'Annuler'}
               </>
             ) : (
               <>
@@ -181,8 +243,12 @@ function AgentsPageContent() {
         {showForm && (
           <Card>
             <CardHeader>
-              <CardTitle>Créer un nouvel agent</CardTitle>
-              <CardDescription>Remplissez les informations pour créer un nouvel agent</CardDescription>
+              <CardTitle>{isEditing ? 'Modifier l’agent' : 'Créer un nouvel agent'}</CardTitle>
+              <CardDescription>
+                {isEditing
+                  ? 'Mettez à jour les informations de votre agent.'
+                  : 'Remplissez les informations pour créer un nouvel agent'}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
@@ -232,10 +298,10 @@ function AgentsPageContent() {
                   {submitting ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Création...
+                      {isEditing ? 'Enregistrement...' : 'Création...'}
                     </>
                   ) : (
-                    'Créer l\'agent'
+                    isEditing ? 'Mettre à jour' : 'Créer l\'agent'
                   )}
                 </Button>
               </form>
@@ -265,6 +331,7 @@ function AgentsPageContent() {
                       <TableHead>Email</TableHead>
                       <TableHead>Téléphone</TableHead>
                       <TableHead>Date création</TableHead>
+                      {isManagerOrAdmin && <TableHead className="text-right">Actions</TableHead>}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -278,6 +345,25 @@ function AgentsPageContent() {
                         <TableCell>
                           {new Date(agent.created_at).toLocaleDateString('fr-FR')}
                         </TableCell>
+                        {isManagerOrAdmin && (
+                          <TableCell className="text-right space-x-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleEdit(agent)}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => handleDelete(agent)}
+                            >
+                              <Trash className="w-4 h-4" />
+                            </Button>
+                          </TableCell>
+                        )}
                       </TableRow>
                     ))}
                   </TableBody>
