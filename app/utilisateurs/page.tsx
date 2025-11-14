@@ -357,6 +357,8 @@ function UtilisateursPageContent() {
     ? ['agent']
     : []
 
+  const editableRoles = availableRoles
+
   if (loading || !userProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -521,7 +523,7 @@ function UtilisateursPageContent() {
           </div>
         )}
 
-        {showEditForm && editingUser && userProfile?.role === 'admin' && (
+        {showEditForm && editingUser && (userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold">Modifier l’utilisateur</h2>
@@ -586,8 +588,11 @@ function UtilisateursPageContent() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                     required
                   >
-                    <option value="manager">Manager</option>
-                    <option value="agent">Agent de crédit</option>
+                    {editableRoles.map(role => (
+                      <option key={role} value={role}>
+                        {role === 'manager' ? 'Manager' : 'Agent de crédit'}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 {editData.role === 'agent' && (
@@ -753,7 +758,7 @@ function UtilisateursPageContent() {
 
 export default function UtilisateursPage() {
   return (
-    <ProtectedRoute requiredRole="admin">
+    <ProtectedRoute requiredRole={['admin', 'manager']}>
       <UtilisateursPageContent />
     </ProtectedRoute>
   )

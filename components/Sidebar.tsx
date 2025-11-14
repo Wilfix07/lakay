@@ -52,7 +52,7 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Utilisateurs',
       href: '/utilisateurs',
       icon: Users,
-      roles: ['admin'] as UserRole[],
+      roles: ['admin', 'manager'] as UserRole[],
     },
     {
       title: 'Agents',
