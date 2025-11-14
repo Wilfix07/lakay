@@ -17,6 +17,66 @@ export const DEFAULT_SETTINGS = {
   },
 }
 
+const DEFAULT_LOCALIZATION_SETTINGS = {
+  currencyCode: 'HTG',
+  currencySymbol: 'HTG',
+  locale: 'fr-FR',
+  dateFormat: 'DD/MM/YYYY',
+  timezone: 'America/Port-au-Prince',
+  appLanguage: 'fr',
+}
+
+const DEFAULT_APP_SETTINGS = {
+  businessName: 'Lakay',
+  logoUrl: null as string | null,
+  appTitle: 'Système de Microcrédit - Lakay',
+  appDescription: 'Gestion de microcrédit avec remboursements quotidiens',
+  appLanguage: 'fr',
+}
+
+function logSupabaseError(context: string, error?: { code?: string } | null) {
+  if (!error || error.code === 'PGRST116') return
+  console.error(`[Supabase] ${context}:`, error)
+}
+
+async function getActiveSession(context: string) {
+  try {
+    const { data, error } = await supabase.auth.getSession()
+    if (error) {
+      console.error(`[Supabase] ${context} - session error:`, error)
+      return null
+    }
+    return data.session
+  } catch (error) {
+    console.error(`[Supabase] ${context} - session exception:`, error)
+    return null
+  }
+}
+
+async function fetchBusinessSettingsRow<T>(
+  columns: string,
+  managerId?: string | null,
+) {
+  let query = supabase.from('manager_business_settings').select(columns)
+
+  if (managerId !== undefined) {
+    query = managerId === null ? query.is('manager_id', null) : query.eq('manager_id', managerId)
+  } else {
+    const detectedManagerId = await getCurrentUserManagerId()
+    query = detectedManagerId ? query.eq('manager_id', detectedManagerId) : query.is('manager_id', null)
+  }
+
+  return query.limit(1).maybeSingle<T>()
+}
+
+function getDefaultLocalization() {
+  return { ...DEFAULT_LOCALIZATION_SETTINGS }
+}
+
+function getDefaultAppSettings() {
+  return { ...DEFAULT_APP_SETTINGS }
+}
+
 /**
  * Fonction utilitaire pour obtenir le manager_id de l'utilisateur actuel
  * Retourne le manager_id si l'utilisateur est un manager ou un agent
@@ -382,92 +442,40 @@ export async function calculateCollateralAmount(loanAmount: number, customRate?:
  */
 export async function getLocalizationSettings(managerId?: string | null) {
   try {
-    let query = supabase
-      .from('manager_business_settings')
-      .select('currency_code, currency_symbol, locale, date_format, timezone, app_language')
-
-    // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
-    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
-    if (managerId !== undefined) {
-      if (managerId === null) {
-        // Si null explicitement, chercher les paramètres globaux (premier manager ou default)
-        query = query.is('manager_id', null).limit(1)
-      } else {
-        query = query.eq('manager_id', managerId)
-      }
-    } else {
-      // Détecter automatiquement le manager_id (pour managers et agents)
-      const detectedManagerId = await getCurrentUserManagerId()
-      
-      if (detectedManagerId) {
-        query = query.eq('manager_id', detectedManagerId)
-      } else {
-        // Si aucun manager détecté, charger les paramètres globaux (premier manager ou default)
-        const { data: firstManager } = await supabase
-          .from('manager_business_settings')
-          .select('currency_code, currency_symbol, locale, date_format, timezone, app_language')
-          .limit(1)
-          .single()
-        
-        if (firstManager) {
-          return {
-            currencyCode: firstManager.currency_code || 'HTG',
-            currencySymbol: firstManager.currency_symbol || 'HTG',
-            locale: firstManager.locale || 'fr-FR',
-            dateFormat: firstManager.date_format || 'DD/MM/YYYY',
-            timezone: firstManager.timezone || 'America/Port-au-Prince',
-            appLanguage: firstManager.app_language || 'fr',
-          }
-        }
-        
-        // Fallback aux valeurs par défaut
-        return {
-          currencyCode: 'HTG',
-          currencySymbol: 'HTG',
-          locale: 'fr-FR',
-          dateFormat: 'DD/MM/YYYY',
-          timezone: 'America/Port-au-Prince',
-          appLanguage: 'fr',
-        }
-      }
+    const session = await getActiveSession('getLocalizationSettings')
+    if (!session) {
+      return getDefaultLocalization()
     }
 
-    const { data, error } = await query.single()
+    const { data, error } = await fetchBusinessSettingsRow<{
+      currency_code: string | null
+      currency_symbol: string | null
+      locale: string | null
+      date_format: string | null
+      timezone: string | null
+      app_language: string | null
+    }>(
+      'currency_code, currency_symbol, locale, date_format, timezone, app_language',
+      managerId,
+    )
 
-    if (error && error.code !== 'PGRST116') {
-      console.error('Erreur lors de la récupération des paramètres de localisation:', error)
-    }
+    logSupabaseError('getLocalizationSettings', error)
 
     if (data) {
       return {
-        currencyCode: data.currency_code || 'HTG',
-        currencySymbol: data.currency_symbol || 'HTG',
-        locale: data.locale || 'fr-FR',
-        dateFormat: data.date_format || 'DD/MM/YYYY',
-        timezone: data.timezone || 'America/Port-au-Prince',
-        appLanguage: data.app_language || 'fr',
+        currencyCode: data.currency_code || DEFAULT_LOCALIZATION_SETTINGS.currencyCode,
+        currencySymbol: data.currency_symbol || DEFAULT_LOCALIZATION_SETTINGS.currencySymbol,
+        locale: data.locale || DEFAULT_LOCALIZATION_SETTINGS.locale,
+        dateFormat: data.date_format || DEFAULT_LOCALIZATION_SETTINGS.dateFormat,
+        timezone: data.timezone || DEFAULT_LOCALIZATION_SETTINGS.timezone,
+        appLanguage: data.app_language || DEFAULT_LOCALIZATION_SETTINGS.appLanguage,
       }
     }
 
-    // Fallback aux valeurs par défaut
-    return {
-      currencyCode: 'HTG',
-      currencySymbol: 'HTG',
-      locale: 'fr-FR',
-      dateFormat: 'DD/MM/YYYY',
-      timezone: 'America/Port-au-Prince',
-      appLanguage: 'fr',
-    }
+    return getDefaultLocalization()
   } catch (error) {
     console.error('Erreur lors de la récupération des paramètres de localisation:', error)
-    return {
-      currencyCode: 'HTG',
-      currencySymbol: 'HTG',
-      locale: 'fr-FR',
-      dateFormat: 'DD/MM/YYYY',
-      timezone: 'America/Port-au-Prince',
-      appLanguage: 'fr',
-    }
+    return getDefaultLocalization()
   }
 }
 
@@ -477,6 +485,11 @@ export async function getLocalizationSettings(managerId?: string | null) {
  */
 export async function getMonthNames(managerId?: string | null) {
   try {
+    const session = await getActiveSession('getMonthNames')
+    if (!session) {
+      return getDefaultMonthNames()
+    }
+
     let query = supabase
       .from('month_names')
       .select('month_number, short_name, long_name, locale')
@@ -505,8 +518,7 @@ export async function getMonthNames(managerId?: string | null) {
     const { data, error } = await query.order('month_number', { ascending: true })
 
     if (error) {
-      console.error('Erreur lors de la récupération des noms des mois:', error)
-      // Fallback aux noms par défaut
+      logSupabaseError('getMonthNames', error)
       return getDefaultMonthNames()
     }
 
@@ -566,6 +578,14 @@ function getDefaultMonthNames() {
  */
 export async function getRepaymentFrequencies(managerId?: string | null) {
   try {
+    const session = await getActiveSession('getRepaymentFrequencies')
+    if (!session) {
+      return [
+        { key: 'journalier', label: 'Journalier', days: 1 },
+        { key: 'mensuel', label: 'Mensuel', days: 30 },
+      ]
+    }
+
     let query = supabase
       .from('repayment_frequencies')
       .select('frequency_key, frequency_label, frequency_days, display_order')
@@ -595,8 +615,7 @@ export async function getRepaymentFrequencies(managerId?: string | null) {
     const { data, error } = await query.order('display_order', { ascending: true })
 
     if (error) {
-      console.error('Erreur lors de la récupération des fréquences de remboursement:', error)
-      // Fallback aux fréquences par défaut
+      logSupabaseError('getRepaymentFrequencies', error)
       return [
         { key: 'journalier', label: 'Journalier', days: 1 },
         { key: 'mensuel', label: 'Mensuel', days: 30 },
@@ -631,87 +650,38 @@ export async function getRepaymentFrequencies(managerId?: string | null) {
  */
 export async function getAppSettings(managerId?: string | null) {
   try {
-    let query = supabase
-      .from('manager_business_settings')
-      .select('business_name, logo_url, app_title, app_description, app_language')
-
-    // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
-    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
-    if (managerId !== undefined) {
-      if (managerId === null) {
-        // Si null explicitement, chercher les paramètres globaux (premier manager ou default)
-        query = query.is('manager_id', null).limit(1)
-      } else {
-        query = query.eq('manager_id', managerId)
-      }
-    } else {
-      // Détecter automatiquement le manager_id (pour managers et agents)
-      const detectedManagerId = await getCurrentUserManagerId()
-      
-      if (detectedManagerId) {
-        query = query.eq('manager_id', detectedManagerId)
-      } else {
-        // Si aucun manager détecté, charger les paramètres globaux (premier manager ou default)
-        const { data: firstManager } = await supabase
-          .from('manager_business_settings')
-          .select('business_name, logo_url, app_title, app_description, app_language')
-          .limit(1)
-          .single()
-        
-        if (firstManager) {
-          return {
-            businessName: firstManager.business_name || 'Lakay',
-            logoUrl: firstManager.logo_url || null,
-            appTitle: firstManager.app_title || 'Système de Microcrédit - Lakay',
-            appDescription: firstManager.app_description || 'Gestion de microcrédit avec remboursements quotidiens',
-            appLanguage: firstManager.app_language || 'fr',
-          }
-        }
-        
-        // Fallback aux valeurs par défaut
-        return {
-          businessName: 'Lakay',
-          logoUrl: null,
-          appTitle: 'Système de Microcrédit - Lakay',
-          appDescription: 'Gestion de microcrédit avec remboursements quotidiens',
-          appLanguage: 'fr',
-        }
-      }
+    const session = await getActiveSession('getAppSettings')
+    if (!session) {
+      return getDefaultAppSettings()
     }
 
-    const { data, error } = await query.single()
+    const { data, error } = await fetchBusinessSettingsRow<{
+      business_name: string | null
+      logo_url: string | null
+      app_title: string | null
+      app_description: string | null
+      app_language: string | null
+    }>(
+      'business_name, logo_url, app_title, app_description, app_language',
+      managerId,
+    )
 
-    if (error && error.code !== 'PGRST116') {
-      console.error('Erreur lors de la récupération des paramètres de l\'application:', error)
-    }
+    logSupabaseError('getAppSettings', error)
 
     if (data) {
       return {
-        businessName: data.business_name || 'Lakay',
-        logoUrl: data.logo_url || null,
-        appTitle: data.app_title || 'Système de Microcrédit - Lakay',
-        appDescription: data.app_description || 'Gestion de microcrédit avec remboursements quotidiens',
-        appLanguage: data.app_language || 'fr',
+        businessName: data.business_name || DEFAULT_APP_SETTINGS.businessName,
+        logoUrl: data.logo_url || DEFAULT_APP_SETTINGS.logoUrl,
+        appTitle: data.app_title || DEFAULT_APP_SETTINGS.appTitle,
+        appDescription: data.app_description || DEFAULT_APP_SETTINGS.appDescription,
+        appLanguage: data.app_language || DEFAULT_APP_SETTINGS.appLanguage,
       }
     }
 
-    // Fallback aux valeurs par défaut
-    return {
-      businessName: 'Lakay',
-      logoUrl: null,
-      appTitle: 'Système de Microcrédit - Lakay',
-      appDescription: 'Gestion de microcrédit avec remboursements quotidiens',
-      appLanguage: 'fr',
-    }
+    return getDefaultAppSettings()
   } catch (error) {
     console.error('Erreur lors de la récupération des paramètres de l\'application:', error)
-    return {
-      businessName: 'Lakay',
-      logoUrl: null,
-      appTitle: 'Système de Microcrédit - Lakay',
-      appDescription: 'Gestion de microcrédit avec remboursements quotidiens',
-      appLanguage: 'fr',
-    }
+    return getDefaultAppSettings()
   }
 }
 
