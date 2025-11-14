@@ -270,6 +270,27 @@ CREATE POLICY admin_manage_system_settings
         )
     );
 
+-- Autoriser les managers à gérer uniquement leurs paramètres
+CREATE POLICY manager_manage_own_system_settings
+    ON system_settings
+    FOR ALL
+    USING (
+        EXISTS (
+            SELECT 1 FROM user_profiles up
+            WHERE up.id = auth.uid()
+            AND up.role = 'manager'
+            AND system_settings.manager_id = up.id
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM user_profiles up
+            WHERE up.id = auth.uid()
+            AND up.role = 'manager'
+            AND system_settings.manager_id = up.id
+        )
+    );
+
 CREATE POLICY admin_manage_loan_amount_brackets
     ON loan_amount_brackets
     FOR ALL
