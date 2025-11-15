@@ -22,6 +22,8 @@ DROP POLICY IF EXISTS "Users can update own profile limited" ON user_profiles;
 DROP POLICY IF EXISTS "Admins can insert profiles" ON user_profiles;
 DROP POLICY IF EXISTS manager_view_agents ON user_profiles;
 DROP POLICY IF EXISTS full_select_access ON user_profiles;
+DROP POLICY IF EXISTS user_profiles_self_select ON user_profiles;
+DROP POLICY IF EXISTS user_profiles_admin_select ON user_profiles;
 
 CREATE POLICY "Users update own profile"
   ON user_profiles
@@ -29,20 +31,17 @@ CREATE POLICY "Users update own profile"
   TO authenticated
   USING (auth.uid() = id);
 
-CREATE POLICY full_select_access
+CREATE POLICY user_profiles_self_select
   ON user_profiles
   FOR SELECT
   TO authenticated
-  USING (
-    auth.uid() = id
-    OR role = 'admin'
-    OR EXISTS (
-      SELECT 1
-      FROM agents a
-      WHERE a.agent_id = user_profiles.agent_id
-        AND a.manager_id = auth.uid()
-    )
-  );
+  USING (auth.uid() = id);
+
+CREATE POLICY user_profiles_admin_select
+  ON user_profiles
+  FOR SELECT
+  TO public
+  USING (get_user_role(auth.uid()) = 'admin');
 
 CREATE POLICY manager_view_agents
   ON user_profiles
