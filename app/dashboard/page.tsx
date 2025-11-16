@@ -626,6 +626,7 @@ export default function DashboardPage() {
           icon: UserPlus,
           description: 'Total agents',
           gradient: 'bg-gradient-to-r from-sky-500 to-blue-700',
+          href: '/agents',
         }]
       : []),
     {
@@ -634,6 +635,7 @@ export default function DashboardPage() {
       icon: Users,
       description: 'Total membres',
       gradient: 'bg-gradient-to-r from-fuchsia-500 to-purple-700',
+      href: '/membres',
     },
     {
       title: 'Prêts',
@@ -641,6 +643,7 @@ export default function DashboardPage() {
       icon: CreditCard,
       description: 'Prêts actifs',
       gradient: 'bg-gradient-to-r from-emerald-500 to-green-600',
+      href: '/prets',
     },
     {
       title: 'Remboursements',
@@ -669,6 +672,7 @@ export default function DashboardPage() {
       icon: TrendingUp,
       description: 'Principal restant sur prêts actifs',
       gradient: 'bg-gradient-to-r from-cyan-500 to-teal-600',
+      href: '/prets',
     },
     {
       title: 'Intérêt brut',
@@ -676,6 +680,7 @@ export default function DashboardPage() {
       icon: ArrowDownRight,
       description: `Intérêt (${baseInterestRateLabel}) collecté`,
       gradient: 'bg-gradient-to-r from-violet-500 to-indigo-700',
+      href: '/pnl',
     },
     {
       title: `Commission agents (${commissionRateLabel})`,
@@ -683,6 +688,7 @@ export default function DashboardPage() {
       icon: Wallet,
       description: `${commissionRateLabel} des intérêts nets mensuels`,
       gradient: 'bg-gradient-to-r from-teal-500 to-emerald-600',
+      href: '/pnl',
     },
     {
       title: 'Total dépenses',
@@ -690,6 +696,7 @@ export default function DashboardPage() {
       icon: ArrowUpRight,
       description: 'Dépenses opérationnelles',
       gradient: 'bg-gradient-to-r from-slate-600 to-gray-900',
+      href: '/expenses',
     },
   ]
 

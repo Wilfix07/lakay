@@ -531,23 +531,25 @@ function MembresPageContent() {
             <h1 className="text-3xl font-bold tracking-tight text-foreground">Membres</h1>
             <p className="text-muted-foreground mt-2">Créer et gérer les membres</p>
           </div>
-          <Button onClick={() => setShowForm(!showForm)} className="gap-2">
-            {showForm ? (
-              <>
-                <X className="w-4 h-4" />
-                Annuler
-              </>
-            ) : (
-              <>
-                <Plus className="w-4 h-4" />
-                Nouveau Membre
-              </>
-            )}
-          </Button>
+          {userProfile?.role !== 'manager' && (
+            <Button onClick={() => setShowForm(!showForm)} className="gap-2">
+              {showForm ? (
+                <>
+                  <X className="w-4 h-4" />
+                  Annuler
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  Nouveau Membre
+                </>
+              )}
+            </Button>
+          )}
         </div>
 
         {/* Form */}
-        {showForm && (
+        {showForm && userProfile?.role !== 'manager' && (
           <Card>
             <CardHeader>
               <CardTitle>Créer un nouveau membre</CardTitle>
@@ -1038,7 +1040,7 @@ function MembresPageContent() {
 
 export default function MembresPage() {
   return (
-    <ProtectedRoute requiredPermission="canCreateMembers">
+    <ProtectedRoute>
       <MembresPageContent />
     </ProtectedRoute>
   )
