@@ -42,6 +42,7 @@ function PretsPageContent() {
   const router = useRouter()
   const { repaymentFrequencies } = useDynamicData()
   const [prets, setPrets] = useState<Pret[]>([])
+  const [groupPrets, setGroupPrets] = useState<any[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
   const [collaterals, setCollaterals] = useState<any[]>([])
@@ -56,12 +57,15 @@ function PretsPageContent() {
   const [amountValidationMessage, setAmountValidationMessage] = useState<string | null>(null)
   const [formData, setFormData] = useState({
     membre_id: '',
+    group_id: '',
     agent_id: '',
     montant_pret: '',
     date_decaissement: new Date().toISOString().split('T')[0],
     frequence_remboursement: 'journalier' as FrequenceRemboursement,
     nombre_remboursements: '23',
   })
+  const [loanType, setLoanType] = useState<'membre' | 'groupe'>('membre')
+  const [groups, setGroups] = useState<any[]>([])
   // Permettre aux agents de saisir manuellement les dates d'échéance
   const [manualScheduleEnabled, setManualScheduleEnabled] = useState<boolean>(false)
   const [manualInstallmentDates, setManualInstallmentDates] = useState<string[]>([])
@@ -211,6 +215,7 @@ function PretsPageContent() {
       loadPrets()
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
         setFormData(prev => ({ ...prev, agent_id: userProfile.agent_id! }))
+        loadGroups()
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -423,6 +428,41 @@ function PretsPageContent() {
     }
   }
 
+  async function loadGroups() {
+    try {
+      if (!userProfile?.agent_id) return
+
+      const { data: groupsData, error } = await supabase
+        .from('membre_groups')
+        .select('*')
+        .eq('agent_id', userProfile.agent_id)
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+
+      // Charger le nombre de membres pour chaque groupe
+      const groupsWithCounts = await Promise.all(
+        (groupsData || []).map(async (group) => {
+          const { count, error: countError } = await supabase
+            .from('membre_group_members')
+            .select('*', { count: 'exact', head: true })
+            .eq('group_id', group.id)
+
+          if (countError) throw countError
+
+          return {
+            ...group,
+            member_count: count || 0,
+          }
+        })
+      )
+
+      setGroups(groupsWithCounts)
+    } catch (error) {
+      console.error('Erreur lors du chargement des groupes:', error)
+    }
+  }
+
   async function loadPrets() {
     try {
       let query = supabase
@@ -472,6 +512,36 @@ function PretsPageContent() {
       } else {
         setCollaterals([])
       }
+
+      // Charger aussi les prêts de groupe
+      let groupQuery = supabase
+        .from('group_prets')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        groupQuery = groupQuery.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          groupQuery = groupQuery.in('agent_id', agentIds)
+        } else {
+          setGroupPrets([])
+          return
+        }
+      }
+
+      const { data: groupPretsData, error: groupPretsError } = await groupQuery
+
+      if (groupPretsError) throw groupPretsError
+      setGroupPrets(groupPretsData || [])
     } catch (error) {
       console.error('Erreur lors du chargement des prêts:', error)
       alert('Erreur lors du chargement des prêts')
@@ -529,8 +599,14 @@ function PretsPageContent() {
         return
       }
 
-      if (!formData.membre_id) {
+      // Validation selon le type de prêt
+      if (loanType === 'membre' && !formData.membre_id) {
         alert('Veuillez sélectionner un membre')
+        return
+      }
+
+      if (loanType === 'groupe' && !formData.group_id) {
+        alert('Veuillez sélectionner un groupe')
         return
       }
 
@@ -541,18 +617,34 @@ function PretsPageContent() {
         return
       }
 
-      // Vérifier si le membre a déjà un prêt actif, en attente de garantie ou en attente d'approbation
-      const { data: activeLoans, error: activeLoansError } = await supabase
-        .from('prets')
-        .select('id')
-        .eq('membre_id', formData.membre_id)
-        .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
-        .limit(1)
+      // Vérifier si le membre/groupe a déjà un prêt actif
+      if (loanType === 'membre') {
+        const { data: activeLoans, error: activeLoansError } = await supabase
+          .from('prets')
+          .select('id')
+          .eq('membre_id', formData.membre_id)
+          .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+          .limit(1)
 
-      if (activeLoansError) throw activeLoansError
-      if (activeLoans && activeLoans.length > 0) {
-        alert("Ce membre a déjà un prêt actif, en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.")
-        return
+        if (activeLoansError) throw activeLoansError
+        if (activeLoans && activeLoans.length > 0) {
+          alert("Ce membre a déjà un prêt actif, en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.")
+          return
+        }
+      } else {
+        // Pour les groupes, vérifier si le groupe a déjà un prêt actif
+        const { data: activeGroupLoans, error: activeGroupLoansError } = await supabase
+          .from('group_prets')
+          .select('id')
+          .eq('group_id', parseInt(formData.group_id))
+          .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+          .limit(1)
+
+        if (activeGroupLoansError) throw activeGroupLoansError
+        if (activeGroupLoans && activeGroupLoans.length > 0) {
+          alert("Ce groupe a déjà un prêt actif, en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser avant de contracter un nouveau prêt.")
+          return
+        }
       }
 
       // Vérifier que le dépôt de garantie est fourni si nécessaire
@@ -597,8 +689,9 @@ function PretsPageContent() {
 
       // Générer le pret_id automatiquement
       const monthName = getMonthName(new Date(formData.date_decaissement))
+      const tableName = loanType === 'groupe' ? 'group_prets' : 'prets'
       const { data: maxPrets } = await supabase
-        .from('prets')
+        .from(tableName)
         .select('pret_id')
         .filter('pret_id', 'like', `CL-%${monthName}`)
         .order('pret_id', { ascending: false })
@@ -616,96 +709,171 @@ function PretsPageContent() {
       }
 
       // Déterminer le statut initial selon le rôle de l'utilisateur
-      // Les agents peuvent créer des prêts directement en attente de garantie
-      // Ils peuvent collecter le collateral sans approbation du manager
-      // L'approbation du manager sera nécessaire seulement pour activer le prêt après collecte complète du collateral
       const initialStatus = 'en_attente_garantie'
 
-      // Créer le prêt
-      const { error: pretError } = await supabase
-        .from('prets')
-        .insert([{
-          pret_id: newPretId,
-          membre_id: formData.membre_id,
-          agent_id: finalAgentId, // Utiliser l'agent_id final (automatique pour les agents)
-          montant_pret: montantPret,
-          montant_remboursement: overriddenPlan.montantEcheance,
-          nombre_remboursements: nombreRemboursements,
-          date_decaissement: formData.date_decaissement,
-          date_premier_remboursement: overriddenPlan.datePremierRemboursement
-            .toISOString()
-            .split('T')[0],
-          statut: initialStatus,
-          capital_restant: montantPret,
-          frequence_remboursement: frequency,
-        }])
+      if (loanType === 'membre') {
+        // Créer le prêt pour un membre individuel
+        const { error: pretError } = await supabase
+          .from('prets')
+          .insert([{
+            pret_id: newPretId,
+            membre_id: formData.membre_id,
+            agent_id: finalAgentId,
+            montant_pret: montantPret,
+            montant_remboursement: overriddenPlan.montantEcheance,
+            nombre_remboursements: nombreRemboursements,
+            date_decaissement: formData.date_decaissement,
+            date_premier_remboursement: overriddenPlan.datePremierRemboursement
+              .toISOString()
+              .split('T')[0],
+            statut: initialStatus,
+            capital_restant: montantPret,
+            frequence_remboursement: frequency,
+          }])
 
-      if (pretError) throw pretError
+        if (pretError) throw pretError
 
-      // Créer la garantie (collateral) automatiquement pour tous les prêts
-      // Même en attente d'approbation, la garantie doit être créée et déposée avant approbation
-      // Réutiliser le montant déjà calculé plus haut
-      const montantGarantieRequis = montantGarantieRequisCheck
-      
-      // Utiliser le dépôt fourni par l'agent si disponible
-      const montantDeposeInitial = collateralDeposit ? parseFloat(collateralDeposit) : 0
-      const montantDeposeFinal = Math.min(
-        Math.max(montantDeposeInitial, 0),
-        montantGarantieRequis
-      )
-      const montantRestantFinal = Math.max(montantGarantieRequis - montantDeposeFinal, 0)
-      const statutGarantie = montantDeposeFinal >= montantGarantieRequis ? 'complet' : 'partiel'
-      
-      const { error: collateralError } = await supabase
-        .from('collaterals')
-        .insert([{
-          pret_id: newPretId,
-          membre_id: formData.membre_id,
-          montant_requis: montantGarantieRequis,
-          montant_depose: montantDeposeFinal,
-          montant_restant: montantRestantFinal,
-          statut: statutGarantie,
-          date_depot: montantDeposeFinal > 0 ? formData.date_decaissement : null,
-          notes: montantDeposeFinal > 0
-            ? `Garantie générée automatiquement pour le prêt ${newPretId}. Dépôt initial de ${formatCurrency(montantDeposeFinal)} effectué lors de la création.`
-            : `Garantie générée automatiquement pour le prêt ${newPretId}`,
-        }])
+        // Créer la garantie (collateral) automatiquement
+        const montantGarantieRequis = montantGarantieRequisCheck
+        const montantDeposeInitial = collateralDeposit ? parseFloat(collateralDeposit) : 0
+        const montantDeposeFinal = Math.min(
+          Math.max(montantDeposeInitial, 0),
+          montantGarantieRequis
+        )
+        const montantRestantFinal = Math.max(montantGarantieRequis - montantDeposeFinal, 0)
+        const statutGarantie = montantDeposeFinal >= montantGarantieRequis ? 'complet' : 'partiel'
+        
+        const { error: collateralError } = await supabase
+          .from('collaterals')
+          .insert([{
+            pret_id: newPretId,
+            membre_id: formData.membre_id,
+            montant_requis: montantGarantieRequis,
+            montant_depose: montantDeposeFinal,
+            montant_restant: montantRestantFinal,
+            statut: statutGarantie,
+            date_depot: montantDeposeFinal > 0 ? formData.date_decaissement : null,
+            notes: montantDeposeFinal > 0
+              ? `Garantie générée automatiquement pour le prêt ${newPretId}. Dépôt initial de ${formatCurrency(montantDeposeFinal)} effectué lors de la création.`
+              : `Garantie générée automatiquement pour le prêt ${newPretId}`,
+          }])
 
-      if (collateralError) {
-        console.error('Erreur lors de la création de la garantie:', collateralError)
-        throw new Error('Erreur lors de la création de la garantie. Le prêt ne peut pas être créé.')
+        if (collateralError) {
+          console.error('Erreur lors de la création de la garantie:', collateralError)
+          throw new Error('Erreur lors de la création de la garantie. Le prêt ne peut pas être créé.')
+        }
+      } else {
+        // Créer le prêt pour un groupe
+        // Récupérer les membres du groupe
+        const { data: groupMembers, error: groupMembersError } = await supabase
+          .from('membre_group_members')
+          .select('membre_id')
+          .eq('group_id', parseInt(formData.group_id))
+
+        if (groupMembersError) throw groupMembersError
+        if (!groupMembers || groupMembers.length === 0) {
+          alert('Erreur: Le groupe sélectionné ne contient aucun membre')
+          return
+        }
+
+        // Créer le prêt de groupe
+        const { error: groupPretError } = await supabase
+          .from('group_prets')
+          .insert([{
+            pret_id: newPretId,
+            group_id: parseInt(formData.group_id),
+            agent_id: finalAgentId,
+            montant_pret: montantPret,
+            montant_remboursement: overriddenPlan.montantEcheance,
+            nombre_remboursements: nombreRemboursements,
+            date_decaissement: formData.date_decaissement,
+            date_premier_remboursement: overriddenPlan.datePremierRemboursement
+              .toISOString()
+              .split('T')[0],
+            statut: initialStatus,
+            capital_restant: montantPret,
+            frequence_remboursement: frequency,
+          }])
+
+        if (groupPretError) throw groupPretError
+
+        // Créer les remboursements pour chaque membre du groupe
+        const groupRemboursements = []
+        for (const member of groupMembers) {
+          for (const entry of overriddenPlan.schedule) {
+            groupRemboursements.push({
+              pret_id: newPretId,
+              group_id: parseInt(formData.group_id),
+              membre_id: member.membre_id,
+              agent_id: finalAgentId,
+              numero_remboursement: entry.numero,
+              montant: entry.montant,
+              principal: entry.principal,
+              interet: entry.interet,
+              date_remboursement: entry.date.toISOString().split('T')[0],
+              statut: 'en_attente',
+            })
+          }
+        }
+
+        if (groupRemboursements.length > 0) {
+          const { error: remboursementsError } = await supabase
+            .from('group_remboursements')
+            .insert(groupRemboursements)
+
+          if (remboursementsError) throw remboursementsError
+        }
       }
 
-      // Les remboursements seront créés automatiquement lors de l'activation du prêt
-      // (après dépôt complet de la garantie et approbation du manager)
-
-      const messageDepot = montantDeposeFinal > 0
-        ? `\n💰 Dépôt initial: ${formatCurrency(montantDeposeFinal)} HTG\n${montantRestantFinal > 0 ? `⚠️ Montant restant: ${formatCurrency(montantRestantFinal)} HTG\n` : '✅ Garantie complète!\n'}`
-        : '\n⚠️ Aucun dépôt effectué. Vous pouvez collecter la garantie dans la page "Garanties".\n'
-      
-      const messageStatut = montantRestantFinal > 0
-        ? `⏳ Statut: En attente de garantie\n\nVous pouvez collecter le collateral (partiel ou total) dans la page "Garanties". Une fois la garantie complète, le manager pourra approuver le prêt pour l'activer.`
-        : `⏳ Statut: En attente de garantie (garantie complète)\n\nLe manager peut maintenant approuver le prêt dans la page "Approbations" pour l'activer.`
-      
-      alert(
-        `✅ Prêt créé avec succès!\n\n` +
-        `📋 Prêt: ${newPretId}\n` +
-        `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
-        `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)` +
-        messageDepot +
-        messageStatut
-      )
+      // Message de succès selon le type de prêt
+      if (loanType === 'membre') {
+        const montantGarantieRequis = montantGarantieRequisCheck
+        const montantDeposeInitial = collateralDeposit ? parseFloat(collateralDeposit) : 0
+        const montantDeposeFinal = Math.min(
+          Math.max(montantDeposeInitial, 0),
+          montantGarantieRequis
+        )
+        const montantRestantFinal = Math.max(montantGarantieRequis - montantDeposeFinal, 0)
+        
+        const messageDepot = montantDeposeFinal > 0
+          ? `\n💰 Dépôt initial: ${formatCurrency(montantDeposeFinal)} HTG\n${montantRestantFinal > 0 ? `⚠️ Montant restant: ${formatCurrency(montantRestantFinal)} HTG\n` : '✅ Garantie complète!\n'}`
+          : '\n⚠️ Aucun dépôt effectué. Vous pouvez collecter la garantie dans la page "Garanties".\n'
+        
+        const messageStatut = montantRestantFinal > 0
+          ? `⏳ Statut: En attente de garantie\n\nVous pouvez collecter le collateral (partiel ou total) dans la page "Garanties". Une fois la garantie complète, le manager pourra approuver le prêt pour l'activer.`
+          : `⏳ Statut: En attente de garantie (garantie complète)\n\nLe manager peut maintenant approuver le prêt dans la page "Approbations" pour l'activer.`
+        
+        alert(
+          `✅ Prêt créé avec succès!\n\n` +
+          `📋 Prêt: ${newPretId}\n` +
+          `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
+          `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)` +
+          messageDepot +
+          messageStatut
+        )
+      } else {
+        alert(
+          `✅ Prêt de groupe créé avec succès!\n\n` +
+          `📋 Prêt: ${newPretId}\n` +
+          `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
+          `👥 Groupe: ${groups.find(g => g.id === parseInt(formData.group_id))?.group_name || 'N/A'}\n` +
+          `⏳ Statut: En attente de garantie\n\n` +
+          `Les remboursements ont été créés pour tous les membres du groupe.`
+        )
+      }
       setShowForm(false)
       // Réinitialiser le formulaire, mais garder l'agent_id pour les agents
       const resetAgentId = userProfile?.role === 'agent' && userProfile.agent_id ? userProfile.agent_id : ''
       setFormData({
         membre_id: '',
+        group_id: '',
         agent_id: resetAgentId,
         montant_pret: '',
         date_decaissement: new Date().toISOString().split('T')[0],
         frequence_remboursement: 'journalier',
         nombre_remboursements: systemDefaultInstallments.toString(),
       })
+      setLoanType('membre')
       setCollateralDeposit('')
       setShowCollateralDeposit(false)
       setMemberCollateralBalance(0)
@@ -966,12 +1134,14 @@ function PretsPageContent() {
                 const resetAgentId = userProfile?.role === 'agent' && userProfile.agent_id ? userProfile.agent_id : ''
                 setFormData({
                   membre_id: '',
+                  group_id: '',
                   agent_id: resetAgentId,
                   montant_pret: '',
                   date_decaissement: new Date().toISOString().split('T')[0],
                   frequence_remboursement: 'journalier',
                   nombre_remboursements: systemDefaultInstallments.toString(),
                 })
+                setLoanType('membre')
               }}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
@@ -1020,21 +1190,60 @@ function PretsPageContent() {
                     </select>
                   </div>
                 )}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Membre *
-                  </label>
-                  <select
-                    required
-                    value={formData.membre_id}
-                    onChange={(e) => setFormData({ ...formData, membre_id: e.target.value })}
-                    disabled={!formData.agent_id && userProfile?.role !== 'agent'}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
-                  >
-                    <option value="">
-                      {formData.agent_id || userProfile?.role === 'agent' ? 'Sélectionner un membre' : 'Sélectionnez d\'abord un agent'}
-                    </option>
-                    {filteredMembres.map((membre) => (
+                {/* Toggle pour choisir entre membre et groupe (seulement pour les agents) */}
+                {userProfile?.role === 'agent' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Type de prêt *
+                    </label>
+                    <div className="flex gap-4">
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="loanType"
+                          value="membre"
+                          checked={loanType === 'membre'}
+                          onChange={(e) => {
+                            setLoanType('membre')
+                            setFormData({ ...formData, membre_id: '', group_id: '' })
+                          }}
+                          className="rounded"
+                        />
+                        <span className="text-sm">Membre individuel</span>
+                      </label>
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="loanType"
+                          value="groupe"
+                          checked={loanType === 'groupe'}
+                          onChange={(e) => {
+                            setLoanType('groupe')
+                            setFormData({ ...formData, membre_id: '', group_id: '' })
+                          }}
+                          className="rounded"
+                        />
+                        <span className="text-sm">Groupe</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+                {loanType === 'membre' ? (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Membre *
+                    </label>
+                    <select
+                      required
+                      value={formData.membre_id}
+                      onChange={(e) => setFormData({ ...formData, membre_id: e.target.value })}
+                      disabled={!formData.agent_id && userProfile?.role !== 'agent'}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
+                    >
+                      <option value="">
+                        {formData.agent_id || userProfile?.role === 'agent' ? 'Sélectionner un membre' : 'Sélectionnez d\'abord un agent'}
+                      </option>
+                      {filteredMembres.map((membre) => (
                       (() => {
                         const hasActiveLoan = prets.some(
                           (pret) => pret.membre_id === membre.membre_id && pret.statut === 'actif',
@@ -1055,6 +1264,26 @@ function PretsPageContent() {
                     ))}
                   </select>
                 </div>
+                ) : (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Groupe *
+                    </label>
+                    <select
+                      required
+                      value={formData.group_id}
+                      onChange={(e) => setFormData({ ...formData, group_id: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="">Sélectionner un groupe</option>
+                      {groups.map((group) => (
+                        <option key={group.id} value={group.id}>
+                          {group.group_name} ({group.member_count || 0} membre(s))
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Montant du prêt (HTG) *
@@ -1287,8 +1516,8 @@ function PretsPageContent() {
                 </div>
               )}
 
-              {/* Informations sur la garantie */}
-              {formData.membre_id && formData.montant_pret && parseFloat(formData.montant_pret) > 0 && collateralRequirement && (
+              {/* Informations sur la garantie - seulement pour les prêts de membre */}
+              {loanType === 'membre' && formData.membre_id && formData.montant_pret && parseFloat(formData.montant_pret) > 0 && collateralRequirement && (
                 <div className="border-t border-gray-200 pt-4 mt-4">
                   <h3 className="text-sm font-semibold text-gray-700 mb-3">Garantie requise</h3>
                   <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-2">
@@ -1363,7 +1592,7 @@ function PretsPageContent() {
                     ID Prêt
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Membre
+                    Membre/Groupe
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Montant
@@ -1391,7 +1620,7 @@ function PretsPageContent() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {prets.length === 0 ? (
+                {prets.length === 0 && groupPrets.length === 0 ? (
                   <tr>
                     <td
                       colSpan={
@@ -1403,7 +1632,9 @@ function PretsPageContent() {
                     </td>
                   </tr>
                 ) : (
-                  prets.map((pret) => (
+                  <>
+                    {/* Prêts de membres individuels */}
+                    {prets.map((pret) => (
                     <tr key={pret.id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                         {pret.pret_id}
@@ -1474,7 +1705,57 @@ function PretsPageContent() {
                         </div>
                       </td>
                     </tr>
-                  ))
+                  ))}
+                    {/* Prêts de groupe */}
+                    {groupPrets.map((pret) => {
+                      const group = groups.find(g => g.id === pret.group_id)
+                      return (
+                        <tr key={`group-${pret.id}`} className="hover:bg-gray-50 bg-blue-50/30">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                            {pret.pret_id} <span className="text-xs text-blue-600">(Groupe)</span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {group?.group_name || `Groupe #${pret.group_id}`}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {formatCurrency(pret.montant_pret)}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {formatCurrency(pret.montant_remboursement)}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {pret.frequence_remboursement === 'mensuel' ? 'Mensuelle' : pret.frequence_remboursement === 'hebdomadaire' ? 'Hebdomadaire' : 'Quotidienne'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {pret.nombre_remboursements} échéance(s)
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {formatDate(pret.date_decaissement)}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                              pret.statut === 'actif' ? 'bg-green-100 text-green-800' :
+                              pret.statut === 'en_attente_approbation' ? 'bg-yellow-100 text-yellow-800' :
+                              pret.statut === 'en_attente_garantie' ? 'bg-blue-100 text-blue-800' :
+                              pret.statut === 'termine' ? 'bg-gray-100 text-gray-800' :
+                              'bg-red-100 text-red-800'
+                            }`}>
+                              {pret.statut}
+                            </span>
+                          </td>
+                          {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                            <td className="px-6 py-4 whitespace-nowrap text-sm">
+                              <div className="flex gap-2">
+                                <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                                  Prêt de groupe
+                                </span>
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      )
+                    })}
+                  </>
                 )}
               </tbody>
             </table>

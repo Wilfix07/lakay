@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, X, Loader2, User } from 'lucide-react'
+import { Plus, X, Loader2, User, Users, CheckCircle2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -55,6 +55,16 @@ type MemberLoanHistory = {
   }[]
 }
 
+type MembreGroup = {
+  id: number
+  group_name: string
+  agent_id: string
+  description: string | null
+  created_at: string
+  member_count?: number
+  members?: Membre[]
+}
+
 function MembresPageContent() {
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
@@ -79,6 +89,16 @@ function MembresPageContent() {
     adresse: '',
     photo_url: null as string | null,
   })
+  const [groups, setGroups] = useState<MembreGroup[]>([])
+  const [showGroupForm, setShowGroupForm] = useState(false)
+  const [groupFormData, setGroupFormData] = useState({
+    group_name: '',
+    description: '',
+    selectedMembers: [] as string[],
+  })
+  const [groupSubmitting, setGroupSubmitting] = useState(false)
+  const [selectedGroup, setSelectedGroup] = useState<MembreGroup | null>(null)
+  const [groupDetailsOpen, setGroupDetailsOpen] = useState(false)
 
   const currentLoan =
     memberLoans.find((loan) => loan.pret_id === selectedLoanId) ?? memberLoans[0] ?? null
@@ -199,6 +219,9 @@ function MembresPageContent() {
     if (userProfile) {
       loadAgents()
       loadMembres()
+      if (userProfile?.role === 'agent') {
+        loadGroups()
+      }
       // Pour les agents, définir automatiquement l'agent_id depuis le profil utilisateur
       // IMPORTANT: Les agents peuvent créer des membres sans autorisation du manager
       if (userProfile?.role === 'agent' && userProfile.agent_id) {
@@ -277,6 +300,132 @@ function MembresPageContent() {
       alert('Erreur lors du chargement des membres')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadGroups() {
+    try {
+      if (!userProfile?.agent_id) return
+
+      const { data: groupsData, error: groupsError } = await supabase
+        .from('membre_groups')
+        .select('*')
+        .eq('agent_id', userProfile.agent_id)
+        .order('created_at', { ascending: false })
+
+      if (groupsError) throw groupsError
+
+      // Charger le nombre de membres pour chaque groupe
+      const groupsWithCounts = await Promise.all(
+        (groupsData || []).map(async (group) => {
+          const { count, error: countError } = await supabase
+            .from('membre_group_members')
+            .select('*', { count: 'exact', head: true })
+            .eq('group_id', group.id)
+
+          if (countError) throw countError
+
+          return {
+            ...group,
+            member_count: count || 0,
+          }
+        })
+      )
+
+      setGroups(groupsWithCounts)
+    } catch (error) {
+      console.error('Erreur lors du chargement des groupes:', error)
+    }
+  }
+
+  async function handleCreateGroup(e: React.FormEvent) {
+    e.preventDefault()
+    
+    if (!userProfile?.agent_id) {
+      alert('Erreur: Agent ID non trouvé')
+      return
+    }
+
+    // Valider le nombre de membres (2-10)
+    if (groupFormData.selectedMembers.length < 2) {
+      alert('Un groupe doit contenir au moins 2 membres')
+      return
+    }
+
+    if (groupFormData.selectedMembers.length > 10) {
+      alert('Un groupe ne peut pas contenir plus de 10 membres')
+      return
+    }
+
+    if (!groupFormData.group_name.trim()) {
+      alert('Veuillez saisir un nom pour le groupe')
+      return
+    }
+
+    setGroupSubmitting(true)
+    try {
+      // Créer le groupe
+      const { data: newGroup, error: groupError } = await supabase
+        .from('membre_groups')
+        .insert([{
+          group_name: groupFormData.group_name.trim(),
+          agent_id: userProfile.agent_id,
+          description: groupFormData.description.trim() || null,
+        }])
+        .select()
+        .single()
+
+      if (groupError) throw groupError
+
+      // Ajouter les membres au groupe
+      const groupMembers = groupFormData.selectedMembers.map(membre_id => ({
+        group_id: newGroup.id,
+        membre_id,
+      }))
+
+      const { error: membersError } = await supabase
+        .from('membre_group_members')
+        .insert(groupMembers)
+
+      if (membersError) throw membersError
+
+      alert('Groupe créé avec succès!')
+      setShowGroupForm(false)
+      setGroupFormData({
+        group_name: '',
+        description: '',
+        selectedMembers: [],
+      })
+      loadGroups()
+    } catch (error: any) {
+      console.error('Erreur lors de la création du groupe:', error)
+      alert('Erreur: ' + (error.message || 'Erreur inconnue'))
+    } finally {
+      setGroupSubmitting(false)
+    }
+  }
+
+  async function handleViewGroupDetails(group: MembreGroup) {
+    try {
+      const { data: membersData, error } = await supabase
+        .from('membre_group_members')
+        .select('membre_id')
+        .eq('group_id', group.id)
+
+      if (error) throw error
+
+      const memberIds = membersData?.map(m => m.membre_id) || []
+      const groupMembers = membres.filter(m => memberIds.includes(m.membre_id))
+
+      setSelectedGroup({
+        ...group,
+        members: groupMembers,
+        member_count: groupMembers.length,
+      })
+      setGroupDetailsOpen(true)
+    } catch (error) {
+      console.error('Erreur lors du chargement des détails du groupe:', error)
+      alert('Erreur lors du chargement des détails du groupe')
     }
   }
 
@@ -423,6 +572,10 @@ function MembresPageContent() {
       const resetAgentId = userProfile?.role === 'agent' && userProfile.agent_id ? userProfile.agent_id : ''
       setFormData({ agent_id: resetAgentId, nom: '', prenom: '', telephone: '', adresse: '', photo_url: null })
       loadMembres()
+      // Recharger les groupes pour les agents
+      if (userProfile?.role === 'agent') {
+        loadGroups()
+      }
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
       alert('Erreur: ' + (error.message || 'Erreur inconnue'))
@@ -531,21 +684,42 @@ function MembresPageContent() {
             <h1 className="text-3xl font-bold tracking-tight text-foreground">Membres</h1>
             <p className="text-muted-foreground mt-2">Créer et gérer les membres</p>
           </div>
-          {userProfile?.role !== 'manager' && (
-            <Button onClick={() => setShowForm(!showForm)} className="gap-2">
-              {showForm ? (
-                <>
-                  <X className="w-4 h-4" />
-                  Annuler
-                </>
-              ) : (
-                <>
-                  <Plus className="w-4 h-4" />
-                  Nouveau Membre
-                </>
-              )}
-            </Button>
-          )}
+          <div className="flex gap-2">
+            {userProfile?.role === 'agent' && (
+              <Button 
+                onClick={() => setShowGroupForm(!showGroupForm)} 
+                variant="outline"
+                className="gap-2"
+              >
+                {showGroupForm ? (
+                  <>
+                    <X className="w-4 h-4" />
+                    Annuler
+                  </>
+                ) : (
+                  <>
+                    <Users className="w-4 h-4" />
+                    Nouveau Groupe
+                  </>
+                )}
+              </Button>
+            )}
+            {userProfile?.role !== 'manager' && (
+              <Button onClick={() => setShowForm(!showForm)} className="gap-2">
+                {showForm ? (
+                  <>
+                    <X className="w-4 h-4" />
+                    Annuler
+                  </>
+                ) : (
+                  <>
+                    <Plus className="w-4 h-4" />
+                    Nouveau Membre
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Form */}
@@ -645,6 +819,150 @@ function MembresPageContent() {
                   )}
                 </Button>
               </form>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Group Form - Only for agents */}
+        {showGroupForm && userProfile?.role === 'agent' && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Créer un nouveau groupe</CardTitle>
+              <CardDescription>
+                Sélectionnez entre 2 et 10 membres pour créer un groupe
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleCreateGroup} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="group_name">Nom du groupe *</Label>
+                  <Input
+                    id="group_name"
+                    required
+                    value={groupFormData.group_name}
+                    onChange={(e) => setGroupFormData({ ...groupFormData, group_name: e.target.value })}
+                    placeholder="Ex: Groupe A, Groupe de quartier X..."
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="group_description">Description (optionnel)</Label>
+                  <Input
+                    id="group_description"
+                    value={groupFormData.description}
+                    onChange={(e) => setGroupFormData({ ...groupFormData, description: e.target.value })}
+                    placeholder="Description du groupe..."
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="group_members">Sélectionner les membres (2-10) *</Label>
+                  <div className="border rounded-lg p-4 max-h-60 overflow-y-auto">
+                    {membres.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">Aucun membre disponible</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {membres.map((membre) => {
+                          const isSelected = groupFormData.selectedMembers.includes(membre.membre_id)
+                          return (
+                            <label
+                              key={membre.id}
+                              className="flex items-center space-x-2 p-2 rounded hover:bg-muted cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    if (groupFormData.selectedMembers.length >= 10) {
+                                      alert('Un groupe ne peut pas contenir plus de 10 membres')
+                                      return
+                                    }
+                                    setGroupFormData({
+                                      ...groupFormData,
+                                      selectedMembers: [...groupFormData.selectedMembers, membre.membre_id],
+                                    })
+                                  } else {
+                                    setGroupFormData({
+                                      ...groupFormData,
+                                      selectedMembers: groupFormData.selectedMembers.filter(
+                                        id => id !== membre.membre_id
+                                      ),
+                                    })
+                                  }
+                                }}
+                                className="rounded"
+                              />
+                              <span className="text-sm">
+                                {membre.membre_id} - {membre.prenom} {membre.nom}
+                              </span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {groupFormData.selectedMembers.length} membre(s) sélectionné(s) (minimum 2, maximum 10)
+                  </p>
+                </div>
+                <Button 
+                  type="submit" 
+                  disabled={groupSubmitting || groupFormData.selectedMembers.length < 2 || groupFormData.selectedMembers.length > 10} 
+                  className="w-full md:w-auto"
+                >
+                  {groupSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Création...
+                    </>
+                  ) : (
+                    'Créer le groupe'
+                  )}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Groups List - Only for agents */}
+        {userProfile?.role === 'agent' && groups.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Groupes de membres</CardTitle>
+              <CardDescription>Total: {groups.length} groupe(s)</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="rounded-md border overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Nom du groupe</TableHead>
+                      <TableHead>Description</TableHead>
+                      <TableHead>Nombre de membres</TableHead>
+                      <TableHead>Date de création</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {groups.map((group) => (
+                      <TableRow key={group.id}>
+                        <TableCell className="font-medium">{group.group_name}</TableCell>
+                        <TableCell>{group.description || '-'}</TableCell>
+                        <TableCell>{group.member_count || 0} membre(s)</TableCell>
+                        <TableCell>{formatDate(group.created_at)}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleViewGroupDetails(group)}
+                          >
+                            Voir détails
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -972,6 +1290,61 @@ function MembresPageContent() {
         )}
 
       </div>
+
+      {/* Group Details Dialog */}
+      {userProfile?.role === 'agent' && (
+        <Dialog open={groupDetailsOpen} onOpenChange={setGroupDetailsOpen}>
+          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Détails du groupe: {selectedGroup?.group_name}</DialogTitle>
+              <DialogDescription>
+                {selectedGroup?.description || 'Aucune description'}
+              </DialogDescription>
+            </DialogHeader>
+            {selectedGroup && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm font-medium text-muted-foreground">Nombre de membres</p>
+                    <p className="text-lg font-semibold">{selectedGroup.member_count || 0}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-muted-foreground">Date de création</p>
+                    <p className="text-lg font-semibold">{formatDate(selectedGroup.created_at)}</p>
+                  </div>
+                </div>
+                {selectedGroup.members && selectedGroup.members.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-semibold mb-2">Membres du groupe</h3>
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>ID Membre</TableHead>
+                            <TableHead>Nom</TableHead>
+                            <TableHead>Prénom</TableHead>
+                            <TableHead>Téléphone</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {selectedGroup.members.map((membre) => (
+                            <TableRow key={membre.id}>
+                              <TableCell className="font-medium">{membre.membre_id}</TableCell>
+                              <TableCell>{membre.nom}</TableCell>
+                              <TableCell>{membre.prenom}</TableCell>
+                              <TableCell>{membre.telephone || '-'}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+      )}
 
       {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
         <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
