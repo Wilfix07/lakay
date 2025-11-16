@@ -69,6 +69,9 @@ function PretsPageContent() {
   // Permettre aux agents de saisir manuellement les dates d'échéance
   const [manualScheduleEnabled, setManualScheduleEnabled] = useState<boolean>(false)
   const [manualInstallmentDates, setManualInstallmentDates] = useState<string[]>([])
+  // Montants personnalisés pour chaque membre du groupe
+  const [groupMemberAmounts, setGroupMemberAmounts] = useState<Record<string, string>>({})
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<Membre[]>([])
   
   // Mettre à jour la fréquence par défaut quand les fréquences sont chargées
   useEffect(() => {
@@ -238,6 +241,41 @@ function PretsPageContent() {
       return next
     })
   }, [formData.nombre_remboursements])
+
+  // Charger les membres du groupe quand un groupe est sélectionné
+  useEffect(() => {
+    async function loadGroupMembers() {
+      if (loanType === 'groupe' && formData.group_id) {
+        try {
+          const { data: groupMembersData, error } = await supabase
+            .from('membre_group_members')
+            .select('membre_id')
+            .eq('group_id', parseInt(formData.group_id))
+
+          if (error) throw error
+
+          const memberIds = groupMembersData?.map(m => m.membre_id) || []
+          const groupMembers = membres.filter(m => memberIds.includes(m.membre_id))
+          setSelectedGroupMembers(groupMembers)
+
+          // Initialiser les montants à vide
+          const initialAmounts: Record<string, string> = {}
+          groupMembers.forEach(m => {
+            initialAmounts[m.membre_id] = ''
+          })
+          setGroupMemberAmounts(initialAmounts)
+        } catch (error) {
+          console.error('Erreur lors du chargement des membres du groupe:', error)
+          setSelectedGroupMembers([])
+          setGroupMemberAmounts({})
+        }
+      } else {
+        setSelectedGroupMembers([])
+        setGroupMemberAmounts({})
+      }
+    }
+    loadGroupMembers()
+  }, [formData.group_id, loanType, membres])
 
   // Charger le solde de garantie du membre quand le membre est sélectionné
   useEffect(() => {
@@ -645,6 +683,35 @@ function PretsPageContent() {
           alert("Ce groupe a déjà un prêt actif, en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser avant de contracter un nouveau prêt.")
           return
         }
+
+        // Valider que tous les membres ont un montant saisi et que la somme correspond au montant total
+        if (selectedGroupMembers.length === 0) {
+          alert('Erreur: Aucun membre trouvé dans ce groupe')
+          return
+        }
+
+        const totalMemberAmounts = selectedGroupMembers.reduce((sum, member) => {
+          const amount = groupMemberAmounts[member.membre_id]
+          if (!amount || amount.trim() === '') {
+            return NaN // Indique qu'un montant est manquant
+          }
+          const numAmount = parseFloat(amount)
+          if (isNaN(numAmount) || numAmount <= 0) {
+            return NaN
+          }
+          return sum + numAmount
+        }, 0)
+
+        if (isNaN(totalMemberAmounts)) {
+          alert('Veuillez saisir un montant valide (positif) pour chaque membre du groupe')
+          return
+        }
+
+        const difference = Math.abs(totalMemberAmounts - montantPret)
+        if (difference > 0.01) { // Tolérance de 0.01 HTG pour les arrondis
+          alert(`La somme des montants individuels (${formatCurrency(totalMemberAmounts)}) ne correspond pas au montant total du prêt (${formatCurrency(montantPret)}).\n\nDifférence: ${formatCurrency(difference)}`)
+          return
+        }
       }
 
       // Vérifier que le dépôt de garantie est fourni si nécessaire
@@ -797,10 +864,35 @@ function PretsPageContent() {
 
         if (groupPretError) throw groupPretError
 
-        // Créer les remboursements pour chaque membre du groupe
+        // Créer les remboursements pour chaque membre du groupe avec leurs montants personnalisés
         const groupRemboursements = []
         for (const member of groupMembers) {
-          for (const entry of overriddenPlan.schedule) {
+          const memberAmount = parseFloat(groupMemberAmounts[member.membre_id])
+          if (isNaN(memberAmount) || memberAmount <= 0) {
+            throw new Error(`Montant invalide pour le membre ${member.membre_id}`)
+          }
+
+          // Calculer le plan de remboursement pour ce membre avec son montant spécifique
+          const memberPlan = calculateLoanPlan(
+            memberAmount,
+            nombreRemboursements,
+            frequency,
+            new Date(formData.date_decaissement),
+          )
+
+          // Utiliser les dates manuelles si activées
+          let memberSchedule = memberPlan.schedule
+          if (userProfile?.role === 'agent' && manualScheduleEnabled) {
+            const validDates = manualInstallmentDates.filter(Boolean)
+            if (validDates.length === nombreRemboursements) {
+              memberSchedule = memberPlan.schedule.map((entry, idx) => ({
+                ...entry,
+                date: new Date(validDates[idx]),
+              }))
+            }
+          }
+
+          for (const entry of memberSchedule) {
             groupRemboursements.push({
               pret_id: newPretId,
               group_id: parseInt(formData.group_id),
@@ -880,6 +972,8 @@ function PretsPageContent() {
       setCollateralRequirement(null)
       setManualScheduleEnabled(false)
       setManualInstallmentDates([])
+      setGroupMemberAmounts({})
+      setSelectedGroupMembers([])
       loadPrets()
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
@@ -1142,6 +1236,8 @@ function PretsPageContent() {
                   nombre_remboursements: systemDefaultInstallments.toString(),
                 })
                 setLoanType('membre')
+                setGroupMemberAmounts({})
+                setSelectedGroupMembers([])
               }}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
@@ -1206,6 +1302,8 @@ function PretsPageContent() {
                           onChange={(e) => {
                             setLoanType('membre')
                             setFormData({ ...formData, membre_id: '', group_id: '' })
+                            setGroupMemberAmounts({})
+                            setSelectedGroupMembers([])
                           }}
                           className="rounded"
                         />
@@ -1220,6 +1318,8 @@ function PretsPageContent() {
                           onChange={(e) => {
                             setLoanType('groupe')
                             setFormData({ ...formData, membre_id: '', group_id: '' })
+                            setGroupMemberAmounts({})
+                            setSelectedGroupMembers([])
                           }}
                           className="rounded"
                         />
@@ -1282,6 +1382,87 @@ function PretsPageContent() {
                         </option>
                       ))}
                     </select>
+                    {loanType === 'groupe' && selectedGroupMembers.length > 0 && (
+                      <div className="mt-4 p-4 bg-gray-50 rounded-lg border">
+                        <label className="block text-sm font-medium text-gray-700 mb-3">
+                          Montant du décaissement par membre (HTG) *
+                        </label>
+                        <p className="text-xs text-gray-600 mb-3">
+                          Saisissez le montant que chaque membre recevra. La somme doit correspondre au montant total du prêt.
+                        </p>
+                        <div className="space-y-3 max-h-60 overflow-y-auto">
+                          {selectedGroupMembers.map((member) => {
+                            const memberAmount = groupMemberAmounts[member.membre_id] || ''
+                            return (
+                              <div key={member.membre_id} className="flex items-center gap-3">
+                                <div className="flex-1">
+                                  <label className="block text-xs text-gray-600 mb-1">
+                                    {member.membre_id} - {member.prenom} {member.nom}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    required
+                                    min="0"
+                                    step="0.01"
+                                    value={memberAmount}
+                                    onChange={(e) => {
+                                      const value = e.target.value
+                                      if (value === '' || (!isNaN(parseFloat(value)) && parseFloat(value) >= 0)) {
+                                        setGroupMemberAmounts({
+                                          ...groupMemberAmounts,
+                                          [member.membre_id]: value,
+                                        })
+                                      }
+                                    }}
+                                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    placeholder="0.00"
+                                  />
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {(() => {
+                          const totalEntered = selectedGroupMembers.reduce((sum, m) => {
+                            const amt = parseFloat(groupMemberAmounts[m.membre_id] || '0')
+                            return sum + (isNaN(amt) ? 0 : amt)
+                          }, 0)
+                          const totalLoan = parseFloat(formData.montant_pret) || 0
+                          const remaining = totalLoan - totalEntered
+                          const isComplete = Math.abs(remaining) < 0.01
+
+                          return (
+                            <div className="mt-3 pt-3 border-t border-gray-200">
+                              <div className="flex justify-between items-center text-sm">
+                                <span className="text-gray-600">Total saisi:</span>
+                                <span className={`font-medium ${isComplete ? 'text-green-600' : 'text-gray-900'}`}>
+                                  {formatCurrency(totalEntered)}
+                                </span>
+                              </div>
+                              <div className="flex justify-between items-center text-sm mt-1">
+                                <span className="text-gray-600">Montant du prêt:</span>
+                                <span className="font-medium text-gray-900">
+                                  {formatCurrency(totalLoan)}
+                                </span>
+                              </div>
+                              {!isComplete && totalLoan > 0 && (
+                                <div className="flex justify-between items-center text-sm mt-1">
+                                  <span className="text-gray-600">Reste à saisir:</span>
+                                  <span className={`font-medium ${remaining > 0 ? 'text-orange-600' : 'text-red-600'}`}>
+                                    {formatCurrency(Math.abs(remaining))}
+                                  </span>
+                                </div>
+                              )}
+                              {isComplete && totalLoan > 0 && (
+                                <div className="mt-2 text-xs text-green-600 font-medium">
+                                  ✓ La somme correspond au montant total du prêt
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })()}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div>
