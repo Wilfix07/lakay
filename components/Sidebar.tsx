@@ -97,6 +97,12 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
     {
+      title: 'Épargnes',
+      href: '/epargne',
+      icon: PiggyBank,
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
+    },
+    {
       title: 'Profit & Loss',
       href: '/pnl',
       icon: PiggyBank,

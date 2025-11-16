@@ -766,6 +766,14 @@ export default function DashboardPage() {
             : []),
         ]
       : []),
+    // Épargnes: accessible depuis le dashboard pour tous les rôles
+    {
+      title: 'Épargnes',
+      description: 'Gérer dépôts et retraits des membres',
+      href: '/epargne',
+      icon: Wallet,
+      gradient: 'bg-gradient-to-r from-teal-500 to-green-600',
+    },
   ]
 
   const hasCollections = agentCollections.length > 0
