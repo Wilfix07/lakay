@@ -62,6 +62,9 @@ function PretsPageContent() {
     frequence_remboursement: 'journalier' as FrequenceRemboursement,
     nombre_remboursements: '23',
   })
+  // Permettre aux agents de saisir manuellement les dates d'échéance
+  const [manualScheduleEnabled, setManualScheduleEnabled] = useState<boolean>(false)
+  const [manualInstallmentDates, setManualInstallmentDates] = useState<string[]>([])
   
   // Mettre à jour la fréquence par défaut quand les fréquences sont chargées
   useEffect(() => {
@@ -201,6 +204,24 @@ function PretsPageContent() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
+
+  // Synchroniser le nombre de champs de dates manuelles avec le nombre d'échéances
+  useEffect(() => {
+    const count = parseInt(formData.nombre_remboursements, 10)
+    if (!Number.isFinite(count) || count <= 0) {
+      setManualInstallmentDates([])
+      return
+    }
+    setManualInstallmentDates(prev => {
+      const next = [...prev]
+      if (next.length < count) {
+        while (next.length < count) next.push('')
+      } else if (next.length > count) {
+        next.length = count
+      }
+      return next
+    })
+  }, [formData.nombre_remboursements])
 
   // Charger le solde de garantie du membre quand le membre est sélectionné
   useEffect(() => {
@@ -546,6 +567,22 @@ function PretsPageContent() {
         return
       }
 
+      // Si agent et dates manuelles valides, écraser les dates calculées
+      let overriddenPlan = plan
+      if (userProfile?.role === 'agent' && manualScheduleEnabled) {
+        const validDates = manualInstallmentDates.filter(Boolean)
+        if (validDates.length === nombreRemboursements) {
+          overriddenPlan = {
+            ...plan,
+            datePremierRemboursement: new Date(validDates[0]),
+            schedule: plan.schedule.map((entry, idx) => ({
+              ...entry,
+              date: new Date(validDates[idx]),
+            })),
+          }
+        }
+      }
+
       // Générer le pret_id automatiquement
       const monthName = getMonthName(new Date(formData.date_decaissement))
       const { data: maxPrets } = await supabase
@@ -580,10 +617,10 @@ function PretsPageContent() {
           membre_id: formData.membre_id,
           agent_id: finalAgentId, // Utiliser l'agent_id final (automatique pour les agents)
           montant_pret: montantPret,
-          montant_remboursement: plan.montantEcheance,
+          montant_remboursement: overriddenPlan.montantEcheance,
           nombre_remboursements: nombreRemboursements,
           date_decaissement: formData.date_decaissement,
-          date_premier_remboursement: plan.datePremierRemboursement
+          date_premier_remboursement: overriddenPlan.datePremierRemboursement
             .toISOString()
             .split('T')[0],
           statut: initialStatus,
@@ -661,6 +698,8 @@ function PretsPageContent() {
       setShowCollateralDeposit(false)
       setMemberCollateralBalance(0)
       setCollateralRequirement(null)
+      setManualScheduleEnabled(false)
+      setManualInstallmentDates([])
       loadPrets()
     } catch (error: any) {
       console.error('Erreur lors de la création:', error)
@@ -776,6 +815,22 @@ function PretsPageContent() {
         return
       }
 
+    // Si agent et dates manuelles valides, écraser les dates calculées
+    let overriddenPlan = plan
+    if (userProfile?.role === 'agent' && manualScheduleEnabled) {
+      const validDates = manualInstallmentDates.filter(Boolean)
+      if (validDates.length === nombreRemboursements) {
+        overriddenPlan = {
+          ...plan,
+          datePremierRemboursement: new Date(validDates[0]),
+          schedule: plan.schedule.map((entry, idx) => ({
+            ...entry,
+            date: new Date(validDates[idx]),
+          })),
+        }
+      }
+    }
+
       // Pour les agents, s'assurer qu'ils ne peuvent pas modifier l'agent_id
       // Les agents ne peuvent modifier que leurs propres prêts
       let finalAgentIdForUpdate = formData.agent_id
@@ -790,10 +845,10 @@ function PretsPageContent() {
           membre_id: formData.membre_id,
           agent_id: finalAgentIdForUpdate,
           montant_pret: montantPret,
-          montant_remboursement: plan.montantEcheance,
+          montant_remboursement: overriddenPlan.montantEcheance,
           nombre_remboursements: nombreRemboursements,
           date_decaissement: formData.date_decaissement,
-          date_premier_remboursement: plan.datePremierRemboursement
+          date_premier_remboursement: overriddenPlan.datePremierRemboursement
             .toISOString()
             .split('T')[0],
           frequence_remboursement: frequency,
@@ -804,7 +859,7 @@ function PretsPageContent() {
 
       // Recréer les remboursements
       await supabase.from('remboursements').delete().eq('pret_id', editingPret.pret_id)
-      const remboursements = plan.schedule.map((entry) => ({
+      const remboursements = overriddenPlan.schedule.map((entry) => ({
         pret_id: editingPret.pret_id,
         membre_id: formData.membre_id,
         agent_id: finalAgentIdForUpdate,
@@ -1151,6 +1206,65 @@ function PretsPageContent() {
                 </div>
               </div>
               
+              {/* Dates d'échéance manuelles (agents uniquement) */}
+              {userProfile.role === 'agent' && (
+                <div className="border-t border-gray-200 pt-4 mt-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-semibold text-gray-700">Entrer les dates d’échéance manuellement</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="manual-dates-toggle"
+                        type="checkbox"
+                        checked={manualScheduleEnabled}
+                        onChange={() => {
+                          const next = !manualScheduleEnabled
+                          setManualScheduleEnabled(next)
+                          // Préremplir avec l'échéancier calculé si on active
+                          if (!manualScheduleEnabled) {
+                            const count = parseInt(formData.nombre_remboursements, 10)
+                            if (loanPreview && count > 0) {
+                              const defaults = loanPreview.schedule.slice(0, count).map(entry => {
+                                const d = new Date(entry.date)
+                                return d.toISOString().split('T')[0]
+                              })
+                              setManualInstallmentDates(defaults)
+                            }
+                          }
+                        }}
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                  {manualScheduleEnabled && (
+                    <div className="mt-4">
+                      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {manualInstallmentDates.map((value, idx) => (
+                          <div key={idx}>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">
+                              Échéance {idx + 1}
+                            </label>
+                            <input
+                              type="date"
+                              required
+                              value={value || ''}
+                              onChange={(e) => {
+                                const next = [...manualInstallmentDates]
+                                next[idx] = e.target.value
+                                setManualInstallmentDates(next)
+                              }}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-2">
+                        Astuce: Modifiez les dates si nécessaire. Elles remplaceront l’échéancier automatique.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Informations sur la garantie */}
               {formData.membre_id && formData.montant_pret && parseFloat(formData.montant_pret) > 0 && collateralRequirement && (
                 <div className="border-t border-gray-200 pt-4 mt-4">
