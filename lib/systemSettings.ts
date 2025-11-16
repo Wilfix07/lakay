@@ -582,6 +582,7 @@ export async function getRepaymentFrequencies(managerId?: string | null) {
     if (!session) {
       return [
         { key: 'journalier', label: 'Journalier', days: 1 },
+        { key: 'hebdomadaire', label: 'Hebdomadaire', days: 7 },
         { key: 'mensuel', label: 'Mensuel', days: 30 },
       ]
     }
@@ -618,6 +619,7 @@ export async function getRepaymentFrequencies(managerId?: string | null) {
       logSupabaseError('getRepaymentFrequencies', error)
       return [
         { key: 'journalier', label: 'Journalier', days: 1 },
+        { key: 'hebdomadaire', label: 'Hebdomadaire', days: 7 },
         { key: 'mensuel', label: 'Mensuel', days: 30 },
       ]
     }
@@ -633,12 +635,14 @@ export async function getRepaymentFrequencies(managerId?: string | null) {
     // Fallback aux fréquences par défaut
     return [
       { key: 'journalier', label: 'Journalier', days: 1 },
+      { key: 'hebdomadaire', label: 'Hebdomadaire', days: 7 },
       { key: 'mensuel', label: 'Mensuel', days: 30 },
     ]
   } catch (error) {
     console.error('Erreur lors de la récupération des fréquences de remboursement:', error)
     return [
       { key: 'journalier', label: 'Journalier', days: 1 },
+      { key: 'hebdomadaire', label: 'Hebdomadaire', days: 7 },
       { key: 'mensuel', label: 'Mensuel', days: 30 },
     ]
   }

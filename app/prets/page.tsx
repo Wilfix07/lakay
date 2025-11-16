@@ -20,7 +20,7 @@ import {
 } from '@/lib/systemSettings'
 import { useDynamicData } from '@/lib/contexts/DynamicDataContext'
 
-type FrequenceRemboursement = 'journalier' | 'mensuel'
+type FrequenceRemboursement = 'journalier' | 'hebdomadaire' | 'mensuel'
 
 interface LoanScheduleEntry {
   numero: number
@@ -70,7 +70,12 @@ function PretsPageContent() {
   useEffect(() => {
     if (repaymentFrequencies.length > 0 && !editingPret && !showForm) {
       const defaultFrequency = repaymentFrequencies[0].key as FrequenceRemboursement
-      const defaultInstallments = defaultFrequency === 'mensuel' ? '6' : systemDefaultInstallments.toString()
+      const defaultInstallments =
+        defaultFrequency === 'mensuel'
+          ? '6'
+          : defaultFrequency === 'hebdomadaire'
+          ? '4'
+          : systemDefaultInstallments.toString()
       setFormData(prev => ({
         ...prev,
         frequence_remboursement: defaultFrequency,
@@ -112,12 +117,18 @@ function PretsPageContent() {
     if (frequency === 'mensuel') {
       return adjustToBusinessDay(addMonths(dateDecaissement, 1))
     }
+    if (frequency === 'hebdomadaire') {
+      return adjustToBusinessDay(addDays(dateDecaissement, 7))
+    }
     return adjustToBusinessDay(addDays(dateDecaissement, 2))
   }
 
   function getNextPaymentDate(current: Date, frequency: FrequenceRemboursement): Date {
     if (frequency === 'mensuel') {
       return adjustToBusinessDay(addMonths(current, 1))
+    }
+    if (frequency === 'hebdomadaire') {
+      return adjustToBusinessDay(addDays(current, 7))
     }
     return adjustToBusinessDay(addDays(current, 1))
   }
@@ -503,8 +514,9 @@ function PretsPageContent() {
 
       const montantPret = parseFloat(formData.montant_pret)
       const nombreRemboursements = parseInt(formData.nombre_remboursements, 10)
-      const frequency: FrequenceRemboursement =
-        formData.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'
+      const frequency = (['journalier','hebdomadaire','mensuel'].includes(formData.frequence_remboursement as any)
+        ? (formData.frequence_remboursement as FrequenceRemboursement)
+        : 'journalier') as FrequenceRemboursement
       
       // Validation
       if (isNaN(montantPret) || montantPret <= 0) {
@@ -770,8 +782,9 @@ function PretsPageContent() {
     try {
       const montantPret = parseFloat(formData.montant_pret)
       const nombreRemboursements = parseInt(formData.nombre_remboursements, 10)
-      const frequency: FrequenceRemboursement =
-        formData.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'
+      const frequency = (['journalier','hebdomadaire','mensuel'].includes(formData.frequence_remboursement as any)
+        ? (formData.frequence_remboursement as FrequenceRemboursement)
+        : 'journalier') as FrequenceRemboursement
       
       if (isNaN(montantPret) || montantPret <= 0) {
         alert('Le montant du prêt doit être un nombre positif')
@@ -919,7 +932,9 @@ function PretsPageContent() {
     }
     return calculateLoanPlan(
       montant,
-      formData.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier',
+      (['journalier','hebdomadaire','mensuel'].includes(formData.frequence_remboursement as any)
+        ? (formData.frequence_remboursement as FrequenceRemboursement)
+        : 'journalier') as FrequenceRemboursement,
       count,
       formData.date_decaissement,
     )
@@ -1114,6 +1129,8 @@ function PretsPageContent() {
                           // Utiliser des valeurs par défaut basées sur la fréquence
                           if (nextFrequency === 'mensuel') {
                             nextCount = '6'
+                          } else if (nextFrequency === 'hebdomadaire') {
+                            nextCount = '4'
                           } else {
                             nextCount = systemDefaultInstallments.toString()
                           }
@@ -1121,10 +1138,12 @@ function PretsPageContent() {
                           // Ajuster si on change de fréquence
                           const currentFrequency = repaymentFrequencies.find(f => f.key === prev.frequence_remboursement)
                           if (currentFrequency && currentFrequency.key !== nextFrequency) {
-                            // Changer de journalier à mensuel ou vice versa
-                            if (nextFrequency === 'mensuel' && prev.nombre_remboursements === '23') {
+                            // Changer de fréquence entre journalier, hebdomadaire et mensuel
+                            if (nextFrequency === 'mensuel' && (prev.nombre_remboursements === '23' || prev.nombre_remboursements === '4')) {
                               nextCount = '6'
-                            } else if (nextFrequency === 'journalier' && prev.nombre_remboursements === '6') {
+                            } else if (nextFrequency === 'hebdomadaire' && (prev.nombre_remboursements === '23' || prev.nombre_remboursements === '6')) {
+                              nextCount = '4'
+                            } else if (nextFrequency === 'journalier' && (prev.nombre_remboursements === '6' || prev.nombre_remboursements === '4')) {
                               nextCount = systemDefaultInstallments.toString()
                             }
                           }
@@ -1148,6 +1167,7 @@ function PretsPageContent() {
                     ) : (
                       <>
                         <option value="journalier">Journalier</option>
+                        <option value="hebdomadaire">Hebdomadaire</option>
                         <option value="mensuel">Mensuel</option>
                       </>
                     )}
@@ -1192,7 +1212,9 @@ function PretsPageContent() {
                       ? loanPreview.datePremierRemboursement
                       : getInitialPaymentDate(
                           new Date(formData.date_decaissement),
-                          formData.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier',
+                          (['journalier','hebdomadaire','mensuel'].includes(formData.frequence_remboursement as any)
+                            ? (formData.frequence_remboursement as FrequenceRemboursement)
+                            : 'journalier') as FrequenceRemboursement,
                         )
                     return (
                       <p className="text-sm text-gray-600 mt-1">
