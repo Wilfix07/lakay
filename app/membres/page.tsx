@@ -99,6 +99,12 @@ function MembresPageContent() {
   const [groupSubmitting, setGroupSubmitting] = useState(false)
   const [selectedGroup, setSelectedGroup] = useState<MembreGroup | null>(null)
   const [groupDetailsOpen, setGroupDetailsOpen] = useState(false)
+  const [transferMemberDialogOpen, setTransferMemberDialogOpen] = useState(false)
+  const [memberToTransfer, setMemberToTransfer] = useState<Membre | null>(null)
+  const [targetGroupId, setTargetGroupId] = useState<string>('')
+  const [transferMemberSaving, setTransferMemberSaving] = useState(false)
+  const [transferMemberError, setTransferMemberError] = useState<string | null>(null)
+  const [membersInGroups, setMembersInGroups] = useState<Set<string>>(new Set())
 
   const currentLoan =
     memberLoans.find((loan) => loan.pret_id === selectedLoanId) ?? memberLoans[0] ?? null
@@ -333,6 +339,24 @@ function MembresPageContent() {
       )
 
       setGroups(groupsWithCounts)
+
+      // Charger tous les membres qui sont déjà dans des groupes
+      const { data: allGroupMembers, error: allMembersError } = await supabase
+        .from('membre_group_members')
+        .select('membre_id')
+        .in('group_id', groupsWithCounts.map(g => g.id))
+
+      if (allMembersError) throw allMembersError
+
+      const membersInGroupsSet = new Set<string>()
+      if (allGroupMembers) {
+        allGroupMembers.forEach(m => {
+          if (m.membre_id) {
+            membersInGroupsSet.add(m.membre_id)
+          }
+        })
+      }
+      setMembersInGroups(membersInGroupsSet)
     } catch (error) {
       console.error('Erreur lors du chargement des groupes:', error)
     }
@@ -364,6 +388,36 @@ function MembresPageContent() {
 
     setGroupSubmitting(true)
     try {
+      // Vérifier que les membres sélectionnés ne sont pas déjà dans un autre groupe
+      const { data: existingMemberships, error: checkError } = await supabase
+        .from('membre_group_members')
+        .select('membre_id, group_id')
+        .in('membre_id', groupFormData.selectedMembers)
+
+      if (checkError) throw checkError
+
+      if (existingMemberships && existingMemberships.length > 0) {
+        // Récupérer les noms des groupes
+        const groupIds = [...new Set(existingMemberships.map((m: any) => m.group_id))]
+        const { data: groupsData, error: groupsError } = await supabase
+          .from('membre_groups')
+          .select('id, group_name')
+          .in('id', groupIds)
+
+        if (groupsError) throw groupsError
+
+        const groupMap = new Map((groupsData || []).map(g => [g.id, g.group_name]))
+        const membersInGroups = existingMemberships.map((m: any) => {
+          const membre = membres.find(mem => mem.membre_id === m.membre_id)
+          const groupName = groupMap.get(m.group_id) || 'Groupe inconnu'
+          return `${membre?.prenom} ${membre?.nom} (${m.membre_id}) - déjà dans le groupe "${groupName}"`
+        }).join('\n')
+        
+        alert(`Les membres suivants sont déjà dans un autre groupe :\n\n${membersInGroups}\n\nUn membre ne peut être que dans un seul groupe à la fois.`)
+        setGroupSubmitting(false)
+        return
+      }
+
       // Créer le groupe
       const { data: newGroup, error: groupError } = await supabase
         .from('membre_groups')
@@ -426,6 +480,104 @@ function MembresPageContent() {
     } catch (error) {
       console.error('Erreur lors du chargement des détails du groupe:', error)
       alert('Erreur lors du chargement des détails du groupe')
+    }
+  }
+
+  async function handleTransferMemberToGroup(membre: Membre) {
+    setMemberToTransfer(membre)
+    setTargetGroupId('')
+    setTransferMemberError(null)
+    setTransferMemberDialogOpen(true)
+  }
+
+  async function handleTransferMemberSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    
+    if (!memberToTransfer || !targetGroupId) {
+      setTransferMemberError('Veuillez sélectionner un groupe de destination')
+      return
+    }
+
+    if (!selectedGroup) {
+      setTransferMemberError('Erreur: Groupe source non trouvé')
+      return
+    }
+
+    if (parseInt(targetGroupId) === selectedGroup.id) {
+      setTransferMemberError('Le membre est déjà dans ce groupe')
+      return
+    }
+
+    setTransferMemberSaving(true)
+    setTransferMemberError(null)
+
+    try {
+      // Vérifier que le membre n'a pas de prêt actif
+      const { data: activeLoans, error: loansError } = await supabase
+        .from('prets')
+        .select('pret_id')
+        .eq('membre_id', memberToTransfer.membre_id)
+        .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+        .limit(1)
+
+      if (loansError) throw loansError
+
+      if (activeLoans && activeLoans.length > 0) {
+        setTransferMemberError('Ce membre a un prêt actif. Il ne peut pas être transféré vers un autre groupe tant que le prêt n\'est pas terminé.')
+        setTransferMemberSaving(false)
+        return
+      }
+
+      // Vérifier aussi les prêts de groupe actifs
+      const { data: activeGroupLoans, error: groupLoansError } = await supabase
+        .from('group_remboursements')
+        .select('pret_id, group_prets!inner(statut)')
+        .eq('membre_id', memberToTransfer.membre_id)
+        .in('group_prets.statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+        .limit(1)
+
+      if (groupLoansError) throw groupLoansError
+
+      if (activeGroupLoans && activeGroupLoans.length > 0) {
+        setTransferMemberError('Ce membre a un prêt de groupe actif. Il ne peut pas être transféré vers un autre groupe tant que le prêt n\'est pas terminé.')
+        setTransferMemberSaving(false)
+        return
+      }
+
+      // Supprimer le membre de l'ancien groupe
+      const { error: deleteError } = await supabase
+        .from('membre_group_members')
+        .delete()
+        .eq('membre_id', memberToTransfer.membre_id)
+        .eq('group_id', selectedGroup.id)
+
+      if (deleteError) throw deleteError
+
+      // Ajouter le membre au nouveau groupe
+      const { error: insertError } = await supabase
+        .from('membre_group_members')
+        .insert([{
+          group_id: parseInt(targetGroupId),
+          membre_id: memberToTransfer.membre_id,
+        }])
+
+      if (insertError) throw insertError
+
+      alert('Membre transféré avec succès vers le nouveau groupe!')
+      setTransferMemberDialogOpen(false)
+      setMemberToTransfer(null)
+      setTargetGroupId('')
+      
+      // Recharger les groupes et les détails du groupe
+      loadGroups()
+      if (selectedGroup) {
+        handleViewGroupDetails(selectedGroup)
+      }
+    } catch (error: any) {
+      console.error('Erreur lors du transfert du membre:', error)
+      setTransferMemberError(error.message || 'Une erreur est survenue lors du transfert')
+    } finally {
+      setTransferMemberSaving(false)
     }
   }
 
@@ -862,14 +1014,18 @@ function MembresPageContent() {
                       <div className="space-y-2">
                         {membres.map((membre) => {
                           const isSelected = groupFormData.selectedMembers.includes(membre.membre_id)
+                          const isInGroup = membersInGroups.has(membre.membre_id)
                           return (
                             <label
                               key={membre.id}
-                              className="flex items-center space-x-2 p-2 rounded hover:bg-muted cursor-pointer"
+                              className={`flex items-center space-x-2 p-2 rounded ${
+                                isInGroup ? 'opacity-50 cursor-not-allowed' : 'hover:bg-muted cursor-pointer'
+                              }`}
                             >
                               <input
                                 type="checkbox"
                                 checked={isSelected}
+                                disabled={isInGroup}
                                 onChange={(e) => {
                                   if (e.target.checked) {
                                     if (groupFormData.selectedMembers.length >= 10) {
@@ -893,6 +1049,11 @@ function MembresPageContent() {
                               />
                               <span className="text-sm">
                                 {membre.membre_id} - {membre.prenom} {membre.nom}
+                                {isInGroup && (
+                                  <span className="ml-2 text-xs text-muted-foreground italic">
+                                    (déjà dans un groupe)
+                                  </span>
+                                )}
                               </span>
                             </label>
                           )
@@ -1324,6 +1485,7 @@ function MembresPageContent() {
                             <TableHead>Nom</TableHead>
                             <TableHead>Prénom</TableHead>
                             <TableHead>Téléphone</TableHead>
+                            <TableHead className="text-right">Actions</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -1333,6 +1495,15 @@ function MembresPageContent() {
                               <TableCell>{membre.nom}</TableCell>
                               <TableCell>{membre.prenom}</TableCell>
                               <TableCell>{membre.telephone || '-'}</TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleTransferMemberToGroup(membre)}
+                                >
+                                  Transférer
+                                </Button>
+                              </TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
@@ -1342,6 +1513,72 @@ function MembresPageContent() {
                 )}
               </div>
             )}
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Transfer Member to Group Dialog */}
+      {userProfile?.role === 'agent' && (
+        <Dialog open={transferMemberDialogOpen} onOpenChange={setTransferMemberDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Transférer un membre vers un autre groupe</DialogTitle>
+              <DialogDescription>
+                Sélectionnez le groupe de destination. Le membre ne peut être transféré que s'il n'a pas de prêt actif.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleTransferMemberSubmit} className="space-y-4">
+              <div>
+                <Label>Membre</Label>
+                <div className="mt-1 rounded-lg border bg-muted/40 p-3 text-sm">
+                  {memberToTransfer
+                    ? `${memberToTransfer.prenom} ${memberToTransfer.nom} • ${memberToTransfer.membre_id}`
+                    : 'Aucun membre sélectionné'}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Groupe de destination</Label>
+                <Select value={targetGroupId} onValueChange={setTargetGroupId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Sélectionner un groupe" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {groups
+                      .filter((group) => group.id !== selectedGroup?.id)
+                      .map((group) => (
+                        <SelectItem key={group.id} value={group.id.toString()}>
+                          {group.group_name} ({group.member_count || 0} membre(s))
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {transferMemberError && (
+                <p className="text-sm text-red-600">{transferMemberError}</p>
+              )}
+              <div className="flex justify-end gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setTransferMemberDialogOpen(false)
+                    setTransferMemberError(null)
+                  }}
+                >
+                  Annuler
+                </Button>
+                <Button type="submit" disabled={transferMemberSaving}>
+                  {transferMemberSaving ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Transfert...
+                    </>
+                  ) : (
+                    'Confirmer le transfert'
+                  )}
+                </Button>
+              </div>
+            </form>
           </DialogContent>
         </Dialog>
       )}
