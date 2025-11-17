@@ -875,9 +875,9 @@ function PretsPageContent() {
           // Calculer le plan de remboursement pour ce membre avec son montant spécifique
           const memberPlan = calculateLoanPlan(
             memberAmount,
-            nombreRemboursements,
             frequency,
-            new Date(formData.date_decaissement),
+            nombreRemboursements,
+            formData.date_decaissement,
           )
 
           // Utiliser les dates manuelles si activées
@@ -998,6 +998,7 @@ function PretsPageContent() {
     setEditingPret(pret)
     setFormData({
       membre_id: pret.membre_id,
+      group_id: (pret as any).group_id?.toString() ?? '',
       agent_id: pret.agent_id,
       montant_pret: pret.montant_pret.toString(),
       date_decaissement: pret.date_decaissement,
@@ -1157,6 +1158,7 @@ function PretsPageContent() {
       setEditingPret(null)
       setFormData({
         membre_id: '',
+        group_id: '',
         agent_id: '',
         montant_pret: '',
         date_decaissement: new Date().toISOString().split('T')[0],
