@@ -777,6 +777,7 @@ function PretsPageContent() {
 
       // Déterminer le statut initial selon le rôle de l'utilisateur
       const initialStatus = 'en_attente_garantie'
+      let groupCollaterals: any[] = [] // Pour stocker les garanties de groupe
 
       if (loanType === 'membre') {
         // Créer le prêt pour un membre individuel
@@ -915,6 +916,58 @@ function PretsPageContent() {
 
           if (remboursementsError) throw remboursementsError
         }
+
+        // Créer une garantie pour chaque membre du groupe
+        groupCollaterals = []
+        for (const member of groupMembers) {
+          const memberAmount = parseFloat(groupMemberAmounts[member.membre_id])
+          if (isNaN(memberAmount) || memberAmount <= 0) {
+            continue // Skip si montant invalide (déjà vérifié plus haut)
+          }
+
+          // Calculer la garantie requise pour ce membre (basée sur son montant de prêt)
+          const montantGarantieRequis = await calculateCollateralAmount(memberAmount)
+          
+          groupCollaterals.push({
+            pret_id: null, // NULL pour les prêts de groupe
+            group_pret_id: newPretId,
+            membre_id: member.membre_id,
+            montant_requis: montantGarantieRequis,
+            montant_depose: 0,
+            montant_restant: montantGarantieRequis,
+            statut: 'partiel',
+            notes: `Garantie générée automatiquement pour le membre ${member.membre_id} dans le prêt de groupe ${newPretId}`,
+          })
+        }
+
+        if (groupCollaterals.length > 0) {
+          const { error: collateralError, data: collateralData } = await supabase
+            .from('collaterals')
+            .insert(groupCollaterals)
+            .select()
+
+          if (collateralError) {
+            console.error('Erreur lors de la création des garanties de groupe:', collateralError)
+            console.error('Détails de l\'erreur:', {
+              code: collateralError.code,
+              message: collateralError.message,
+              details: collateralError.details,
+              hint: collateralError.hint,
+            })
+            console.error('Données tentées d\'insérer:', groupCollaterals)
+            
+            // Afficher un message d'erreur plus détaillé à l'utilisateur
+            alert(
+              `⚠️ Attention: Le prêt de groupe a été créé, mais une erreur est survenue lors de la création des garanties.\n\n` +
+              `Erreur: ${collateralError.message || 'Erreur inconnue'}\n\n` +
+              `Veuillez créer les garanties manuellement dans la page "Garanties" ou appliquer la migration SQL si ce n'est pas déjà fait.`
+            )
+            // Ne pas bloquer la création du prêt si les garanties échouent
+            // L'utilisateur pourra les créer manuellement
+          } else {
+            console.log(`✅ ${collateralData?.length || groupCollaterals.length} garantie(s) de groupe créée(s) avec succès`)
+          }
+        }
       }
 
       // Message de succès selon le type de prêt
@@ -944,13 +997,17 @@ function PretsPageContent() {
           messageStatut
         )
       } else {
+        const groupName = groups.find(g => g.id === parseInt(formData.group_id))?.group_name || 'N/A'
+        const collateralCount = groupCollaterals.length
         alert(
           `✅ Prêt de groupe créé avec succès!\n\n` +
           `📋 Prêt: ${newPretId}\n` +
-          `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
-          `👥 Groupe: ${groups.find(g => g.id === parseInt(formData.group_id))?.group_name || 'N/A'}\n` +
+          `💰 Montant total: ${montantPret.toFixed(2)} HTG\n` +
+          `👥 Groupe: ${groupName}\n` +
           `⏳ Statut: En attente de garantie\n\n` +
-          `Les remboursements ont été créés pour tous les membres du groupe.`
+          `📝 Les remboursements ont été créés pour tous les membres du groupe.\n` +
+          `💰 ${collateralCount} garantie${collateralCount > 1 ? 's' : ''} créée${collateralCount > 1 ? 's' : ''} (une par membre).\n\n` +
+          `Vous pouvez collecter les garanties dans la page "Garanties".`
         )
       }
       setShowForm(false)

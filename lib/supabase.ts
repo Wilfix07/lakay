@@ -143,7 +143,8 @@ export interface AgentExpense {
 
 export interface Collateral {
   id: number
-  pret_id: string
+  pret_id: string | null // NULL pour les prêts de groupe
+  group_pret_id?: string | null // Défini pour les prêts de groupe
   membre_id: string
   montant_requis: number
   montant_depose: number

@@ -38,6 +38,7 @@ function CollateralsPageContent() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [collaterals, setCollaterals] = useState<Collateral[]>([])
   const [prets, setPrets] = useState<Pret[]>([])
+  const [groupPrets, setGroupPrets] = useState<any[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -47,7 +48,9 @@ function CollateralsPageContent() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [formData, setFormData] = useState({
-    pret_id: '',
+    collateral_id: '', // ID de la garantie (pour prêts individuels ou de groupe)
+    pret_id: '', // Pour prêts individuels
+    group_pret_id: '', // Pour prêts de groupe
     montant_depose: '',
     date_depot: new Date().toISOString().split('T')[0],
     notes: '',
@@ -116,6 +119,14 @@ function CollateralsPageContent() {
       }
       // Admin voit tous les prêts (pas de filtre)
 
+      // Charger les prêts de groupe
+      let groupPretsQuery = supabase.from('group_prets').select('*').in('statut', ['actif', 'termine', 'en_attente_garantie', 'en_attente_approbation']).order('pret_id', { ascending: true })
+      if (userProfile?.role === 'agent') {
+        groupPretsQuery = groupPretsQuery.eq('agent_id', userProfile.agent_id ?? '')
+      } else if (userProfile?.role === 'manager' && managerAgentIds) {
+        groupPretsQuery = groupPretsQuery.in('agent_id', managerAgentIds)
+      }
+
       // Charger les membres
       let membresQuery = supabase.from('membres').select('*').order('membre_id', { ascending: true })
       if (userProfile?.role === 'agent') {
@@ -159,14 +170,16 @@ function CollateralsPageContent() {
       }
       // Admin voit toutes les garanties (pas de filtre)
 
-      const [{ data: pretsData, error: pretsError }, { data: membresData, error: membresError }, { data: collateralsData, error: collateralsError }] =
-        await Promise.all([pretsQuery, membresQuery, collateralsQuery])
+      const [{ data: pretsData, error: pretsError }, { data: groupPretsData, error: groupPretsError }, { data: membresData, error: membresError }, { data: collateralsData, error: collateralsError }] =
+        await Promise.all([pretsQuery, groupPretsQuery, membresQuery, collateralsQuery])
 
       if (pretsError) throw pretsError
+      if (groupPretsError) throw groupPretsError
       if (membresError) throw membresError
       if (collateralsError) throw collateralsError
 
       setPrets(pretsData || [])
+      setGroupPrets(groupPretsData || [])
       setMembres(membresData || [])
       setCollaterals(collateralsData || [])
     } catch (err: any) {
@@ -262,14 +275,29 @@ function CollateralsPageContent() {
         throw new Error('Le montant déposé doit être supérieur à 0')
       }
 
-      // Récupérer la garantie existante
-      const { data: existingCollateral, error: fetchError } = await supabase
-        .from('collaterals')
-        .select('*')
-        .eq('pret_id', formData.pret_id)
-        .single()
+      // Récupérer la garantie existante par ID (fonctionne pour prêts individuels et de groupe)
+      let query = supabase.from('collaterals').select('*')
+      
+      if (formData.collateral_id) {
+        // Utiliser l'ID de la garantie directement
+        query = query.eq('id', parseInt(formData.collateral_id))
+      } else if (formData.pret_id) {
+        // Pour les prêts individuels (rétrocompatibilité)
+        query = query.eq('pret_id', formData.pret_id)
+      } else if (formData.group_pret_id) {
+        // Pour les prêts de groupe, on doit aussi spécifier le membre
+        // Cette logique sera gérée dans le formulaire qui sélectionne la garantie
+        throw new Error('Veuillez sélectionner une garantie spécifique')
+      } else {
+        throw new Error('Veuillez sélectionner une garantie')
+      }
+
+      const { data: existingCollateralData, error: fetchError } = await query.single()
 
       if (fetchError) throw fetchError
+      if (!existingCollateralData) throw new Error('Garantie non trouvée')
+
+      const existingCollateral = existingCollateralData
 
       const nouveauMontantDepose = existingCollateral.montant_depose + montantDepose
       const nouveauMontantRestant = Math.max(existingCollateral.montant_requis - nouveauMontantDepose, 0)
@@ -290,15 +318,20 @@ function CollateralsPageContent() {
       const { error: updateError } = await supabase
         .from('collaterals')
         .update(updateData)
-        .eq('pret_id', formData.pret_id)
+        .eq('id', existingCollateral.id)
 
       if (updateError) throw updateError
 
       // Si la garantie est maintenant complète, le prêt peut être approuvé par le manager
       // Le prêt ne sera pas activé automatiquement - le manager doit l'approuver dans la page Approbations
       let message = ''
+      const isGroupLoan = existingCollateral.group_pret_id
       if (nouveauStatut === 'complet') {
-        message = '✅ Garantie complète ! Le prêt est maintenant prêt pour l\'approbation du manager. Le manager peut approuver le prêt dans la page "Approbations" pour l\'activer.'
+        if (isGroupLoan) {
+          message = '✅ Garantie complète pour ce membre ! Le prêt de groupe peut être approuvé par le manager une fois que toutes les garanties des membres sont complètes.'
+        } else {
+          message = '✅ Garantie complète ! Le prêt est maintenant prêt pour l\'approbation du manager. Le manager peut approuver le prêt dans la page "Approbations" pour l\'activer.'
+        }
       } else {
         message = 'Dépôt de garantie enregistré avec succès !'
       }
@@ -306,7 +339,9 @@ function CollateralsPageContent() {
       setSuccess(message)
       setShowForm(false)
       setFormData({
+        collateral_id: '',
         pret_id: '',
+        group_pret_id: '',
         montant_depose: '',
         date_depot: new Date().toISOString().split('T')[0],
         notes: '',
@@ -322,7 +357,8 @@ function CollateralsPageContent() {
 
   function openWithdrawalForm(collateral: Collateral) {
     // Vérifier d'abord que le prêt est entièrement remboursé
-    const pret = getPret(collateral.pret_id)
+    const isGroupLoan = !!collateral.group_pret_id
+    const pret = isGroupLoan ? getGroupPret(collateral.group_pret_id || '') : getPret(collateral.pret_id || '')
     
     if (!pret) {
       setError('Prêt non trouvé.')
@@ -370,16 +406,35 @@ function CollateralsPageContent() {
       }
 
       // Vérifier que tous les remboursements sont payés
-      const { data: remboursements, error: rembError } = await supabase
-        .from('remboursements')
-        .select('statut')
-        .eq('pret_id', selectedCollateral.pret_id)
+      const isGroupLoan = !!selectedCollateral.group_pret_id
+      
+      if (isGroupLoan) {
+        // Pour les prêts de groupe, vérifier les remboursements de ce membre spécifique
+        const { data: remboursements, error: rembError } = await supabase
+          .from('group_remboursements')
+          .select('statut')
+          .eq('pret_id', selectedCollateral.group_pret_id)
+          .eq('membre_id', selectedCollateral.membre_id)
 
-      if (rembError) throw rembError
+        if (rembError) throw rembError
 
-      const allPaid = remboursements?.every((r) => r.statut === 'paye')
-      if (!allPaid) {
-        throw new Error('Tous les remboursements doivent être payés avant de retirer la garantie.')
+        const allPaid = remboursements?.every((r) => r.statut === 'paye')
+        if (!allPaid) {
+          throw new Error('Tous les remboursements de ce membre doivent être payés avant de retirer sa garantie.')
+        }
+      } else {
+        // Pour les prêts individuels
+        const { data: remboursements, error: rembError } = await supabase
+          .from('remboursements')
+          .select('statut')
+          .eq('pret_id', selectedCollateral.pret_id || '')
+
+        if (rembError) throw rembError
+
+        const allPaid = remboursements?.every((r) => r.statut === 'paye')
+        if (!allPaid) {
+          throw new Error('Tous les remboursements doivent être payés avant de retirer la garantie.')
+        }
       }
 
       // Mettre à jour la garantie
@@ -423,6 +478,7 @@ function CollateralsPageContent() {
 
   const getMembre = (membreId: string) => membres.find((m) => m.membre_id === membreId)
   const getPret = (pretId: string) => prets.find((p) => p.pret_id === pretId)
+  const getGroupPret = (groupPretId: string) => groupPrets.find((p) => p.pret_id === groupPretId)
 
   const availablePretsForDeposit = useMemo(() => {
     // Seules les garanties partielles peuvent recevoir des dépôts additionnels
@@ -581,9 +637,12 @@ function CollateralsPageContent() {
                   {showForm ? 'Annuler' : 'Enregistrer dépôt'}
                 </Button>
                 {(() => {
-                  const availableForWithdrawal = collaterals.filter(
-                    c => c.statut === 'complet' && !c.date_remboursement && getPret(c.pret_id)?.statut === 'termine'
-                  )
+                  const availableForWithdrawal = collaterals.filter(c => {
+                    if (c.statut !== 'complet' || c.date_remboursement) return false
+                    const isGroupLoan = !!c.group_pret_id
+                    const pret = isGroupLoan ? getGroupPret(c.group_pret_id || '') : getPret(c.pret_id || '')
+                    return pret?.statut === 'termine'
+                  })
                   if (availableForWithdrawal.length > 0) {
                     return (
                       <Button
@@ -630,40 +689,63 @@ function CollateralsPageContent() {
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="pret_id">Prêt (garantie partielle)</Label>
+                    <Label htmlFor="collateral_id">Garantie (partielle)</Label>
                     <select
-                      id="pret_id"
+                      id="collateral_id"
                       required
-                      value={formData.pret_id}
+                      value={formData.collateral_id}
                       onChange={(e) => {
                         const selectedCollateral = availablePretsForDeposit.find(
-                          c => c.pret_id === e.target.value
+                          c => c.id.toString() === e.target.value
                         )
-                        setFormData({ ...formData, pret_id: e.target.value })
+                        setFormData({ 
+                          ...formData, 
+                          collateral_id: e.target.value,
+                          pret_id: selectedCollateral?.pret_id || '',
+                          group_pret_id: selectedCollateral?.group_pret_id || '',
+                        })
                         if (selectedCollateral) {
                           setError(null)
                         }
                       }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
                     >
-                      <option value="">Sélectionner un prêt</option>
-                      {availablePretsForDeposit.map((collateral) => {
-                        const pret = getPret(collateral.pret_id)
-                        const membre = getMembre(collateral.membre_id)
-                        return (
-                          <option key={collateral.pret_id} value={collateral.pret_id}>
-                            {collateral.pret_id} - {membre?.prenom} {membre?.nom} (Restant: {formatCurrency(collateral.montant_restant)})
-                          </option>
-                        )
-                      })}
+                      <option value="">Sélectionner une garantie</option>
+                      {/* Prêts individuels */}
+                      {availablePretsForDeposit
+                        .filter(c => !c.group_pret_id)
+                        .map((collateral) => {
+                          const pret = getPret(collateral.pret_id || '')
+                          const membre = getMembre(collateral.membre_id)
+                          return (
+                            <option key={collateral.id} value={collateral.id.toString()}>
+                              {collateral.pret_id} - {membre?.prenom} {membre?.nom} (Restant: {formatCurrency(collateral.montant_restant)})
+                            </option>
+                          )
+                        })}
+                      {/* Prêts de groupe */}
+                      {availablePretsForDeposit
+                        .filter(c => c.group_pret_id)
+                        .map((collateral) => {
+                          const groupPret = getGroupPret(collateral.group_pret_id || '')
+                          const membre = getMembre(collateral.membre_id)
+                          return (
+                            <option key={collateral.id} value={collateral.id.toString()}>
+                              👥 {collateral.group_pret_id} - {membre?.prenom} {membre?.nom} (Restant: {formatCurrency(collateral.montant_restant)})
+                            </option>
+                          )
+                        })}
                     </select>
-                    {formData.pret_id && (() => {
-                      const collateral = availablePretsForDeposit.find(c => c.pret_id === formData.pret_id)
+                    {formData.collateral_id && (() => {
+                      const collateral = availablePretsForDeposit.find(c => c.id.toString() === formData.collateral_id)
                       if (!collateral) return null
-                      const pret = getPret(collateral.pret_id)
+                      const pret = collateral.group_pret_id ? getGroupPret(collateral.group_pret_id) : getPret(collateral.pret_id || '')
                       const membre = getMembre(collateral.membre_id)
+                      const isGroupLoan = !!collateral.group_pret_id
                       return (
                         <div className="text-xs text-muted-foreground mt-1 p-2 bg-muted rounded">
+                          <div><strong>Type:</strong> {isGroupLoan ? '👥 Prêt de groupe' : '👤 Prêt individuel'}</div>
+                          <div><strong>Prêt:</strong> {isGroupLoan ? collateral.group_pret_id : collateral.pret_id}</div>
                           <div><strong>Membre:</strong> {membre?.prenom} {membre?.nom}</div>
                           <div><strong>Montant requis:</strong> {formatCurrency(collateral.montant_requis)}</div>
                           <div><strong>Déjà déposé:</strong> {formatCurrency(collateral.montant_depose)}</div>
@@ -686,8 +768,8 @@ function CollateralsPageContent() {
                         const value = e.target.value
                         setFormData({ ...formData, montant_depose: value })
                         // Validation en temps réel
-                        if (formData.pret_id) {
-                          const collateral = availablePretsForDeposit.find(c => c.pret_id === formData.pret_id)
+                        if (formData.collateral_id) {
+                          const collateral = availablePretsForDeposit.find(c => c.id.toString() === formData.collateral_id)
                           if (collateral && parseFloat(value) > collateral.montant_restant) {
                             setError(`Le montant ne peut pas dépasser ${formatCurrency(collateral.montant_restant)}`)
                           } else {
@@ -697,8 +779,8 @@ function CollateralsPageContent() {
                       }}
                       placeholder="Ex: 500.00"
                     />
-                    {formData.pret_id && formData.montant_depose && (() => {
-                      const collateral = availablePretsForDeposit.find(c => c.pret_id === formData.pret_id)
+                    {formData.collateral_id && formData.montant_depose && (() => {
+                      const collateral = availablePretsForDeposit.find(c => c.id.toString() === formData.collateral_id)
                       if (!collateral) return null
                       const montant = parseFloat(formData.montant_depose)
                       if (isNaN(montant) || montant <= 0) return null
@@ -756,7 +838,9 @@ function CollateralsPageContent() {
                       setShowForm(false)
                       setError(null)
                       setFormData({
+                        collateral_id: '',
                         pret_id: '',
+                        group_pret_id: '',
                         montant_depose: '',
                         date_depot: new Date().toISOString().split('T')[0],
                         notes: '',
@@ -786,8 +870,16 @@ function CollateralsPageContent() {
                 <div className="p-4 bg-muted rounded-lg space-y-2">
                   <div className="grid grid-cols-2 gap-2 text-sm">
                     <div>
+                      <span className="text-muted-foreground">Type:</span>
+                      <div className="font-semibold">
+                        {selectedCollateral.group_pret_id ? '👥 Prêt de groupe' : '👤 Prêt individuel'}
+                      </div>
+                    </div>
+                    <div>
                       <span className="text-muted-foreground">Prêt:</span>
-                      <div className="font-semibold">{selectedCollateral.pret_id}</div>
+                      <div className="font-semibold">
+                        {selectedCollateral.group_pret_id || selectedCollateral.pret_id}
+                      </div>
                     </div>
                     <div>
                       <span className="text-muted-foreground">Membre:</span>
@@ -937,7 +1029,8 @@ function CollateralsPageContent() {
                   ) : (
                     collaterals.map((collateral) => {
                       const membre = getMembre(collateral.membre_id)
-                      const pret = getPret(collateral.pret_id)
+                      const isGroupLoan = !!collateral.group_pret_id
+                      const pret = isGroupLoan ? getGroupPret(collateral.group_pret_id || '') : getPret(collateral.pret_id || '')
                       const percentage = (collateral.montant_depose / collateral.montant_requis) * 100
                       const pretTermine = pret?.statut === 'termine'
                       const canRefund = collateral.statut === 'complet' && !collateral.date_remboursement && pretTermine
@@ -946,10 +1039,19 @@ function CollateralsPageContent() {
                         <TableRow key={collateral.id}>
                           <TableCell className="font-medium">
                             <div>
-                              {collateral.pret_id}
+                              {isGroupLoan ? (
+                                <>
+                                  <span className="text-blue-600">👥 {collateral.group_pret_id}</span>
+                                  <div className="text-xs text-muted-foreground mt-1">
+                                    Prêt de groupe
+                                  </div>
+                                </>
+                              ) : (
+                                collateral.pret_id
+                              )}
                               {pret && (
                                 <div className="text-xs text-muted-foreground mt-1">
-                                  Prêt: {pret.statut === 'termine' ? (
+                                  Statut: {pret.statut === 'termine' ? (
                                     <span className="text-green-600 font-semibold">✓ Terminé</span>
                                   ) : pret.statut === 'en_attente_garantie' && collateral.statut === 'complet' ? (
                                     <span className="text-purple-600 font-semibold">✅ Garantie complète - En attente d'approbation</span>
@@ -1033,7 +1135,9 @@ function CollateralsPageContent() {
                               <Button
                                 onClick={() => {
                                   setFormData({
-                                    pret_id: collateral.pret_id,
+                                    collateral_id: collateral.id.toString(),
+                                    pret_id: collateral.pret_id || '',
+                                    group_pret_id: collateral.group_pret_id || '',
                                     montant_depose: '',
                                     date_depot: new Date().toISOString().split('T')[0],
                                     notes: '',

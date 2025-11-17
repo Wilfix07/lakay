@@ -26,6 +26,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Plus, X, Loader2, User, Users, CheckCircle2 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
@@ -105,6 +106,7 @@ function MembresPageContent() {
   const [transferMemberSaving, setTransferMemberSaving] = useState(false)
   const [transferMemberError, setTransferMemberError] = useState<string | null>(null)
   const [membersInGroups, setMembersInGroups] = useState<Set<string>>(new Set())
+  const [memberGroupNames, setMemberGroupNames] = useState<Map<string, string>>(new Map())
 
   const currentLoan =
     memberLoans.find((loan) => loan.pret_id === selectedLoanId) ?? memberLoans[0] ?? null
@@ -301,6 +303,35 @@ function MembresPageContent() {
 
       if (error) throw error
       setMembres(data || [])
+
+      // Charger les informations de groupe pour tous les membres
+      if (data && data.length > 0) {
+        const membreIds = data.map(m => m.membre_id)
+        
+        // Récupérer les membres qui sont dans des groupes
+        const { data: groupMembersData, error: groupMembersError } = await supabase
+          .from('membre_group_members')
+          .select('membre_id, group_id, membre_groups!inner(group_name)')
+          .in('membre_id', membreIds)
+
+        if (groupMembersError) {
+          console.error('Erreur lors du chargement des groupes de membres:', groupMembersError)
+        } else if (groupMembersData) {
+          // Créer une Map membre_id -> group_name
+          const groupNamesMap = new Map<string, string>()
+          const membersInGroupsSet = new Set<string>()
+          
+          groupMembersData.forEach((gm: any) => {
+            if (gm.membre_id && gm.membre_groups?.group_name) {
+              groupNamesMap.set(gm.membre_id, gm.membre_groups.group_name)
+              membersInGroupsSet.add(gm.membre_id)
+            }
+          })
+          
+          setMemberGroupNames(groupNamesMap)
+          setMembersInGroups(membersInGroupsSet)
+        }
+      }
     } catch (error) {
       console.error('Erreur lors du chargement des membres:', error)
       alert('Erreur lors du chargement des membres')
@@ -451,6 +482,7 @@ function MembresPageContent() {
         selectedMembers: [],
       })
       loadGroups()
+      loadMembres() // Recharger les membres pour mettre à jour les informations de groupe
     } catch (error: any) {
       console.error('Erreur lors de la création du groupe:', error)
       alert('Erreur: ' + (error.message || 'Erreur inconnue'))
@@ -570,6 +602,7 @@ function MembresPageContent() {
       
       // Recharger les groupes et les détails du groupe
       loadGroups()
+      loadMembres() // Recharger les membres pour mettre à jour les informations de groupe
       if (selectedGroup) {
         handleViewGroupDetails(selectedGroup)
       }
@@ -1148,6 +1181,7 @@ function MembresPageContent() {
                       <TableHead>Agent</TableHead>
                       <TableHead>Nom</TableHead>
                       <TableHead>Prénom</TableHead>
+                      <TableHead>Type</TableHead>
                       <TableHead>Téléphone</TableHead>
                       <TableHead>Date création</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
@@ -1164,6 +1198,19 @@ function MembresPageContent() {
                         <TableCell>{membre.agent_id}</TableCell>
                         <TableCell>{membre.nom}</TableCell>
                         <TableCell>{membre.prenom}</TableCell>
+                        <TableCell>
+                          {membersInGroups.has(membre.membre_id) ? (
+                            <Badge variant="secondary" className="gap-1">
+                              <Users className="w-3 h-3" />
+                              Groupe: {memberGroupNames.get(membre.membre_id) || 'N/A'}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="gap-1">
+                              <User className="w-3 h-3" />
+                              Individuel
+                            </Badge>
+                          )}
+                        </TableCell>
                         <TableCell>{membre.telephone || '-'}</TableCell>
                         <TableCell>
                           {new Date(membre.created_at).toLocaleDateString('fr-FR')}
