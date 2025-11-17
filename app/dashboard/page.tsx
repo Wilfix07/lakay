@@ -21,6 +21,7 @@ import {
   Loader2,
   AlertTriangle,
   Wallet,
+  PiggyBank,
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import { getInterestRates } from '@/lib/systemSettings'
@@ -77,6 +78,7 @@ export default function DashboardPage() {
     }[]
   }>({ total: 0, commissionTotal: 0, monthly: [] })
   const [expensesSummary, setExpensesSummary] = useState<number>(0)
+  const [totalEpargnes, setTotalEpargnes] = useState<number>(0)
   const [commissionRatePercent, setCommissionRatePercent] = useState<number>(30)
   const [baseInterestRatePercent, setBaseInterestRatePercent] = useState<number>(15)
   const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
@@ -156,6 +158,7 @@ export default function DashboardPage() {
           setAgentCollections([])
           setInterestSummary({ total: 0, commissionTotal: 0, monthly: [] })
           setExpensesSummary(0)
+          setTotalEpargnes(0)
           return
         }
       }
@@ -168,6 +171,7 @@ export default function DashboardPage() {
         let pretsQuery = supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant')
         let remboursementsQuery = supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet')
         let expensesQuery = supabase.from('agent_expenses').select('amount, expense_date')
+        let epargnesQuery = supabase.from('epargne_transactions').select('type, montant')
 
         // Filtrer par manager_id si nécessaire
         if (userProfile.role === 'manager' && managerAgentIds) {
@@ -176,6 +180,7 @@ export default function DashboardPage() {
           pretsQuery = pretsQuery.in('agent_id', managerAgentIds)
           remboursementsQuery = remboursementsQuery.in('agent_id', managerAgentIds)
           expensesQuery = expensesQuery.in('agent_id', managerAgentIds)
+          epargnesQuery = epargnesQuery.in('agent_id', managerAgentIds)
         }
 
         const [
@@ -185,6 +190,7 @@ export default function DashboardPage() {
           pretsRes,
           remboursementsRes,
           expensesRes,
+          epargnesRes,
         ] = await Promise.all([
           getInterestRates(),
           agentsQuery,
@@ -192,6 +198,7 @@ export default function DashboardPage() {
           pretsQuery,
           remboursementsQuery,
           expensesQuery,
+          epargnesQuery,
         ])
 
         if (agentsRes.error) throw agentsRes.error
@@ -199,6 +206,10 @@ export default function DashboardPage() {
         if (pretsRes.error) throw pretsRes.error
         if (remboursementsRes.error) throw remboursementsRes.error
         if (expensesRes.error) throw expensesRes.error
+        // Ignorer l'erreur si la table epargne_transactions n'existe pas encore
+        if (epargnesRes.error && (epargnesRes.error as any).code !== '42P01') {
+          console.error('Erreur lors du chargement des épargnes:', epargnesRes.error)
+        }
 
         const commissionRate =
           interestRates?.commissionRate !== undefined && !Number.isNaN(interestRates.commissionRate)
@@ -358,6 +369,13 @@ export default function DashboardPage() {
           expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
         setExpensesSummary(expensesTotal)
 
+        // Calculer le total des épargnes (dépôts - retraits)
+        const epargnesTotal = (epargnesRes.data || []).reduce((sum, transaction) => {
+          const montant = Number(transaction.montant || 0)
+          return sum + (transaction.type === 'depot' ? montant : -montant)
+        }, 0)
+        setTotalEpargnes(epargnesTotal)
+
         const monthlyExpensesMap = new Map<string, number>()
         for (const expense of expensesRes.data || []) {
           if (!expense.expense_date) continue
@@ -394,18 +412,23 @@ export default function DashboardPage() {
       } 
       // Stats pour Agent (seulement ses données)
       else if (userProfile.role === 'agent' && userProfile.agent_id) {
-        const [interestRates, membresRes, pretsRes, remboursementsRes, expensesRes] = await Promise.all([
+        const [interestRates, membresRes, pretsRes, remboursementsRes, expensesRes, epargnesRes] = await Promise.all([
           getInterestRates(),
           supabase.from('membres').select('id', { count: 'exact', head: true }).eq('agent_id', userProfile.agent_id),
           supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant').eq('agent_id', userProfile.agent_id),
           supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet').eq('agent_id', userProfile.agent_id),
           supabase.from('agent_expenses').select('amount, expense_date').eq('agent_id', userProfile.agent_id),
+          supabase.from('epargne_transactions').select('type, montant').eq('agent_id', userProfile.agent_id),
         ])
 
         if (membresRes.error) throw membresRes.error
         if (pretsRes.error) throw pretsRes.error
         if (remboursementsRes.error) throw remboursementsRes.error
         if (expensesRes.error) throw expensesRes.error
+        // Ignorer l'erreur si la table epargne_transactions n'existe pas encore
+        if (epargnesRes.error && (epargnesRes.error as any).code !== '42P01') {
+          console.error('Erreur lors du chargement des épargnes:', epargnesRes.error)
+        }
 
         const commissionRate =
           interestRates?.commissionRate !== undefined && !Number.isNaN(interestRates.commissionRate)
@@ -537,6 +560,14 @@ export default function DashboardPage() {
         const expensesTotal =
           expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
         setExpensesSummary(expensesTotal)
+
+        // Calculer le total des épargnes (dépôts - retraits)
+        const epargnesTotal = (epargnesRes.data || []).reduce((sum, transaction) => {
+          const montant = Number(transaction.montant || 0)
+          return sum + (transaction.type === 'depot' ? montant : -montant)
+        }, 0)
+        setTotalEpargnes(epargnesTotal)
+
         const interestMap = new Map<string, number>()
         let totalInterest = 0
         for (const remboursement of remboursementsRes.data || []) {
@@ -697,6 +728,14 @@ export default function DashboardPage() {
       description: 'Dépenses opérationnelles',
       gradient: 'bg-gradient-to-r from-slate-600 to-gray-900',
       href: '/expenses',
+    },
+    {
+      title: 'Total épargnes',
+      value: formatCurrency(totalEpargnes),
+      icon: PiggyBank,
+      description: 'Solde total des épargnes (dépôts - retraits)',
+      gradient: 'bg-gradient-to-r from-emerald-500 to-teal-600',
+      href: '/epargne',
     },
   ]
 
