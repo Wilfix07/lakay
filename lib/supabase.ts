@@ -158,3 +158,20 @@ export interface Collateral {
   updated_at: string
 }
 
+export interface GroupPret {
+  id: number
+  pret_id: string
+  group_id: number
+  agent_id: string
+  montant_pret: number
+  montant_remboursement: number
+  nombre_remboursements: number
+  frequence_remboursement: string
+  date_decaissement: string
+  date_premier_remboursement: string
+  statut: 'en_attente_approbation' | 'en_attente_garantie' | 'actif' | 'termine' | 'annule'
+  capital_restant: number
+  created_at: string
+  updated_at: string
+}
+

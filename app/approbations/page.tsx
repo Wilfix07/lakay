@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase, type Pret, type Membre, type Agent, type UserProfile, type Collateral } from '@/lib/supabase'
+import { supabase, type Pret, type Membre, type Agent, type UserProfile, type Collateral, type GroupPret } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
@@ -24,11 +24,14 @@ import { calculateLoanPlan, type FrequenceRemboursement } from '@/lib/loanUtils'
 function ApprobationsPageContent() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [prets, setPrets] = useState<Pret[]>([])
+  const [groupPrets, setGroupPrets] = useState<GroupPret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
   const [collaterals, setCollaterals] = useState<Collateral[]>([])
+  const [groups, setGroups] = useState<Array<{ id: number; group_name: string }>>([])
   const [loading, setLoading] = useState(true)
   const [approving, setApproving] = useState<string | null>(null)
+  const [approvingGroup, setApprovingGroup] = useState<string | null>(null)
   const [selectedPret, setSelectedPret] = useState<Pret | null>(null)
   const [showDetails, setShowDetails] = useState(false)
 
@@ -68,9 +71,8 @@ function ApprobationsPageContent() {
         agentQuery = agentQuery.eq('manager_id', userProfile.id)
       }
 
-      const [pretsRes, membresRes, agentsRes, collateralsRes] = await Promise.all([
-        // Charger les prêts en attente de garantie (les agents peuvent collecter le collateral sans approbation)
-        // Le manager doit approuver pour activer le prêt une fois le collateral complet
+      const [pretsRes, groupPretsRes, membresRes, agentsRes, collateralsRes, groupsRes] = await Promise.all([
+        // Charger les prêts individuels en attente de garantie
         (async () => {
           let query = supabase
             .from('prets')
@@ -94,20 +96,67 @@ function ApprobationsPageContent() {
 
           return await query
         })(),
+        // Charger les prêts de groupe en attente de garantie
+        (async () => {
+          let query = supabase
+            .from('group_prets')
+            .select('*')
+            .eq('statut', 'en_attente_garantie')
+            .order('created_at', { ascending: false })
+
+          if (userProfile.role === 'manager') {
+            const { data: managerAgents } = await supabase
+              .from('agents')
+              .select('agent_id')
+              .eq('manager_id', userProfile.id)
+
+            const agentIds = managerAgents?.map(a => a.agent_id) || []
+            if (agentIds.length > 0) {
+              query = query.in('agent_id', agentIds)
+            } else {
+              return { data: [], error: null }
+            }
+          }
+
+          return await query
+        })(),
         supabase.from('membres').select('*'),
         agentQuery,
         supabase.from('collaterals').select('*'),
+        supabase.from('membre_groups').select('id, group_name'),
       ])
 
       if (pretsRes.error) throw pretsRes.error
+      if (groupPretsRes.error) {
+        // Si la table group_prets n'existe pas, ignorer l'erreur
+        const isTableNotFound = 
+          groupPretsRes.error.code === 'PGRST116' || 
+          groupPretsRes.error.status === 404 ||
+          groupPretsRes.error.message?.includes('404') ||
+          groupPretsRes.error.message?.includes('does not exist')
+        
+        if (!isTableNotFound) throw groupPretsRes.error
+      }
       if (membresRes.error) throw membresRes.error
       if (agentsRes.error) throw agentsRes.error
       if (collateralsRes.error) throw collateralsRes.error
+      if (groupsRes.error) {
+        // Ignorer l'erreur si la table n'existe pas
+        const isTableNotFound = 
+          groupsRes.error.code === 'PGRST116' || 
+          groupsRes.error.status === 404 ||
+          groupsRes.error.message?.includes('404') ||
+          groupsRes.error.message?.includes('does not exist')
+        
+        if (!isTableNotFound) throw groupsRes.error
+      }
 
       setPrets(pretsRes.data || [])
+      setGroupPrets(groupPretsRes.data || [])
       setMembres(membresRes.data || [])
       setAgents(agentsRes.data || [])
       setCollaterals(collateralsRes.data || [])
+      setGroups(groupsRes.data || [])
     } catch (error) {
       console.error('Erreur lors du chargement des données:', error)
       alert('Erreur lors du chargement des données')
@@ -126,6 +175,21 @@ function ApprobationsPageContent() {
 
   function getCollateral(pret_id: string): Collateral | undefined {
     return collaterals.find((c) => c.pret_id === pret_id)
+  }
+
+  function getGroupCollaterals(group_pret_id: string): Collateral[] {
+    return collaterals.filter((c) => c.group_pret_id === group_pret_id)
+  }
+
+  function areAllGroupCollateralsComplete(group_pret_id: string): boolean {
+    const groupCollaterals = getGroupCollaterals(group_pret_id)
+    if (groupCollaterals.length === 0) return false
+    return groupCollaterals.every((c) => c.statut === 'complet' && c.montant_restant === 0)
+  }
+
+  function getGroupName(group_id: number): string {
+    const group = groups.find(g => g.id === group_id)
+    return group?.group_name || `Groupe ${group_id}`
   }
 
   async function handleApprove(pret: Pret) {
@@ -241,6 +305,63 @@ function ApprobationsPageContent() {
     }
   }
 
+  async function handleApproveGroupPret(groupPret: GroupPret) {
+    // Vérifier que toutes les garanties sont complètes
+    const allComplete = areAllGroupCollateralsComplete(groupPret.pret_id)
+    
+    if (!allComplete) {
+      const groupCollaterals = getGroupCollaterals(groupPret.pret_id)
+      const incompleteCount = groupCollaterals.filter(c => c.statut !== 'complet' || c.montant_restant > 0).length
+      alert(
+        `❌ Impossible d'approuver le prêt de groupe ${groupPret.pret_id}.\n\n` +
+        `Toutes les garanties des membres doivent être complètes.\n\n` +
+        `${incompleteCount} garantie${incompleteCount > 1 ? 's' : ''} encore incomplète${incompleteCount > 1 ? 's' : ''}.\n\n` +
+        `Allez dans "Garanties" pour vérifier et enregistrer les dépôts.`
+      )
+      return
+    }
+
+    if (!confirm(`Approuver le prêt de groupe ${groupPret.pret_id} ?\n\nMontant total: ${formatCurrency(groupPret.montant_pret)}\nAgent: ${getAgent(groupPret.agent_id)?.prenom} ${getAgent(groupPret.agent_id)?.nom}\nToutes les garanties sont complètes`)) {
+      return
+    }
+
+    setApprovingGroup(groupPret.pret_id)
+    try {
+      // Récupérer les membres du groupe et leurs montants depuis les remboursements déjà créés
+      const { data: groupRemboursements, error: rembError } = await supabase
+        .from('group_remboursements')
+        .select('membre_id, montant, numero_remboursement')
+        .eq('pret_id', groupPret.pret_id)
+        .order('membre_id')
+        .order('numero_remboursement')
+
+      if (rembError) throw rembError
+
+      // Les remboursements ont déjà été créés lors de la création du prêt
+      // On doit juste activer le prêt
+
+      // Activer le prêt de groupe
+      const { error: activateError } = await supabase
+        .from('group_prets')
+        .update({ 
+          statut: 'actif',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('pret_id', groupPret.pret_id)
+
+      if (activateError) throw activateError
+
+      alert(`✅ Prêt de groupe ${groupPret.pret_id} approuvé et activé avec succès!\n\nToutes les garanties sont complètes. Le prêt a été activé et les remboursements ont été créés pour tous les membres. Le décaissement peut maintenant être effectué.`)
+      
+      await loadData()
+    } catch (error) {
+      console.error('Erreur lors de l\'approbation du prêt de groupe:', error)
+      alert('Erreur lors de l\'approbation du prêt de groupe')
+    } finally {
+      setApprovingGroup(null)
+    }
+  }
+
   async function handleReject(pret: Pret) {
     const reason = prompt(`Rejeter le prêt ${pret.pret_id} ?\n\nEntrez une raison (optionnel):`)
     if (reason === null) return // User cancelled
@@ -261,6 +382,29 @@ function ApprobationsPageContent() {
       alert('Erreur lors du rejet du prêt')
     } finally {
       setApproving(null)
+    }
+  }
+
+  async function handleRejectGroupPret(groupPret: GroupPret) {
+    const reason = prompt(`Rejeter le prêt de groupe ${groupPret.pret_id} ?\n\nEntrez une raison (optionnel):`)
+    if (reason === null) return // User cancelled
+
+    setApprovingGroup(groupPret.pret_id)
+    try {
+      const { error: updateError } = await supabase
+        .from('group_prets')
+        .update({ statut: 'annule' })
+        .eq('pret_id', groupPret.pret_id)
+
+      if (updateError) throw updateError
+
+      alert(`❌ Prêt de groupe ${groupPret.pret_id} rejeté.`)
+      await loadData()
+    } catch (error) {
+      console.error('Erreur lors du rejet du prêt de groupe:', error)
+      alert('Erreur lors du rejet du prêt de groupe')
+    } finally {
+      setApprovingGroup(null)
     }
   }
 
@@ -319,7 +463,7 @@ function ApprobationsPageContent() {
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
           </div>
-        ) : prets.length === 0 ? (
+        ) : prets.length === 0 && groupPrets.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center">
               <AlertCircle className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
@@ -334,7 +478,7 @@ function ApprobationsPageContent() {
         ) : (
           <Card>
             <CardHeader>
-              <CardTitle>Prêts en attente d'approbation ({prets.length})</CardTitle>
+              <CardTitle>Prêts en attente d'approbation ({prets.length + groupPrets.length})</CardTitle>
               <CardDescription>
                 Prêts avec garantie complète en attente d'activation. Seuls les prêts avec garantie complète peuvent être approuvés.
               </CardDescription>
@@ -344,7 +488,8 @@ function ApprobationsPageContent() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Prêt</TableHead>
-                    <TableHead>Membre</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Membre/Groupe</TableHead>
                     <TableHead>Agent</TableHead>
                     <TableHead>Montant</TableHead>
                     <TableHead>Échéances</TableHead>
@@ -355,6 +500,7 @@ function ApprobationsPageContent() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
+                  {/* Prêts individuels */}
                   {prets.map((pret) => {
                     const membre = getMembre(pret.membre_id)
                     const agent = getAgent(pret.agent_id)
@@ -373,8 +519,11 @@ function ApprobationsPageContent() {
                     const garantieComplete = montantDepose >= montantRequis && montantRestant <= 0
 
                     return (
-                      <TableRow key={pret.id}>
+                      <TableRow key={`pret-${pret.id}`}>
                         <TableCell className="font-medium">{pret.pret_id}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">Individuel</Badge>
+                        </TableCell>
                         <TableCell>
                           {membre ? `${membre.prenom} ${membre.nom}` : pret.membre_id}
                         </TableCell>
@@ -429,6 +578,98 @@ function ApprobationsPageContent() {
                           </Button>
                           <Button
                             onClick={() => handleReject(pret)}
+                            disabled={isProcessing}
+                            size="sm"
+                            variant="destructive"
+                          >
+                            {isProcessing ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <>
+                                <XCircle className="w-4 h-4 mr-1" />
+                                Rejeter
+                              </>
+                            )}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                  {/* Prêts de groupe */}
+                  {groupPrets.map((groupPret) => {
+                    const agent = getAgent(groupPret.agent_id)
+                    const groupCollaterals = getGroupCollaterals(groupPret.pret_id)
+                    const isProcessing = approvingGroup === groupPret.pret_id
+                    const allComplete = areAllGroupCollateralsComplete(groupPret.pret_id)
+                    
+                    const totalRequis = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_requis || 0), 0)
+                    const totalDepose = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
+                    const totalRestant = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_restant || 0), 0)
+                    const completeCount = groupCollaterals.filter(c => c.statut === 'complet' && c.montant_restant === 0).length
+                    const totalMembers = groupCollaterals.length
+
+                    return (
+                      <TableRow key={`group-${groupPret.id}`}>
+                        <TableCell className="font-medium">
+                          <span className="text-blue-600">👥 {groupPret.pret_id}</span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="default" className="bg-blue-100 text-blue-700">Groupe</Badge>
+                        </TableCell>
+                        <TableCell>
+                          {getGroupName(groupPret.group_id)}
+                        </TableCell>
+                        <TableCell>
+                          {agent ? `${agent.prenom} ${agent.nom} (${agent.agent_id})` : groupPret.agent_id}
+                        </TableCell>
+                        <TableCell className="font-semibold">
+                          {formatCurrency(groupPret.montant_pret)}
+                        </TableCell>
+                        <TableCell>
+                          {groupPret.nombre_remboursements} × {formatCurrency(groupPret.montant_remboursement)}
+                        </TableCell>
+                        <TableCell>{formatDate(groupPret.date_decaissement)}</TableCell>
+                        <TableCell>{formatDate(groupPret.created_at)}</TableCell>
+                        <TableCell>
+                          {groupCollaterals.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className={`text-xs font-semibold ${
+                                allComplete ? 'text-green-600' : 'text-yellow-600'
+                              }`}>
+                                {allComplete ? '✅ Toutes complètes' : `⚠️ ${completeCount}/${totalMembers} complètes`}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {formatCurrency(totalDepose)} / {formatCurrency(totalRequis)}
+                              </div>
+                              {!allComplete && (
+                                <div className="text-xs text-red-600">
+                                  Reste: {formatCurrency(totalRestant)}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-red-600">❌ Aucune garantie</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right space-x-2">
+                          <Button
+                            onClick={() => handleApproveGroupPret(groupPret)}
+                            disabled={isProcessing || !allComplete}
+                            size="sm"
+                            className="bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={!allComplete ? 'Toutes les garanties doivent être complètes avant d\'approuver' : ''}
+                          >
+                            {isProcessing ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <>
+                                <CheckCircle2 className="w-4 h-4 mr-1" />
+                                Approuver
+                              </>
+                            )}
+                          </Button>
+                          <Button
+                            onClick={() => handleRejectGroupPret(groupPret)}
                             disabled={isProcessing}
                             size="sm"
                             variant="destructive"

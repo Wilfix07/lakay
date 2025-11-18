@@ -180,16 +180,18 @@ function EpargnePageContent() {
           type: formData.type,
           montant,
           date_operation: formData.date_operation,
-          notes: formData.notes || null,
+          // Note: La colonne 'notes' n'existe pas dans la table epargne_transactions
         }])
 
       if (error) {
+        console.error('Erreur lors de l\'enregistrement de l\'opération d\'épargne:', error)
         if ((error as any).code === '42P01') {
           setErrorMessage(
             "La table 'epargne_transactions' n'existe pas encore. Veuillez créer la table côté Supabase pour activer l'épargne."
           )
         } else {
-          setErrorMessage('Erreur lors de l’enregistrement de l’opération.')
+          const errorMessage = error.message || 'Erreur inconnue'
+          setErrorMessage(`Erreur lors de l'enregistrement de l'opération: ${errorMessage}`)
         }
         return
       }
