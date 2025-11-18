@@ -154,12 +154,19 @@ function UtilisateursPageContent() {
         return
       }
 
+      // Obtenir le token de session pour l'authentification
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      if (sessionError || !session) {
+        throw new Error('Session expirée. Veuillez vous reconnecter.')
+      }
+
       // Créer l'utilisateur dans Supabase Auth
       // Note: Cette opération nécessite la clé service_role côté serveur
       const response = await fetch('/api/users/create', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           email: formData.email,

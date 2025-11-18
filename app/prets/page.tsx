@@ -578,8 +578,25 @@ function PretsPageContent() {
 
       const { data: groupPretsData, error: groupPretsError } = await groupQuery
 
-      if (groupPretsError) throw groupPretsError
-      setGroupPrets(groupPretsData || [])
+      // Si la table group_prets n'existe pas (404), ignorer l'erreur et retourner un tableau vide
+      if (groupPretsError) {
+        // Si c'est une erreur 404 (table n'existe pas), ignorer silencieusement
+        const isTableNotFound = 
+          groupPretsError.code === 'PGRST116' || 
+          groupPretsError.status === 404 ||
+          groupPretsError.message?.includes('404') ||
+          groupPretsError.message?.includes('does not exist') ||
+          (groupPretsError.message?.includes('relation') && groupPretsError.message?.includes('not found'))
+        
+        if (isTableNotFound) {
+          console.warn('Table group_prets non trouvée, utilisation d\'un tableau vide')
+          setGroupPrets([])
+        } else {
+          throw groupPretsError
+        }
+      } else {
+        setGroupPrets(groupPretsData || [])
+      }
     } catch (error) {
       console.error('Erreur lors du chargement des prêts:', error)
       alert('Erreur lors du chargement des prêts')

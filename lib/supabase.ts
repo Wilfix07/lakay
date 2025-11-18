@@ -101,8 +101,9 @@ export interface UserProfile {
 
 export interface SystemSetting {
   id: number
-  key: string
-  value: Record<string, any>
+  setting_key: string
+  setting_value: Record<string, any>
+  manager_id?: string | null
   description?: string | null
   updated_by?: string | null
   created_at: string

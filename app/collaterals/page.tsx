@@ -174,12 +174,29 @@ function CollateralsPageContent() {
         await Promise.all([pretsQuery, groupPretsQuery, membresQuery, collateralsQuery])
 
       if (pretsError) throw pretsError
-      if (groupPretsError) throw groupPretsError
+      // Si la table group_prets n'existe pas (404), ignorer l'erreur et retourner un tableau vide
+      if (groupPretsError) {
+        // Si c'est une erreur 404 (table n'existe pas), ignorer silencieusement
+        const isTableNotFound = 
+          groupPretsError.code === 'PGRST116' || 
+          groupPretsError.status === 404 ||
+          groupPretsError.message?.includes('404') ||
+          groupPretsError.message?.includes('does not exist') ||
+          (groupPretsError.message?.includes('relation') && groupPretsError.message?.includes('not found'))
+        
+        if (isTableNotFound) {
+          console.warn('Table group_prets non trouvée, utilisation d\'un tableau vide')
+          setGroupPrets([])
+        } else {
+          throw groupPretsError
+        }
+      } else {
+        setGroupPrets(groupPretsData || [])
+      }
       if (membresError) throw membresError
       if (collateralsError) throw collateralsError
 
       setPrets(pretsData || [])
-      setGroupPrets(groupPretsData || [])
       setMembres(membresData || [])
       setCollaterals(collateralsData || [])
     } catch (err: any) {

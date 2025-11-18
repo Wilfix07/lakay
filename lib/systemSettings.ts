@@ -125,8 +125,8 @@ export async function getScheduleSettings(managerId?: string | null) {
   try {
     let query = supabase
       .from('system_settings')
-      .select('value')
-      .eq('key', 'schedule')
+      .select('setting_value')
+      .eq('setting_key', 'schedule')
 
     // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
     // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
@@ -150,12 +150,12 @@ export async function getScheduleSettings(managerId?: string | null) {
       console.error('Erreur lors de la récupération des paramètres d\'échéancier:', error)
     }
 
-    if (data?.value) {
+    if (data?.setting_value) {
       return {
-        totalInstallments: Number(data.value.totalInstallments ?? DEFAULT_SETTINGS.schedule.totalInstallments),
-        frequencyDays: Number(data.value.frequencyDays ?? DEFAULT_SETTINGS.schedule.frequencyDays),
-        graceDays: Number(data.value.graceDays ?? DEFAULT_SETTINGS.schedule.graceDays),
-        autoGenerate: Boolean(data.value.autoGenerate ?? DEFAULT_SETTINGS.schedule.autoGenerate),
+        totalInstallments: Number(data.setting_value.totalInstallments ?? DEFAULT_SETTINGS.schedule.totalInstallments),
+        frequencyDays: Number(data.setting_value.frequencyDays ?? DEFAULT_SETTINGS.schedule.frequencyDays),
+        graceDays: Number(data.setting_value.graceDays ?? DEFAULT_SETTINGS.schedule.graceDays),
+        autoGenerate: Boolean(data.setting_value.autoGenerate ?? DEFAULT_SETTINGS.schedule.autoGenerate),
       }
     }
 
@@ -174,8 +174,8 @@ export async function getInterestRates(managerId?: string | null) {
   try {
     let query = supabase
       .from('system_settings')
-      .select('value')
-      .eq('key', 'interest_rates')
+      .select('setting_value')
+      .eq('setting_key', 'interest_rates')
 
     // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
     // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
@@ -199,11 +199,11 @@ export async function getInterestRates(managerId?: string | null) {
       console.error('Erreur lors de la récupération des taux d\'intérêt:', error)
     }
 
-    if (data?.value) {
+    if (data?.setting_value) {
       return {
-        baseInterestRate: Number(data.value.baseInterestRate ?? DEFAULT_SETTINGS.interestRates.baseInterestRate) / 100,
-        penaltyRate: Number(data.value.penaltyRate ?? DEFAULT_SETTINGS.interestRates.penaltyRate) / 100,
-        commissionRate: Number(data.value.commissionRate ?? DEFAULT_SETTINGS.interestRates.commissionRate) / 100,
+        baseInterestRate: Number(data.setting_value.baseInterestRate ?? DEFAULT_SETTINGS.interestRates.baseInterestRate) / 100,
+        penaltyRate: Number(data.setting_value.penaltyRate ?? DEFAULT_SETTINGS.interestRates.penaltyRate) / 100,
+        commissionRate: Number(data.setting_value.commissionRate ?? DEFAULT_SETTINGS.interestRates.commissionRate) / 100,
       }
     }
 
@@ -376,8 +376,8 @@ export async function getCollateralSettings(managerId?: string | null) {
   try {
     let query = supabase
       .from('system_settings')
-      .select('value')
-      .eq('key', 'collateral_settings')
+      .select('setting_value')
+      .eq('setting_key', 'collateral_settings')
 
     // Si managerId est fourni, chercher les paramètres spécifiques à ce manager
     // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
@@ -401,11 +401,11 @@ export async function getCollateralSettings(managerId?: string | null) {
       console.error('Erreur lors de la récupération des paramètres de garantie:', error)
     }
 
-    if (data?.value) {
+    if (data?.setting_value) {
       return {
-        collateralRate: Number(data.value.collateralRate ?? 10),
-        refundPolicy: String(data.value.refundPolicy ?? 'automatic'),
-        description: String(data.value.description ?? ''),
+        collateralRate: Number(data.setting_value.collateralRate ?? 10),
+        refundPolicy: String(data.setting_value.refundPolicy ?? 'automatic'),
+        description: String(data.setting_value.description ?? ''),
       }
     }
 

@@ -726,30 +726,61 @@ function MembresPageContent() {
         return
       }
 
-      // Générer le membre_id automatiquement
-      const { data: maxMembres } = await supabase
-        .from('membres')
-        .select('membre_id')
-        .order('membre_id', { ascending: false })
-        .limit(1)
+      // Générer le membre_id automatiquement en utilisant la fonction SQL atomique
+      // Cela évite les conditions de course (race conditions) lors de créations simultanées
+      const { data: membreIdData, error: membreIdError } = await supabase
+        .rpc('generate_membre_id')
 
-      let newMembreId = '0000'
-      if (maxMembres && maxMembres.length > 0 && maxMembres[0]) {
-        const maxNum = parseInt(maxMembres[0].membre_id, 10)
-        if (!isNaN(maxNum)) {
-          newMembreId = String(maxNum + 1).padStart(4, '0')
+      if (membreIdError) {
+        console.error('Erreur lors de la génération du membre_id:', membreIdError)
+        throw membreIdError
+      }
+
+      const newMembreId = membreIdData || '0000'
+
+      // Tentative d'insertion avec retry en cas de doublon (condition de course rare)
+      let insertError = null
+      let retryCount = 0
+      const maxRetries = 3
+      let currentMembreId = newMembreId
+
+      while (retryCount < maxRetries) {
+        const { error } = await supabase
+          .from('membres')
+          .insert([{
+            membre_id: currentMembreId,
+            ...formData,
+            agent_id: finalAgentId, // Utiliser l'agent_id final (automatique pour les agents)
+          }])
+
+        if (!error) {
+          insertError = null
+          break
+        }
+
+        // Si c'est une erreur de doublon, réessayer avec un nouvel ID
+        if (error.code === '23505' && error.message.includes('membre_id')) {
+          retryCount++
+          // Régénérer un nouvel ID
+          const { data: retryMembreIdData, error: retryError } = await supabase
+            .rpc('generate_membre_id')
+          
+          if (retryError) {
+            insertError = retryError
+            break
+          }
+          
+          currentMembreId = retryMembreIdData || currentMembreId
+        } else {
+          insertError = error
+          break
         }
       }
 
-      const { error } = await supabase
-        .from('membres')
-        .insert([{
-          membre_id: newMembreId,
-          ...formData,
-          agent_id: finalAgentId, // Utiliser l'agent_id final (automatique pour les agents)
-        }])
-
-      if (error) throw error
+      if (insertError) {
+        console.error('Erreur lors de l\'insertion du membre:', insertError)
+        throw insertError
+      }
 
       alert('Membre créé avec succès!')
       setShowForm(false)

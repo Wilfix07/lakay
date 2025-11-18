@@ -84,7 +84,7 @@ export const PERMISSIONS = {
     canCreatePrets: false,
     canProcessRemboursements: false,
     canViewAll: true,
-    canCreateUsers: false, // Manager ne peut pas créer d'utilisateurs (seulement les admins)
+    canCreateUsers: true, // Manager peut créer des utilisateurs (seulement des agents)
   },
   agent: {
     canCreateAgents: false,

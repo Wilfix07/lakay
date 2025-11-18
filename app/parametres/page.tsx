@@ -232,7 +232,7 @@ function ParametresPageContent() {
       let settingsQuery = supabase
         .from('system_settings')
         .select('*')
-        .in('key', ['schedule', 'interest_rates', 'collateral_settings'])
+        .in('setting_key', ['schedule', 'interest_rates', 'collateral_settings'])
       
       if (managerId !== null && managerId !== undefined) {
         settingsQuery = settingsQuery.eq('manager_id', managerId)
@@ -272,12 +272,12 @@ function ParametresPageContent() {
       if (bracketsError) throw bracketsError
       if (categoriesError) throw categoriesError
 
-      const scheduleSetting = settingsData?.find((item) => item.key === 'schedule')
-      const interestSetting = settingsData?.find((item) => item.key === 'interest_rates')
-      const collateralSetting = settingsData?.find((item) => item.key === 'collateral_settings')
+      const scheduleSetting = settingsData?.find((item) => item.setting_key === 'schedule')
+      const interestSetting = settingsData?.find((item) => item.setting_key === 'interest_rates')
+      const collateralSetting = settingsData?.find((item) => item.setting_key === 'collateral_settings')
 
-      if (scheduleSetting?.value) {
-        const value = scheduleSetting.value as Partial<ScheduleSettings>
+      if (scheduleSetting?.setting_value) {
+        const value = scheduleSetting.setting_value as Partial<ScheduleSettings>
         setScheduleForm({
           totalInstallments: Number(value.totalInstallments ?? DEFAULT_SCHEDULE.totalInstallments),
           frequencyDays: Number(value.frequencyDays ?? DEFAULT_SCHEDULE.frequencyDays),
@@ -290,8 +290,8 @@ function ParametresPageContent() {
         setScheduleForm(DEFAULT_SCHEDULE)
       }
 
-      if (interestSetting?.value) {
-        const value = interestSetting.value as Partial<InterestSettings>
+      if (interestSetting?.setting_value) {
+        const value = interestSetting.setting_value as Partial<InterestSettings>
         setInterestForm({
           baseInterestRate: Number(
             value.baseInterestRate ?? DEFAULT_INTEREST.baseInterestRate,
@@ -320,8 +320,8 @@ function ParametresPageContent() {
 
       setCategories(categoriesData || [])
 
-      if (collateralSetting?.value) {
-        const value = collateralSetting.value as any
+      if (collateralSetting?.setting_value) {
+        const value = collateralSetting.setting_value as any
         setCollateralForm({
           collateralRate: Number(value.collateralRate ?? 10),
           refundPolicy: String(value.refundPolicy ?? 'automatic'),
@@ -366,9 +366,9 @@ function ParametresPageContent() {
 
       const { error } = await supabase.from('system_settings').upsert(
         {
-          key: 'schedule',
+          setting_key: 'schedule',
           manager_id: managerId,
-          value: {
+          setting_value: {
             totalInstallments: scheduleForm.totalInstallments,
             frequencyDays: scheduleForm.frequencyDays,
             graceDays: scheduleForm.graceDays,
@@ -378,7 +378,7 @@ function ParametresPageContent() {
           updated_by: userProfile.id,
         },
         {
-          onConflict: 'key,manager_id',
+          onConflict: 'setting_key,manager_id',
         },
       )
 
@@ -413,9 +413,9 @@ function ParametresPageContent() {
 
       const { error } = await supabase.from('system_settings').upsert(
         {
-          key: 'interest_rates',
+          setting_key: 'interest_rates',
           manager_id: managerId,
-          value: {
+          setting_value: {
             baseInterestRate: interestForm.baseInterestRate,
             penaltyRate: interestForm.penaltyRate,
             commissionRate: interestForm.commissionRate,
@@ -424,7 +424,7 @@ function ParametresPageContent() {
           updated_by: userProfile.id,
         },
         {
-          onConflict: 'key,manager_id',
+          onConflict: 'setting_key,manager_id',
         },
       )
 
@@ -459,9 +459,9 @@ function ParametresPageContent() {
 
       const { error } = await supabase.from('system_settings').upsert(
         {
-          key: 'collateral_settings',
+          setting_key: 'collateral_settings',
           manager_id: managerId,
-          value: {
+          setting_value: {
             collateralRate: collateralForm.collateralRate,
             refundPolicy: collateralForm.refundPolicy,
             description: collateralForm.description || 'Taux de garantie en pourcentage du montant du prêt',
@@ -470,7 +470,7 @@ function ParametresPageContent() {
           updated_by: userProfile.id,
         },
         {
-          onConflict: 'key,manager_id',
+          onConflict: 'setting_key,manager_id',
         },
       )
 
