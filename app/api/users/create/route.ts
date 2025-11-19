@@ -137,62 +137,95 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Créer l'utilisateur dans Supabase Auth
-    console.log('Tentative de création d\'utilisateur Auth:', { email, role })
-    const { data: authData, error: createUserError } = await supabaseAdmin.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true, // Auto-confirmer l'email
-    })
+    // Vérifier d'abord si l'utilisateur existe déjà dans Auth
+    const { data: existingAuthUser } = await supabaseAdmin.auth.admin.listUsers()
+    const userExists = existingAuthUser?.users?.find(u => u.email === email)
+    
+    let userId: string
+    let authData: any
 
-    if (createUserError) {
-      console.error('Erreur lors de la création de l\'utilisateur Auth:', {
-        message: createUserError.message,
-        status: createUserError.status,
-        code: createUserError.code,
-        name: createUserError.name
-      })
+    if (userExists) {
+      // L'utilisateur existe déjà dans Auth
+      console.log('Utilisateur Auth existant trouvé:', userExists.id)
+      userId = userExists.id
       
-      // Si l'utilisateur existe déjà
-      if (createUserError.message.includes('already registered') || createUserError.message.includes('User already registered')) {
+      // Vérifier si le profil existe déjà
+      const { data: existingProfile, error: profileCheckError } = await supabaseAdmin
+        .from('user_profiles')
+        .select('id, email, role')
+        .eq('id', userId)
+        .single()
+
+      if (existingProfile) {
         return NextResponse.json(
-          { error: 'Cet email est déjà utilisé' },
+          { error: 'Cet utilisateur existe déjà dans le système' },
           { status: 400 }
         )
       }
-      
-      // Si l'erreur est "User not allowed", c'est probablement un problème de permissions avec l'API Auth
-      if (createUserError.message.includes('not allowed') || createUserError.message.includes('User not allowed') || createUserError.status === 403) {
-        console.error('Erreur 403 - Vérification de la configuration:', {
-          hasServiceRoleKey: !!supabaseServiceRoleKey,
-          serviceRoleKeyLength: supabaseServiceRoleKey?.length,
-          supabaseUrl: supabaseUrl
+
+      // L'utilisateur Auth existe mais pas le profil, on va créer le profil
+      authData = { user: userExists }
+    } else {
+      // Créer l'utilisateur dans Supabase Auth
+      console.log('Tentative de création d\'utilisateur Auth:', { email, role })
+      const createResult = await supabaseAdmin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true, // Auto-confirmer l'email
+      })
+
+      if (createResult.error) {
+        console.error('Erreur lors de la création de l\'utilisateur Auth:', {
+          message: createResult.error.message,
+          status: createResult.error.status,
+          code: createResult.error.code,
+          name: createResult.error.name
         })
+        
+        // Si l'utilisateur existe déjà
+        if (createResult.error.message.includes('already registered') || createResult.error.message.includes('User already registered')) {
+          return NextResponse.json(
+            { error: 'Cet email est déjà utilisé' },
+            { status: 400 }
+          )
+        }
+        
+        // Si l'erreur est "User not allowed", c'est probablement un problème de permissions avec l'API Auth
+        if (createResult.error.message.includes('not allowed') || createResult.error.message.includes('User not allowed') || createResult.error.status === 403) {
+          console.error('Erreur 403 - Vérification de la configuration:', {
+            hasServiceRoleKey: !!supabaseServiceRoleKey,
+            serviceRoleKeyLength: supabaseServiceRoleKey?.length,
+            supabaseUrl: supabaseUrl
+          })
+          return NextResponse.json(
+            { 
+              error: 'Permission refusée par l\'API Auth. Vérifiez que la clé service_role est correctement configurée dans .env.local et redémarrez le serveur.',
+              details: process.env.NODE_ENV === 'development' ? createResult.error.message : undefined
+            },
+            { status: 403 }
+          )
+        }
+        
         return NextResponse.json(
-          { 
-            error: 'Permission refusée par l\'API Auth. Vérifiez que la clé service_role est correctement configurée dans .env.local et redémarrez le serveur.',
-            details: process.env.NODE_ENV === 'development' ? createUserError.message : undefined
-          },
-          { status: 403 }
+          { error: createResult.error.message || 'Erreur lors de la création de l\'utilisateur' },
+          { status: 400 }
         )
       }
-      
-      return NextResponse.json(
-        { error: createUserError.message || 'Erreur lors de la création de l\'utilisateur' },
-        { status: 400 }
-      )
+
+      if (!createResult.data?.user) {
+        return NextResponse.json(
+          { error: 'Erreur lors de la création de l\'utilisateur' },
+          { status: 500 }
+        )
+      }
+
+      authData = createResult.data
+      userId = authData.user.id
     }
 
-    if (!authData.user) {
-      return NextResponse.json(
-        { error: 'Erreur lors de la création de l\'utilisateur' },
-        { status: 500 }
-      )
-    }
-
-    // Créer le profil utilisateur
+    // Créer ou mettre à jour le profil utilisateur avec UPSERT pour éviter les doublons
     const profileData: any = {
-      id: authData.user.id,
+      id: userId,
       email,
       role,
       nom,
@@ -203,15 +236,40 @@ export async function POST(request: NextRequest) {
       profileData.agent_id = agent_id
     }
 
-    const { error: insertProfileError } = await supabaseAdmin
+    // Utiliser UPSERT au lieu de INSERT pour gérer les cas où le profil existe déjà
+    const { error: upsertProfileError } = await supabaseAdmin
       .from('user_profiles')
-      .insert(profileData)
+      .upsert(profileData, {
+        onConflict: 'id',
+        ignoreDuplicates: false
+      })
 
-    if (insertProfileError) {
-      // Si le profil échoue, supprimer l'utilisateur Auth créé
-      await supabaseAdmin.auth.admin.deleteUser(authData.user.id)
+    if (upsertProfileError) {
+      console.error('Erreur lors de la création/mise à jour du profil:', {
+        error: upsertProfileError,
+        profileData,
+        userId
+      })
+      
+      // Si le profil échoue et que l'utilisateur Auth vient d'être créé, le supprimer
+      if (!userExists) {
+        try {
+          await supabaseAdmin.auth.admin.deleteUser(userId)
+        } catch (deleteError) {
+          console.error('Erreur lors de la suppression de l\'utilisateur Auth après échec du profil:', deleteError)
+        }
+      }
+      
+      // Vérifier si c'est une erreur de clé dupliquée
+      if (upsertProfileError.code === '23505' || upsertProfileError.message.includes('duplicate key')) {
+        return NextResponse.json(
+          { error: 'Cet utilisateur existe déjà dans le système. Veuillez utiliser un autre email.' },
+          { status: 400 }
+        )
+      }
+      
       return NextResponse.json(
-        { error: `Erreur lors de la création du profil: ${insertProfileError.message}` },
+        { error: `Erreur lors de la création du profil: ${upsertProfileError.message}` },
         { status: 500 }
       )
     }

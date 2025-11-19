@@ -85,6 +85,7 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [previousPortefeuilleActif, setPreviousPortefeuilleActif] = useState<number>(0)
   const [portefeuilleActifChanged, setPortefeuilleActifChanged] = useState(false)
+  const [realtimeConnected, setRealtimeConnected] = useState(false)
   const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
     maximumFractionDigits: 2,
   })}%`
@@ -108,15 +109,196 @@ export default function DashboardPage() {
   }, [router])
 
   useEffect(() => {
-    if (userProfile) {
-      loadStats()
-      
-      // Rafraîchir automatiquement les stats toutes les 30 secondes pour rendre le portefeuille actif dynamique
-      const intervalId = setInterval(() => {
-        loadStats()
-      }, 30000) // 30 secondes
-      
-      return () => clearInterval(intervalId)
+    if (!userProfile) return
+
+    // Charger les stats initiales
+    loadStats()
+
+    // Configurer les subscriptions Supabase Realtime pour rendre le dashboard totalement dynamique
+    const subscriptions: Array<{ channel: any; unsubscribe: () => void }> = []
+
+    // Construire les filtres selon le rôle
+    let pretsFilter = ''
+    let remboursementsFilter = ''
+    let membresFilter = ''
+    let expensesFilter = ''
+    let epargnesFilter = ''
+
+    if (userProfile.role === 'agent' && userProfile.agent_id) {
+      pretsFilter = `agent_id=eq.${userProfile.agent_id}`
+      remboursementsFilter = `agent_id=eq.${userProfile.agent_id}`
+      membresFilter = `agent_id=eq.${userProfile.agent_id}`
+      expensesFilter = `agent_id=eq.${userProfile.agent_id}`
+      epargnesFilter = `agent_id=eq.${userProfile.agent_id}`
+    } else if (userProfile.role === 'manager') {
+      // Pour les managers, on écoute tous les changements mais on filtre côté client
+      // Les politiques RLS s'occupent déjà du filtrage
+    }
+
+    // Subscription pour les prêts
+    const pretsChannel = supabase
+      .channel('dashboard-prets')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'prets',
+          filter: pretsFilter || undefined,
+        },
+        (payload) => {
+          console.log('📊 Changement détecté dans prets:', payload.eventType)
+          // Mettre à jour immédiatement sans afficher le spinner de rafraîchissement
+          loadStats(false)
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRealtimeConnected(true)
+          console.log('✅ Subscription prets active')
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('❌ Erreur de subscription prets')
+          setRealtimeConnected(false)
+        }
+      })
+
+    subscriptions.push({ channel: pretsChannel, unsubscribe: () => pretsChannel.unsubscribe() })
+
+    // Subscription pour les remboursements
+    const remboursementsChannel = supabase
+      .channel('dashboard-remboursements')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'remboursements',
+          filter: remboursementsFilter || undefined,
+        },
+        (payload) => {
+          console.log('💰 Changement détecté dans remboursements:', payload.eventType)
+          // Mettre à jour immédiatement sans afficher le spinner de rafraîchissement
+          loadStats(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: remboursementsChannel,
+      unsubscribe: () => remboursementsChannel.unsubscribe(),
+    })
+
+    // Subscription pour les membres
+    const membresChannel = supabase
+      .channel('dashboard-membres')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'membres',
+          filter: membresFilter || undefined,
+        },
+        (payload) => {
+          console.log('👥 Changement détecté dans membres:', payload.eventType)
+          // Mettre à jour immédiatement sans afficher le spinner de rafraîchissement
+          loadStats(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: membresChannel,
+      unsubscribe: () => membresChannel.unsubscribe(),
+    })
+
+    // Subscription pour les dépenses
+    const expensesChannel = supabase
+      .channel('dashboard-expenses')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'agent_expenses',
+          filter: expensesFilter || undefined,
+        },
+        (payload) => {
+          console.log('💸 Changement détecté dans agent_expenses:', payload.eventType)
+          // Mettre à jour immédiatement sans afficher le spinner de rafraîchissement
+          loadStats(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: expensesChannel,
+      unsubscribe: () => expensesChannel.unsubscribe(),
+    })
+
+    // Subscription pour les épargnes
+    const epargnesChannel = supabase
+      .channel('dashboard-epargnes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'epargne_transactions',
+          filter: epargnesFilter || undefined,
+        },
+        (payload) => {
+          console.log('🏦 Changement détecté dans epargne_transactions:', payload.eventType)
+          // Mettre à jour immédiatement sans afficher le spinner de rafraîchissement
+          loadStats(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: epargnesChannel,
+      unsubscribe: () => epargnesChannel.unsubscribe(),
+    })
+
+    // Subscription pour les agents (pour les admins et managers)
+    if (userProfile.role === 'admin' || userProfile.role === 'manager') {
+      const agentsChannel = supabase
+        .channel('dashboard-agents')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'agents',
+          },
+          (payload) => {
+            console.log('👤 Changement détecté dans agents:', payload.eventType)
+            // Mettre à jour immédiatement sans afficher le spinner de rafraîchissement
+            loadStats(false)
+          }
+        )
+        .subscribe()
+
+      subscriptions.push({
+        channel: agentsChannel,
+        unsubscribe: () => agentsChannel.unsubscribe(),
+      })
+    }
+
+    // Rafraîchissement périodique de secours (toutes les 60 secondes) au cas où les subscriptions échouent
+    // Note: Ceci est un backup. Les subscriptions Realtime devraient mettre à jour en temps réel
+    const intervalId = setInterval(() => {
+      if (!realtimeConnected) {
+        // Si Realtime n'est pas connecté, rafraîchir plus souvent
+        loadStats(false)
+      }
+    }, 60000) // 60 secondes comme backup
+
+    // Nettoyer les subscriptions et l'intervalle lors du démontage
+    return () => {
+      console.log('🧹 Nettoyage des subscriptions du dashboard')
+      subscriptions.forEach((sub) => sub.unsubscribe())
+      clearInterval(intervalId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
@@ -865,8 +1047,22 @@ export default function DashboardPage() {
               ? `${userProfile.prenom} ${userProfile.nom}`
               : userProfile.email}
           </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Les données se rafraîchissent automatiquement toutes les 30 secondes
+          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+            <span className="inline-flex items-center gap-1">
+              <span className="relative flex h-2 w-2">
+                {realtimeConnected ? (
+                  <>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                  </>
+                ) : (
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+                )}
+              </span>
+              {realtimeConnected ? 'Temps réel actif' : 'Connexion en cours...'}
+            </span>
+            <span>•</span>
+            <span>Mise à jour instantanée des données</span>
           </p>
         </div>
         <Button
@@ -905,8 +1101,12 @@ export default function DashboardPage() {
                 <p className="text-xs text-white/80 flex items-center gap-2">
                   {stat.description}
                   {isPortefeuilleActif && (
-                    <span className="text-[10px] opacity-75">
-                      • Mis à jour automatiquement
+                    <span className="text-[10px] opacity-75 flex items-center gap-1">
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-white"></span>
+                      </span>
+                      Temps réel
                     </span>
                   )}
                 </p>
