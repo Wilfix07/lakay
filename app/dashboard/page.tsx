@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   Wallet,
   PiggyBank,
+  RefreshCcw,
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import { getInterestRates } from '@/lib/systemSettings'
@@ -81,6 +82,7 @@ export default function DashboardPage() {
   const [totalEpargnes, setTotalEpargnes] = useState<number>(0)
   const [commissionRatePercent, setCommissionRatePercent] = useState<number>(30)
   const [baseInterestRatePercent, setBaseInterestRatePercent] = useState<number>(15)
+  const [refreshing, setRefreshing] = useState(false)
   const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
     maximumFractionDigits: 2,
   })}%`
@@ -106,6 +108,13 @@ export default function DashboardPage() {
   useEffect(() => {
     if (userProfile) {
       loadStats()
+      
+      // Rafraîchir automatiquement les stats toutes les 30 secondes pour rendre le portefeuille actif dynamique
+      const intervalId = setInterval(() => {
+        loadStats()
+      }, 30000) // 30 secondes
+      
+      return () => clearInterval(intervalId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
@@ -126,10 +135,13 @@ export default function DashboardPage() {
     }
   }
 
-  async function loadStats() {
+  async function loadStats(showRefreshing = false) {
     if (!userProfile) return
 
     try {
+      if (showRefreshing) {
+        setRefreshing(true)
+      }
       // Récupérer les IDs des agents du manager si nécessaire
       let managerAgentIds: string[] | null = null
       if (userProfile.role === 'manager') {
@@ -622,7 +634,15 @@ export default function DashboardPage() {
       }
     } catch (error) {
       console.error('Erreur lors du chargement des stats:', error)
+    } finally {
+      if (showRefreshing) {
+        setRefreshing(false)
+      }
     }
+  }
+
+  async function handleRefresh() {
+    await loadStats(true)
   }
 
   async function handleSignOut() {
@@ -820,13 +840,28 @@ export default function DashboardPage() {
   return (
     <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight text-foreground">Dashboard</h1>
-        <p className="text-muted-foreground mt-2">
-          Bienvenue, {userProfile.nom && userProfile.prenom 
-            ? `${userProfile.prenom} ${userProfile.nom}`
-            : userProfile.email}
-        </p>
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">Dashboard</h1>
+          <p className="text-muted-foreground mt-2">
+            Bienvenue, {userProfile.nom && userProfile.prenom 
+              ? `${userProfile.prenom} ${userProfile.nom}`
+              : userProfile.email}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Les données se rafraîchissent automatiquement toutes les 30 secondes
+          </p>
+        </div>
+        <Button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          variant="outline"
+          size="sm"
+          className="flex items-center gap-2"
+        >
+          <RefreshCcw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+          {refreshing ? 'Rafraîchissement...' : 'Rafraîchir'}
+        </Button>
       </div>
 
       {/* Stats Cards */}

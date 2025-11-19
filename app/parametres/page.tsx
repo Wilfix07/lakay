@@ -250,15 +250,16 @@ function ParametresPageContent() {
       let categoriesQuery = supabase
         .from('expense_categories')
         .select('*')
-        .eq('is_active', true)
-        .order('name', { ascending: true })
+        .order('nom', { ascending: true })
 
+      // Note: expense_categories n'a pas de manager_id ni is_active dans la structure actuelle
+      // Les catégories sont globales pour tous les managers
       if (managerId !== null && managerId !== undefined) {
         bracketsQuery = bracketsQuery.eq('manager_id', managerId)
-        categoriesQuery = categoriesQuery.eq('manager_id', managerId)
+        // Les catégories n'ont pas de manager_id, donc pas de filtre nécessaire
       } else {
         bracketsQuery = bracketsQuery.is('manager_id', null)
-        categoriesQuery = categoriesQuery.is('manager_id', null)
+        // Les catégories n'ont pas de manager_id, donc pas de filtre nécessaire
       }
 
       const [{ data: settingsData, error: settingsError }, { data: bracketsData, error: bracketsError }, { data: categoriesData, error: categoriesError }] =
@@ -270,7 +271,11 @@ function ParametresPageContent() {
 
       if (settingsError) throw settingsError
       if (bracketsError) throw bracketsError
-      if (categoriesError) throw categoriesError
+      if (categoriesError) {
+        console.error('Erreur lors du chargement des catégories:', categoriesError)
+        // Ne pas bloquer le chargement si les catégories échouent, juste logger l'erreur
+        // et continuer avec un tableau vide
+      }
 
       const scheduleSetting = settingsData?.find((item) => item.setting_key === 'schedule')
       const interestSetting = settingsData?.find((item) => item.setting_key === 'interest_rates')
@@ -318,7 +323,15 @@ function ParametresPageContent() {
         })),
       )
 
+      // Toujours afficher toutes les catégories disponibles dans la base de données
       setCategories(categoriesData || [])
+      
+      // Logger pour debug si aucune catégorie n'est chargée
+      if (!categoriesData || categoriesData.length === 0) {
+        console.log('Aucune catégorie chargée depuis la base de données')
+      } else {
+        console.log(`Catégories chargées: ${categoriesData.length}`, categoriesData)
+      }
 
       if (collateralSetting?.setting_value) {
         const value = collateralSetting.setting_value as any
@@ -617,27 +630,23 @@ function ParametresPageContent() {
       setCategorySaving(true)
       if (!userProfile) return
 
-      // Déterminer le manager_id pour la sauvegarde
-      const managerId = userProfile.role === 'manager' 
-        ? userProfile.id 
-        : (userProfile.role === 'admin' ? selectedManagerId : null)
+      // Note: expense_categories n'a pas de manager_id dans la structure actuelle
+      // Les catégories sont globales et gérées uniquement par les admins
 
       if (editingCategoryId) {
         const { error } = await supabase
           .from('expense_categories')
           .update({
-            name: categoryForm.name.trim(),
+            nom: categoryForm.name.trim(),
             description: categoryForm.description.trim() || null,
-            manager_id: managerId,
           })
           .eq('id', editingCategoryId)
         if (error) throw error
         setCategoryMessage('Catégorie mise à jour.')
       } else {
         const { error } = await supabase.from('expense_categories').insert({
-          name: categoryForm.name.trim(),
+          nom: categoryForm.name.trim(),
           description: categoryForm.description.trim() || null,
-          manager_id: managerId,
         })
         if (error) throw error
         setCategoryMessage('Catégorie créée.')
@@ -645,7 +654,11 @@ function ParametresPageContent() {
 
       setCategoryForm({ name: '', description: '' })
       setEditingCategoryId(null)
-      loadAllSettings(managerId)
+      // Recharger les catégories (pas besoin de managerId car elles sont globales)
+      const managerIdForReload = userProfile.role === 'manager' 
+        ? userProfile.id 
+        : (userProfile.role === 'admin' ? selectedManagerId : null)
+      loadAllSettings(managerIdForReload)
     } catch (error) {
       console.error('Erreur lors de la sauvegarde de la catégorie:', error)
       setCategoryMessage('Erreur lors de la sauvegarde de la catégorie')
@@ -657,29 +670,17 @@ function ParametresPageContent() {
   function handleEditCategory(category: ExpenseCategory) {
     setEditingCategoryId(category.id)
     setCategoryForm({
-      name: category.name,
+      name: category.nom,  // Utiliser "nom" au lieu de "name"
       description: category.description ?? '',
     })
   }
 
+  // Note: La table expense_categories n'a pas de colonne is_active
+  // Cette fonction est désactivée car la structure de la table ne supporte pas l'activation/désactivation
+  // Pour désactiver une catégorie, il faut la supprimer
   async function handleToggleCategory(id: number, isActive: boolean) {
-    try {
-      if (!userProfile) return
-      
-      const managerId = userProfile.role === 'manager' 
-        ? userProfile.id 
-        : (userProfile.role === 'admin' ? selectedManagerId : null)
-
-      const { error } = await supabase
-        .from('expense_categories')
-        .update({ is_active: !isActive })
-        .eq('id', id)
-      if (error) throw error
-      loadAllSettings(managerId)
-    } catch (error) {
-      console.error('Erreur lors du changement de statut de la catégorie:', error)
-      setCategoryMessage('Erreur lors du changement de statut')
-    }
+    // Fonction désactivée - la table n'a pas de colonne is_active
+    setCategoryMessage('La désactivation des catégories n\'est pas disponible. Supprimez la catégorie si nécessaire.')
   }
 
   async function handleDeleteCategory(id: number) {
@@ -1728,17 +1729,11 @@ function ParametresPageContent() {
                       ) : (
                         categories.map((category) => (
                           <TableRow key={category.id}>
-                            <TableCell>{category.name}</TableCell>
+                            <TableCell>{category.nom}</TableCell>
                             <TableCell>{category.description ?? '-'}</TableCell>
                             <TableCell>
-                              <span
-                                className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                                  category.is_active
-                                    ? 'bg-green-100 text-green-700'
-                                    : 'bg-gray-100 text-gray-500'
-                                }`}
-                              >
-                                {category.is_active ? 'Active' : 'Inactive'}
+                              <span className="px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                                Active
                               </span>
                             </TableCell>
                             <TableCell className="text-right space-x-2">
@@ -1750,14 +1745,6 @@ function ParametresPageContent() {
                               >
                                 <Pencil className="w-4 h-4 mr-1" />
                                 Modifier
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleToggleCategory(category.id, category.is_active)}
-                              >
-                                {category.is_active ? 'Désactiver' : 'Activer'}
                               </Button>
                               <Button
                                 type="button"

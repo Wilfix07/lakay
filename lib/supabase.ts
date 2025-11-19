@@ -123,11 +123,9 @@ export interface LoanAmountBracket {
 
 export interface ExpenseCategory {
   id: number
-  name: string
+  nom: string  // Note: La colonne dans la base de données est "nom", pas "name"
   description?: string | null
-  is_active: boolean
   created_at: string
-  updated_at: string
 }
 
 export interface AgentExpense {

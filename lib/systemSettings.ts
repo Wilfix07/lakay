@@ -284,35 +284,30 @@ export function findBracketForAmount(brackets: any[], amount: number) {
  */
 export async function getExpenseCategories(managerId?: string | null) {
   try {
+    // Note: expense_categories n'a pas de colonnes manager_id ni is_active
+    // Les catégories sont globales pour tous les utilisateurs
+    // Toujours charger TOUTES les catégories de la base de données sans filtre
     let query = supabase
       .from('expense_categories')
       .select('*')
-      .eq('is_active', true)
 
-    // Si managerId est fourni, chercher les catégories spécifiques à ce manager
-    // Sinon, détecter automatiquement le manager_id de l'utilisateur actuel
-    if (managerId !== undefined) {
-      query = query.eq('manager_id', managerId)
-    } else {
-      // Détecter automatiquement le manager_id (pour managers et agents)
-      const detectedManagerId = await getCurrentUserManagerId()
-      
-      if (detectedManagerId) {
-        query = query.eq('manager_id', detectedManagerId)
-      } else {
-        // Si aucun manager détecté, charger les catégories globales
-        query = query.is('manager_id', null)
-      }
-    }
-
-    const { data, error } = await query.order('name', { ascending: true })
+    const { data, error } = await query.order('nom', { ascending: true })
 
     if (error) {
       console.error('Erreur lors de la récupération des catégories:', error)
+      console.error('Détails de l\'erreur:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint
+      })
       return []
     }
 
-    return data || []
+    // Toujours retourner toutes les catégories disponibles
+    const categories = data || []
+    console.log(`getExpenseCategories: ${categories.length} catégories chargées`, categories)
+    return categories
   } catch (error) {
     console.error('Erreur lors de la récupération des catégories:', error)
     return []

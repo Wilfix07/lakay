@@ -97,9 +97,17 @@ function ExpensesPageContent() {
 
       setAgents(agentsData || [])
       
-      // Charger les catégories de dépenses actives depuis les paramètres système
+      // Charger TOUTES les catégories de dépenses depuis la base de données
+      // Pas de filtre - afficher toutes les catégories disponibles
       const categoriesData = await getExpenseCategories()
       setCategories(categoriesData || [])
+      
+      // Logger pour debug
+      if (categoriesData && categoriesData.length > 0) {
+        console.log(`Catégories chargées pour les dépenses: ${categoriesData.length}`, categoriesData)
+      } else {
+        console.warn('Aucune catégorie trouvée dans la base de données')
+      }
       const initialAgent =
         userProfile?.role === 'agent' && userProfile.agent_id ? userProfile.agent_id : ''
       setFormData((prev) => ({
@@ -234,8 +242,21 @@ function ExpensesPageContent() {
     setSuccess(null)
 
     const amountValue = parseFloat(formData.amount)
-    if (!formData.agent_id) {
+    
+    // Pour les agents, l'agent_id est automatiquement défini
+    // Pour les autres rôles, vérifier qu'un agent est sélectionné
+    if (userProfile?.role !== 'agent' && !formData.agent_id) {
       setError('Veuillez sélectionner un agent.')
+      return
+    }
+    
+    // S'assurer que l'agent_id est défini pour les agents
+    const finalAgentId = userProfile?.role === 'agent' 
+      ? (userProfile.agent_id || formData.agent_id)
+      : formData.agent_id
+    
+    if (!finalAgentId) {
+      setError('Agent de crédit introuvable.')
       return
     }
     if (Number.isNaN(amountValue) || amountValue <= 0) {
@@ -246,7 +267,7 @@ function ExpensesPageContent() {
     try {
       setSaving(true)
       const payload = {
-        agent_id: formData.agent_id,
+        agent_id: finalAgentId,
         amount: amountValue,
         category: formData.category || null,
         description: formData.description || null,
@@ -259,20 +280,41 @@ function ExpensesPageContent() {
           .from('agent_expenses')
           .update(payload)
           .eq('id', editingExpense.id)
-        if (updateError) throw updateError
+        if (updateError) {
+          console.error('Erreur lors de la mise à jour de la dépense:', updateError)
+          throw new Error(updateError.message || "Impossible de mettre à jour la dépense.")
+        }
         setSuccess('Dépense mise à jour.')
       } else {
         const { error: insertError } = await supabase.from('agent_expenses').insert(payload)
-        if (insertError) throw insertError
+        if (insertError) {
+          console.error('Erreur lors de l\'enregistrement de la dépense:', insertError)
+          console.error('Payload envoyé:', payload)
+          console.error('Détails de l\'erreur:', {
+            code: insertError.code,
+            message: insertError.message,
+            details: insertError.details,
+            hint: insertError.hint
+          })
+          
+          // Messages d'erreur plus spécifiques
+          if (insertError.code === '42501') {
+            throw new Error('Permission refusée. Vérifiez que vous avez le droit d\'enregistrer des dépenses pour cet agent.')
+          } else if (insertError.message) {
+            throw new Error(insertError.message)
+          } else {
+            throw new Error("Impossible d'enregistrer la dépense.")
+          }
+        }
         setSuccess('Dépense enregistrée.')
       }
 
       setShowForm(false)
       resetFormData()
       await loadExpenses(filters)
-    } catch (err) {
-      console.error(err)
-      setError("Impossible d'enregistrer la dépense.")
+    } catch (err: any) {
+      console.error('Erreur lors de l\'enregistrement:', err)
+      setError(err.message || "Impossible d'enregistrer la dépense.")
     } finally {
       setSaving(false)
     }
@@ -352,27 +394,28 @@ function ExpensesPageContent() {
             <CardDescription>Affinez la liste en fonction d’un agent, d’une catégorie ou d’un mois.</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid md:grid-cols-4 gap-4">
-              <div>
-                <Label>Agent</Label>
-                <select
-                  value={filters.agent_id}
-                  onChange={(e) => {
-                    const next = { ...filters, agent_id: e.target.value }
-                    setFilters(next)
-                    loadExpenses(next)
-                  }}
-                  className="w-full mt-1 rounded-md border border-gray-300 px-3 py-2"
-                  disabled={userProfile.role === 'agent'}
-                >
-                  <option value="">Tous</option>
-                  {filteredAgents.map((agent) => (
-                    <option key={agent.id} value={agent.agent_id}>
-                      {agent.agent_id} - {agent.prenom} {agent.nom}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div className={`grid gap-4 ${userProfile.role === 'agent' ? 'md:grid-cols-3' : 'md:grid-cols-4'}`}>
+              {userProfile.role !== 'agent' && (
+                <div>
+                  <Label>Agent</Label>
+                  <select
+                    value={filters.agent_id}
+                    onChange={(e) => {
+                      const next = { ...filters, agent_id: e.target.value }
+                      setFilters(next)
+                      loadExpenses(next)
+                    }}
+                    className="w-full mt-1 rounded-md border border-gray-300 px-3 py-2"
+                  >
+                    <option value="">Tous</option>
+                    {filteredAgents.map((agent) => (
+                      <option key={agent.id} value={agent.agent_id}>
+                        {agent.agent_id} - {agent.prenom} {agent.nom}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <Label>Catégorie</Label>
                 <select
@@ -386,8 +429,8 @@ function ExpensesPageContent() {
                 >
                   <option value="">Toutes</option>
                   {categories.map((category) => (
-                    <option key={category.id} value={category.name}>
-                      {category.name}
+                    <option key={category.id} value={category.nom}>
+                      {category.nom}
                     </option>
                   ))}
                 </select>
@@ -431,23 +474,24 @@ function ExpensesPageContent() {
               {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
               {success && <p className="text-sm text-emerald-600 mb-3">{success}</p>}
               <form className="grid md:grid-cols-2 gap-4" onSubmit={handleSubmit}>
-                <div className="space-y-2">
-                  <Label>Agent *</Label>
-                  <select
-                    required
-                    value={formData.agent_id}
-                    onChange={(e) => setFormData({ ...formData, agent_id: e.target.value })}
-                    className="w-full rounded-md border border-gray-300 px-3 py-2"
-                    disabled={userProfile.role === 'agent'}
-                  >
-                    <option value="">Sélectionner un agent</option>
-                    {filteredAgents.map((agent) => (
-                      <option key={agent.id} value={agent.agent_id}>
-                        {agent.agent_id} - {agent.prenom} {agent.nom}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {userProfile.role !== 'agent' && (
+                  <div className="space-y-2">
+                    <Label>Agent *</Label>
+                    <select
+                      required
+                      value={formData.agent_id}
+                      onChange={(e) => setFormData({ ...formData, agent_id: e.target.value })}
+                      className="w-full rounded-md border border-gray-300 px-3 py-2"
+                    >
+                      <option value="">Sélectionner un agent</option>
+                      {filteredAgents.map((agent) => (
+                        <option key={agent.id} value={agent.agent_id}>
+                          {agent.agent_id} - {agent.prenom} {agent.nom}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label>Catégorie</Label>
                   <select
@@ -457,8 +501,8 @@ function ExpensesPageContent() {
                   >
                     <option value="">Aucune</option>
                     {categories.map((category) => (
-                      <option key={category.id} value={category.name}>
-                        {category.name}
+                      <option key={category.id} value={category.nom}>
+                        {category.nom}
                       </option>
                     ))}
                   </select>
