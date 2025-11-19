@@ -23,6 +23,7 @@ import {
   Wallet,
   PiggyBank,
   RefreshCcw,
+  CalendarDays,
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
 import { getInterestRates } from '@/lib/systemSettings'
@@ -135,6 +136,10 @@ export default function DashboardPage() {
     } else if (userProfile.role === 'manager') {
       // Pour les managers, on écoute tous les changements mais on filtre côté client
       // Les politiques RLS s'occupent déjà du filtrage
+    } else if (userProfile.role === 'chef_zone') {
+      // Pour les chefs de zone, on écoute tous les changements mais on filtre côté client dans loadStats
+      // car nous devons filtrer par membre_id (via chef_zone_membres), pas par agent_id
+      // Les filtres Realtime ne peuvent pas filtrer directement par membre_id de manière dynamique
     }
 
     // Subscription pour les prêts
@@ -431,6 +436,28 @@ export default function DashboardPage() {
           epargnesQuery = epargnesQuery.in('agent_id', managerAgentIds)
         }
 
+        // Helper function pour gérer les erreurs de tables optionnelles
+        const safeQuery = async (query: any) => {
+          try {
+            const result = await query
+            // Si la requête retourne une erreur (table n'existe pas, etc.), retourner un résultat vide
+            if (result.error) {
+              const errorCode = (result.error as any)?.code
+              const errorStatus = (result.error as any)?.status
+              if (errorCode === '42P01' || errorCode === 'PGRST116' || errorStatus === 404) {
+                return { data: [], error: null }
+              }
+            }
+            return result
+          } catch (error: any) {
+            // Si une exception est lancée, vérifier le code d'erreur
+            if (error?.code === '42P01' || error?.code === 'PGRST116' || error?.status === 404) {
+              return { data: [], error: null }
+            }
+            throw error
+          }
+        }
+
         const [
           interestRates,
           agentsRes,
@@ -447,8 +474,8 @@ export default function DashboardPage() {
           membresQuery,
           pretsQuery,
           remboursementsQuery,
-          groupPretsQuery.catch(() => ({ data: [], error: null })), // Ignorer si la table n'existe pas
-          groupRemboursementsQuery.catch(() => ({ data: [], error: null })), // Ignorer si la table n'existe pas
+          safeQuery(groupPretsQuery), // Ignorer si la table n'existe pas
+          safeQuery(groupRemboursementsQuery), // Ignorer si la table n'existe pas
           expensesQuery,
           epargnesQuery,
         ])
@@ -762,6 +789,192 @@ export default function DashboardPage() {
           monthly,
         })
       } 
+      // Stats pour Chef de Zone (seulement ses membres assignés)
+      else if (userProfile.role === 'chef_zone') {
+        // Charger les membres assignés
+        const { data: assignations, error: assignationsError } = await supabase
+          .from('chef_zone_membres')
+          .select('membre_id')
+          .eq('chef_zone_id', userProfile.id)
+
+        if (assignationsError) throw assignationsError
+
+        const membreIds = assignations?.map(a => a.membre_id) || []
+        
+        if (membreIds.length === 0) {
+          // Aucun membre assigné
+          setStats({
+            agents: 0,
+            membres: 0,
+            prets: 0,
+            remboursements: 0,
+            remboursementsPayes: 0,
+            montantTotal: 0,
+            impayesCount: 0,
+            impayesRate: 0,
+            impayesPrincipal: 0,
+            todayRemboursementsCount: 0,
+            todayRemboursementsAmount: 0,
+          })
+          setAgentCollections([])
+          setInterestSummary({ total: 0, commissionTotal: 0, monthly: [] })
+          setExpensesSummary(0)
+          setTotalEpargnes(0)
+          return
+        }
+
+        // Charger les données pour les membres assignés
+        // D'abord charger les prêts pour obtenir les pret_ids
+        const { data: pretsData, error: pretsError } = await supabase
+          .from('prets')
+          .select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant, membre_id')
+          .in('membre_id', membreIds)
+
+        if (pretsError) throw pretsError
+
+        const pretIds = (pretsData || []).map(p => p.pret_id)
+
+        const [membresRes, remboursementsRes, epargnesRes, collateralsRes] = await Promise.all([
+          supabase.from('membres').select('id', { count: 'exact', head: true }).in('membre_id', membreIds),
+          pretIds.length > 0 
+            ? supabase.from('remboursements').select('id, statut, montant, pret_id, date_remboursement, date_paiement, principal, interet').in('pret_id', pretIds)
+            : Promise.resolve({ data: [], error: null }),
+          supabase.from('epargne_transactions').select('type, montant').in('membre_id', membreIds),
+          supabase.from('collaterals').select('montant').in('membre_id', membreIds),
+        ])
+
+        const pretsRes = { data: pretsData, error: pretsError }
+
+        if (membresRes.error) throw membresRes.error
+        if (pretsRes.error) throw pretsRes.error
+        if (remboursementsRes.error) throw remboursementsRes.error
+
+        const activePrets = (pretsRes.data || []).filter((pret) => pret.statut === 'actif') || []
+        const totalActivePrincipal = activePrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0) || 0
+        const totalRemboursements = remboursementsRes.data?.length || 0
+        const remboursementsPayes = remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0
+
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+        const todayDateString = today.toISOString().split('T')[0]
+        const todayRemboursements = (remboursementsRes.data || []).filter(
+          (r) => r.date_remboursement === todayDateString,
+        )
+        const todayRemboursementsCount = todayRemboursements.length
+        const todayRemboursementsAmount = todayRemboursements.reduce(
+          (sum, remboursement) => sum + Number(remboursement.montant || 0),
+          0,
+        )
+
+        const pretMapByCode = new Map(
+          (pretsRes.data || []).map((pret) => [pret.pret_id, pret]),
+        )
+
+        const getPrincipalValue = (remboursement: {
+          principal: number | null
+          montant: number | null
+          pret_id: number | string | null
+        }) => {
+          if (remboursement.principal != null) {
+            return Number(remboursement.principal)
+          }
+          const pret = pretMapByCode.get(remboursement.pret_id as string)
+          if (pret && pret.nombre_remboursements) {
+            const base =
+              Number(pret.montant_pret || 0) /
+              Number(pret.nombre_remboursements || 1)
+            return Math.round(base * 100) / 100
+          }
+          const fallback =
+            Number(remboursement.montant || 0) / 1.15
+          return Math.round(fallback * 100) / 100
+        }
+
+        const activePretIds = new Set(activePrets.map((pret) => pret.pret_id))
+
+        const overdueRemboursements =
+          remboursementsRes.data?.filter((r) => {
+            if (r.statut === 'paye') return false
+            if (r.statut === 'en_retard') return true
+            if (r.statut === 'en_attente' && r.date_remboursement) {
+              const dueDate = new Date(r.date_remboursement)
+              if (Number.isNaN(dueDate.getTime())) return false
+              dueDate.setHours(0, 0, 0, 0)
+              return dueDate < today
+            }
+            return false
+          }) || []
+
+        const impayesCount = overdueRemboursements.length
+        const impayesPrincipal =
+          overdueRemboursements.reduce((sum, remboursement) => {
+            return sum + getPrincipalValue(remboursement)
+          }, 0) || 0
+        const principalPayesActifs =
+          (remboursementsRes.data || [])
+            .filter(
+              (remboursement) =>
+                remboursement.statut === 'paye' &&
+                activePretIds.has(remboursement.pret_id),
+            )
+            .reduce((sum, remboursement) => {
+              return sum + getPrincipalValue(remboursement)
+            }, 0) || 0
+        const portefeuilleActif = Math.max(totalActivePrincipal - principalPayesActifs, 0)
+
+        const impayesRate =
+          totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
+
+        // Détecter les changements pour toutes les cartes (section Chef de Zone)
+        const newStatsChefZone = {
+          agents: 0,
+          membres: membresRes.count || 0,
+          prets: pretsRes.data?.length || 0,
+          remboursements: totalRemboursements,
+          remboursementsPayes,
+          montantTotal: portefeuilleActif,
+          impayesCount,
+          impayesRate,
+          impayesPrincipal,
+          todayRemboursementsCount,
+          todayRemboursementsAmount,
+        }
+
+        const changedChefZone = new Set<string>()
+        if (previousStats) {
+          if (previousStats.membres !== newStatsChefZone.membres) changedChefZone.add('membres')
+          if (previousStats.prets !== newStatsChefZone.prets) changedChefZone.add('prets')
+          if (previousStats.remboursements !== newStatsChefZone.remboursements) changedChefZone.add('remboursements')
+          if (previousStats.impayesCount !== newStatsChefZone.impayesCount || previousStats.impayesRate !== newStatsChefZone.impayesRate) changedChefZone.add('impayes')
+          if (previousPortefeuilleActif !== portefeuilleActif) {
+            changedChefZone.add('portefeuille')
+            setPortefeuilleActifChanged(true)
+            setTimeout(() => setPortefeuilleActifChanged(false), 2000)
+          }
+          if (previousStats.todayRemboursementsCount !== newStatsChefZone.todayRemboursementsCount) changedChefZone.add('remboursements-jour')
+        }
+        setChangedCards(changedChefZone)
+        setTimeout(() => setChangedCards(new Set()), 2000)
+        
+        setPreviousPortefeuilleActif(portefeuilleActif)
+        setPreviousStats(newStatsChefZone)
+        setStats(newStatsChefZone)
+        setAgentCollections([]) // Les chefs de zone ne gèrent pas d'agents
+
+        // Calculer le total des épargnes
+        const epargnesTotal = (epargnesRes.data || []).reduce((sum, transaction) => {
+          const montant = Number(transaction.montant || 0)
+          return sum + (transaction.type === 'depot' ? montant : -montant)
+        }, 0)
+        setTotalEpargnes(epargnesTotal)
+
+        // Calculer le total des garanties
+        const garantiesTotal = (collateralsRes.data || []).reduce((sum, c) => sum + Number(c.montant || 0), 0)
+        
+        // Initialiser les valeurs manquantes pour chef_zone
+        setInterestSummary({ total: 0, commissionTotal: 0, monthly: [] })
+        setExpensesSummary(0)
+      } 
       // Stats pour Agent (seulement ses données)
       else if (userProfile.role === 'agent' && userProfile.agent_id) {
         const [interestRates, membresRes, pretsRes, remboursementsRes, expensesRes, epargnesRes] = await Promise.all([
@@ -1059,9 +1272,9 @@ export default function DashboardPage() {
       title: 'Membres',
       value: stats.membres,
       icon: Users,
-      description: 'Total membres',
+      description: userProfile.role === 'chef_zone' ? 'Membres assignés' : 'Total membres',
       gradient: 'bg-gradient-to-r from-fuchsia-500 to-purple-700',
-      href: '/membres',
+      href: userProfile.role === 'chef_zone' ? '/membres-assignes' : '/membres',
     },
     {
       title: 'Prêts',
@@ -1101,30 +1314,35 @@ export default function DashboardPage() {
       href: '/prets',
       isDynamic: true, // Marquer cette carte comme dynamique
     },
-    {
-      title: 'Intérêt brut',
-      value: formatCurrency(interestSummary.total),
-      icon: ArrowDownRight,
-      description: `Intérêt (${baseInterestRateLabel}) collecté`,
-      gradient: 'bg-gradient-to-r from-violet-500 to-indigo-700',
-      href: '/pnl',
-    },
-    {
-      title: `Commission agents (${commissionRateLabel})`,
-      value: formatCurrency(interestSummary.commissionTotal),
-      icon: Wallet,
-      description: `${commissionRateLabel} des intérêts nets mensuels`,
-      gradient: 'bg-gradient-to-r from-teal-500 to-emerald-600',
-      href: '/pnl',
-    },
-    {
-      title: 'Total dépenses',
-      value: formatCurrency(expensesSummary),
-      icon: ArrowUpRight,
-      description: 'Dépenses opérationnelles',
-      gradient: 'bg-gradient-to-r from-slate-600 to-gray-900',
-      href: '/expenses',
-    },
+    // Intérêts et commissions: seulement pour admin, manager et agent
+    ...(userProfile.role !== 'chef_zone'
+      ? [
+          {
+            title: 'Intérêt brut',
+            value: formatCurrency(interestSummary.total),
+            icon: ArrowDownRight,
+            description: `Intérêt (${baseInterestRateLabel}) collecté`,
+            gradient: 'bg-gradient-to-r from-violet-500 to-indigo-700',
+            href: '/pnl',
+          },
+          {
+            title: `Commission agents (${commissionRateLabel})`,
+            value: formatCurrency(interestSummary.commissionTotal),
+            icon: Wallet,
+            description: `${commissionRateLabel} des intérêts nets mensuels`,
+            gradient: 'bg-gradient-to-r from-teal-500 to-emerald-600',
+            href: '/pnl',
+          },
+          {
+            title: 'Total dépenses',
+            value: formatCurrency(expensesSummary),
+            icon: ArrowUpRight,
+            description: 'Dépenses opérationnelles',
+            gradient: 'bg-gradient-to-r from-slate-600 to-gray-900',
+            href: '/expenses',
+          },
+        ]
+      : []),
     {
       title: 'Total épargnes',
       value: formatCurrency(totalEpargnes),
@@ -1209,6 +1427,25 @@ export default function DashboardPage() {
       icon: Wallet,
       gradient: 'bg-gradient-to-r from-teal-500 to-green-600',
     },
+    // Actions spécifiques pour Chef de Zone
+    ...(userProfile.role === 'chef_zone'
+      ? [
+          {
+            title: 'Membres Assignés',
+            description: 'Voir les membres qui vous sont assignés',
+            href: '/membres-assignes',
+            icon: Users,
+            gradient: 'bg-gradient-to-r from-blue-500 to-cyan-600',
+          },
+          {
+            title: 'Gestion des Présences',
+            description: 'Marquer la présence des membres',
+            href: '/presences',
+            icon: CalendarDays,
+            gradient: 'bg-gradient-to-r from-purple-500 to-pink-600',
+          },
+        ]
+      : []),
   ]
 
   const hasCollections = agentCollections.length > 0

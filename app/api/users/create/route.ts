@@ -71,10 +71,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Si c'est un manager, il ne peut créer que des agents
-    if (currentUserProfile.role === 'manager' && role !== 'agent') {
+    // Si c'est un manager, il ne peut créer que des agents ou des chefs de zone
+    if (currentUserProfile.role === 'manager' && role !== 'agent' && role !== 'chef_zone') {
       return NextResponse.json(
-        { error: 'Les managers ne peuvent créer que des agents' },
+        { error: 'Les managers ne peuvent créer que des agents ou des chefs de zone' },
         { status: 403 }
       )
     }
@@ -94,9 +94,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!['manager', 'agent'].includes(role)) {
+    if (!['manager', 'agent', 'chef_zone'].includes(role)) {
       return NextResponse.json(
-        { error: 'Rôle invalide. Seuls manager et agent sont autorisés.' },
+        { error: 'Rôle invalide. Seuls manager, agent et chef_zone sont autorisés.' },
         { status: 400 }
       )
     }

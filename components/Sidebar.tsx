@@ -46,7 +46,7 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Dashboard',
       href: '/dashboard',
       icon: LayoutDashboard,
-      roles: ['admin', 'manager', 'agent'] as UserRole[],
+      roles: ['admin', 'manager', 'agent', 'chef_zone'] as UserRole[],
     },
     {
       title: 'Utilisateurs',
@@ -125,6 +125,24 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       href: '/expenses',
       icon: ArrowDownRight,
       roles: ['admin', 'manager', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Membres Assignés',
+      href: '/membres-assignes',
+      icon: Users,
+      roles: ['chef_zone'] as UserRole[],
+    },
+    {
+      title: 'Présences',
+      href: '/presences',
+      icon: CalendarDays,
+      roles: ['chef_zone'] as UserRole[],
+    },
+    {
+      title: 'Assigner Membres',
+      href: '/assigner-membres-chef-zone',
+      icon: UserPlus,
+      roles: ['admin', 'manager'] as UserRole[],
     },
   ].filter(item => item.roles.includes(userProfile.role))
 

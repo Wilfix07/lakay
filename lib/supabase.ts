@@ -86,7 +86,7 @@ export interface Remboursement {
   updated_at: string
 }
 
-export type UserRole = 'admin' | 'manager' | 'agent'
+export type UserRole = 'admin' | 'manager' | 'agent' | 'chef_zone'
 
 export interface UserProfile {
   id: string
@@ -186,6 +186,25 @@ export interface GroupRemboursement {
   date_remboursement: string
   date_paiement?: string
   statut: 'en_attente' | 'paye' | 'en_retard' | 'paye_partiel'
+  created_at: string
+  updated_at: string
+}
+
+export interface ChefZoneMembre {
+  id: number
+  chef_zone_id: string
+  membre_id: string
+  assigned_at: string
+  assigned_by?: string | null
+}
+
+export interface Presence {
+  id: number
+  chef_zone_id: string
+  membre_id: string
+  date_appel: string
+  present: boolean
+  notes?: string | null
   created_at: string
   updated_at: string
 }

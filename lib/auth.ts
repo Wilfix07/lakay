@@ -54,7 +54,7 @@ export async function signOut() {
 export function hasPermission(userRole: UserRole | null, requiredRole: UserRole | UserRole[]): boolean {
   if (!userRole) return false
   
-  const roles: UserRole[] = ['admin', 'manager', 'agent']
+  const roles: UserRole[] = ['admin', 'manager', 'agent', 'chef_zone']
   const userRoleIndex = roles.indexOf(userRole)
   
   if (Array.isArray(requiredRole)) {
@@ -93,6 +93,16 @@ export const PERMISSIONS = {
     canProcessRemboursements: true,
     canViewAll: false,
     canCreateUsers: false,
+  },
+  chef_zone: {
+    canCreateAgents: false,
+    canCreateMembers: false,
+    canCreatePrets: false,
+    canProcessRemboursements: false,
+    canViewAll: false, // Voit seulement les membres assignés
+    canCreateUsers: false,
+    canManagePresences: true, // Peut gérer les présences
+    canViewMemberDetails: true, // Peut voir les détails des membres
   },
 } as const
 

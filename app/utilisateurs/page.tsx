@@ -17,7 +17,7 @@ function UtilisateursPageContent() {
   const [formData, setFormData] = useState({
     email: '',
     password: '',
-    role: 'agent' as 'manager' | 'agent',
+    role: 'agent' as 'manager' | 'agent' | 'chef_zone',
     nom: '',
     prenom: '',
     agent_id: '', // Pour les agents seulement
@@ -359,9 +359,9 @@ function UtilisateursPageContent() {
 
   // Déterminer les rôles disponibles selon l'utilisateur connecté
   const availableRoles = userProfile?.role === 'admin' 
-    ? ['manager', 'agent'] 
+    ? ['manager', 'agent', 'chef_zone'] 
     : userProfile?.role === 'manager'
-    ? ['agent']
+    ? ['agent', 'chef_zone']
     : []
 
   const editableRoles = availableRoles
@@ -439,13 +439,17 @@ function UtilisateursPageContent() {
                   </label>
                   <select
                     value={formData.role}
-                    onChange={(e) => setFormData({ ...formData, role: e.target.value as 'manager' | 'agent', agent_id: '' })}
+                    onChange={(e) => setFormData({ ...formData, role: e.target.value as 'manager' | 'agent' | 'chef_zone', agent_id: '' })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                     required
                   >
                     {availableRoles.map(role => (
                       <option key={role} value={role}>
-                        {role === 'manager' ? 'Manager' : 'Agent de crédit'}
+                        {role === 'manager' 
+                          ? 'Manager' 
+                          : role === 'chef_zone'
+                          ? 'Chef de zone'
+                          : 'Agent de crédit'}
                       </option>
                     ))}
                   </select>
