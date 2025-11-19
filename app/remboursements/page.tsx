@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { supabase, type Remboursement, type Pret, type UserProfile, type Membre } from '@/lib/supabase'
+import { supabase, type Remboursement, type Pret, type UserProfile, type Membre, type GroupPret, type GroupRemboursement } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
@@ -12,7 +12,9 @@ import { useRouter } from 'next/navigation'
 function RemboursementsPageContent() {
   const router = useRouter()
   const [remboursements, setRemboursements] = useState<Remboursement[]>([])
+  const [groupRemboursements, setGroupRemboursements] = useState<GroupRemboursement[]>([])
   const [prets, setPrets] = useState<Pret[]>([])
+  const [groupPrets, setGroupPrets] = useState<GroupPret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [loading, setLoading] = useState(true)
   const [filterPret, setFilterPret] = useState('')
@@ -20,7 +22,11 @@ function RemboursementsPageContent() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [showPaymentForm, setShowPaymentForm] = useState(false)
   const [paymentPretId, setPaymentPretId] = useState('')
+  const [paymentPretType, setPaymentPretType] = useState<'individual' | 'group'>('individual')
+  const [paymentMemberId, setPaymentMemberId] = useState('') // Pour les remboursements de groupe
   const [paymentRemboursements, setPaymentRemboursements] = useState<Remboursement[]>([])
+  const [paymentGroupRemboursements, setPaymentGroupRemboursements] = useState<GroupRemboursement[]>([])
+  const [groupMembersForPayment, setGroupMembersForPayment] = useState<Membre[]>([])
   const [paymentForm, setPaymentForm] = useState({
     remboursementId: '',
     montant: '',
@@ -75,6 +81,7 @@ function RemboursementsPageContent() {
 
   async function loadPrets() {
     try {
+      // Charger les prêts individuels
       let query = supabase
         .from('prets')
         .select('*')
@@ -99,15 +106,52 @@ function RemboursementsPageContent() {
         } else {
           // Si le manager n'a pas encore d'agents, retourner un tableau vide
           setPrets([])
-          return
         }
       }
       // Admin voit tous les prêts (pas de filtre)
 
       const { data, error } = await query
-
       if (error) throw error
       setPrets(data || [])
+
+      // Charger les prêts de groupe
+      let groupQuery = supabase
+        .from('group_prets')
+        .select('*')
+        .eq('statut', 'actif')
+        .order('pret_id', { ascending: false })
+
+      // Les agents ne voient que leurs propres prêts de groupe
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        groupQuery = groupQuery.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit seulement les prêts de groupe de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          groupQuery = groupQuery.in('agent_id', agentIds)
+        } else {
+          setGroupPrets([])
+          return
+        }
+      }
+
+      const { data: groupData, error: groupError } = await groupQuery
+      if (groupError) {
+        // Si la table n'existe pas encore, ignorer l'erreur
+        if (groupError.code !== '42P01') {
+          console.error('Erreur lors du chargement des prêts de groupe:', groupError)
+        }
+        setGroupPrets([])
+      } else {
+        setGroupPrets(groupData || [])
+      }
     } catch (error) {
       console.error('Erreur lors du chargement des prêts:', error)
     }
@@ -134,88 +178,201 @@ function RemboursementsPageContent() {
     }
   }
 
-  async function loadPaymentRemboursements(pretId: string) {
+  async function loadPaymentRemboursements(pretId: string, pretType: 'individual' | 'group' = 'individual', memberId?: string) {
     if (!pretId) {
       setPaymentRemboursements([])
+      setPaymentGroupRemboursements([])
       setPartialLockInfo({ active: false })
       return
     }
+
     try {
       setPaymentLoading(true)
-      let query = supabase
-        .from('remboursements')
-        .select('*')
-        .eq('pret_id', pretId)
-        .in('statut', ['en_attente', 'en_retard', 'paye_partiel'])
-        .order('numero_remboursement', { ascending: true })
 
-      if (userProfile?.role === 'agent' && userProfile.agent_id) {
-        query = query.eq('agent_id', userProfile.agent_id)
-      }
+      if (pretType === 'group') {
+        // Charger les remboursements de groupe
+        if (!memberId) {
+          // Si aucun membre n'est sélectionné, charger tous les remboursements de groupe pour ce prêt
+          setPaymentGroupRemboursements([])
+          setPartialLockInfo({ active: false })
+          return
+        }
 
-      const { data, error } = await query
+        let groupQuery = supabase
+          .from('group_remboursements')
+          .select('*')
+          .eq('pret_id', pretId)
+          .eq('membre_id', memberId)
+          .in('statut', ['en_attente', 'en_retard', 'paye_partiel'])
+          .order('numero_remboursement', { ascending: true })
 
-      if (error) throw error
-      const list = data || []
-      
-      // Vérifier s'il y a un remboursement partiel - il doit être complété en premier
-      const partial = list.find((r) => r.statut === 'paye_partiel')
-      if (partial) {
-        setPaymentRemboursements([partial])
-        const amounts = computeScheduledAmounts(partial)
-        const remaining =
-          partial.statut === 'paye_partiel' ? amounts.remainingTotal : amounts.scheduledTotal
-        setPartialLockInfo({
-          active: true,
-          message: `Ce prêt a un remboursement partiel (#${partial.numero_remboursement}). Le solde de ${formatCurrency(
-            remaining,
-          )} doit être réglé avant de passer à une autre échéance.`,
+        if (userProfile?.role === 'agent' && userProfile.agent_id) {
+          groupQuery = groupQuery.eq('agent_id', userProfile.agent_id)
+        }
+
+        const { data: groupData, error: groupError } = await groupQuery
+        if (groupError) throw groupError
+
+        const groupList = groupData || []
+        
+        // Vérifier s'il y a un remboursement partiel
+        const partial = groupList.find((r) => r.statut === 'paye_partiel')
+        if (partial) {
+          setPaymentGroupRemboursements([partial])
+          const amounts = computeScheduledAmountsGroup(partial)
+          const remaining = partial.statut === 'paye_partiel' ? amounts.remainingTotal : amounts.scheduledTotal
+          setPartialLockInfo({
+            active: true,
+            message: `Ce membre a un remboursement partiel (#${partial.numero_remboursement}). Le solde de ${formatCurrency(remaining)} doit être réglé avant de passer à une autre échéance.`,
+          })
+          return
+        }
+
+        // Charger tous les remboursements pour vérifier l'ordre séquentiel
+        const allGroupQuery = supabase
+          .from('group_remboursements')
+          .select('numero_remboursement, statut')
+          .eq('pret_id', pretId)
+          .eq('membre_id', memberId)
+          .order('numero_remboursement', { ascending: true })
+
+        if (userProfile?.role === 'agent' && userProfile.agent_id) {
+          allGroupQuery.eq('agent_id', userProfile.agent_id)
+        }
+
+        const { data: allGroupRemboursements, error: allGroupError } = await allGroupQuery
+        if (allGroupError) throw allGroupError
+
+        // Filtrer pour ne garder que les remboursements qui peuvent être payés
+        const payableGroupRemboursements = groupList.filter((r) => {
+          const currentNum = r.numero_remboursement
+          const previousUnpaid = allGroupRemboursements?.find(
+            (prev) => prev.numero_remboursement < currentNum && prev.statut !== 'paye'
+          )
+          return !previousUnpaid
         })
-        return
-      }
 
-      // Charger tous les remboursements pour vérifier l'ordre séquentiel
-      const allQuery = supabase
-        .from('remboursements')
-        .select('numero_remboursement, statut')
-        .eq('pret_id', pretId)
-        .order('numero_remboursement', { ascending: true })
+        setPaymentGroupRemboursements(payableGroupRemboursements)
+        setPaymentRemboursements([]) // Vider les remboursements individuels
+        setPartialLockInfo({ active: false })
+      } else {
+        // Charger les remboursements individuels (code existant)
+        let query = supabase
+          .from('remboursements')
+          .select('*')
+          .eq('pret_id', pretId)
+          .in('statut', ['en_attente', 'en_retard', 'paye_partiel'])
+          .order('numero_remboursement', { ascending: true })
 
-      if (userProfile?.role === 'agent' && userProfile.agent_id) {
-        allQuery.eq('agent_id', userProfile.agent_id)
-      }
+        if (userProfile?.role === 'agent' && userProfile.agent_id) {
+          query = query.eq('agent_id', userProfile.agent_id)
+        }
 
-      const { data: allRemboursements, error: allError } = await allQuery
-      if (allError) throw allError
-
-      // Filtrer pour ne garder que les remboursements qui peuvent être payés
-      // (tous les précédents sont payés)
-      const payableRemboursements = list.filter((r) => {
-        // Trouver le numéro de remboursement actuel
-        const currentNum = r.numero_remboursement
+        const { data, error } = await query
+        if (error) throw error
+        const list = data || []
         
-        // Vérifier que tous les remboursements précédents sont payés
-        const previousUnpaid = allRemboursements?.find(
-          (prev) => prev.numero_remboursement < currentNum && prev.statut !== 'paye'
-        )
-        
-        return !previousUnpaid
-      })
+        // Vérifier s'il y a un remboursement partiel
+        const partial = list.find((r) => r.statut === 'paye_partiel')
+        if (partial) {
+          setPaymentRemboursements([partial])
+          const amounts = computeScheduledAmounts(partial)
+          const remaining = partial.statut === 'paye_partiel' ? amounts.remainingTotal : amounts.scheduledTotal
+          setPartialLockInfo({
+            active: true,
+            message: `Ce prêt a un remboursement partiel (#${partial.numero_remboursement}). Le solde de ${formatCurrency(remaining)} doit être réglé avant de passer à une autre échéance.`,
+          })
+          return
+        }
 
-      setPaymentRemboursements(payableRemboursements)
-      setPartialLockInfo({ active: false })
+        // Charger tous les remboursements pour vérifier l'ordre séquentiel
+        const allQuery = supabase
+          .from('remboursements')
+          .select('numero_remboursement, statut')
+          .eq('pret_id', pretId)
+          .order('numero_remboursement', { ascending: true })
+
+        if (userProfile?.role === 'agent' && userProfile.agent_id) {
+          allQuery.eq('agent_id', userProfile.agent_id)
+        }
+
+        const { data: allRemboursements, error: allError } = await allQuery
+        if (allError) throw allError
+
+        // Filtrer pour ne garder que les remboursements qui peuvent être payés
+        const payableRemboursements = list.filter((r) => {
+          const currentNum = r.numero_remboursement
+          const previousUnpaid = allRemboursements?.find(
+            (prev) => prev.numero_remboursement < currentNum && prev.statut !== 'paye'
+          )
+          return !previousUnpaid
+        })
+
+        setPaymentRemboursements(payableRemboursements)
+        setPaymentGroupRemboursements([]) // Vider les remboursements de groupe
+        setPartialLockInfo({ active: false })
+      }
     } catch (error) {
       console.error('Erreur lors du chargement des remboursements pour le formulaire:', error)
       setPaymentRemboursements([])
+      setPaymentGroupRemboursements([])
       setPartialLockInfo({ active: false })
     } finally {
       setPaymentLoading(false)
     }
   }
 
+  // Fonction helper pour calculer les montants pour les remboursements de groupe
+  function computeScheduledAmountsGroup(remboursement: GroupRemboursement) {
+    const pretRecord = groupPrets.find((p) => p.pret_id === remboursement.pret_id)
+    let scheduledTotal = Math.max(Number(remboursement.montant || 0), 0)
+
+    let scheduledPrincipalBase = 0
+    if (!pretRecord) {
+      const base = Number(remboursement.montant || 0) / 1
+      scheduledPrincipalBase = Math.round(base * 100) / 100
+    } else {
+      const base = Number(pretRecord.montant_pret || 0) / Number(pretRecord.nombre_remboursements || 1)
+      scheduledPrincipalBase = Math.round(base * 100) / 100
+    }
+
+    let scheduledPrincipal = scheduledPrincipalBase
+    if (remboursement.principal != null) {
+      if (remboursement.statut === 'paye') {
+        scheduledPrincipal = Number(remboursement.principal)
+      } else if (remboursement.statut === 'en_attente' || remboursement.statut === 'en_retard') {
+        scheduledPrincipal = Number(remboursement.principal)
+      }
+    }
+
+    const scheduledInterest = Math.max(scheduledTotal - scheduledPrincipal, 0)
+    const paidPrincipal = remboursement.statut === 'paye' || remboursement.statut === 'paye_partiel'
+      ? Math.max(Number(remboursement.principal || 0), 0)
+      : 0
+    const paidInterest = remboursement.statut === 'paye' || remboursement.statut === 'paye_partiel'
+      ? Math.max(Number(remboursement.interet || 0), 0)
+      : 0
+
+    const remainingPrincipal = Math.max(scheduledPrincipal - paidPrincipal, 0)
+    const remainingInterest = Math.max(scheduledInterest - paidInterest, 0)
+
+    return {
+      scheduledTotal,
+      scheduledPrincipal,
+      scheduledInterest,
+      paidPrincipal,
+      paidInterest,
+      remainingPrincipal,
+      remainingInterest,
+      remainingTotal: remainingPrincipal + remainingInterest,
+    }
+  }
+
   async function loadRemboursements() {
     try {
       setLoading(true)
+      
+      // Charger les remboursements individuels
       let query = supabase
         .from('remboursements')
         .select('*')
@@ -239,8 +396,6 @@ function RemboursementsPageContent() {
         } else {
           // Si le manager n'a pas encore d'agents, retourner un tableau vide
           setRemboursements([])
-          setLoading(false)
-          return
         }
       }
       // Admin voit tous les remboursements (pas de filtre)
@@ -254,9 +409,55 @@ function RemboursementsPageContent() {
       }
 
       const { data, error } = await query
-
       if (error) throw error
       setRemboursements(data || [])
+
+      // Charger les remboursements de groupe
+      let groupQuery = supabase
+        .from('group_remboursements')
+        .select('*')
+        .order('date_remboursement', { ascending: true })
+
+      // Les agents ne voient que leurs propres remboursements de groupe
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        groupQuery = groupQuery.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit seulement les remboursements de groupe de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          groupQuery = groupQuery.in('agent_id', agentIds)
+        } else {
+          setGroupRemboursements([])
+        }
+      }
+
+      if (filterPret) {
+        groupQuery = groupQuery.eq('pret_id', filterPret)
+      }
+
+      if (filterStatut) {
+        groupQuery = groupQuery.eq('statut', filterStatut)
+      }
+
+      const { data: groupData, error: groupError } = await groupQuery
+      if (groupError) {
+        // Si la table n'existe pas encore, ignorer l'erreur
+        if (groupError.code !== '42P01' && groupError.code !== 'PGRST116' && groupError.status !== 404) {
+          console.error('Erreur lors du chargement des remboursements de groupe:', groupError)
+        }
+        setGroupRemboursements([])
+      } else {
+        setGroupRemboursements(groupData || [])
+      }
+
+      // Calculer le résumé des paiements pour les membres
       const paidMap: Record<string, number> = {}
       for (const remboursement of data || []) {
         if (remboursement.statut === 'paye' || remboursement.statut === 'paye_partiel') {
@@ -266,6 +467,16 @@ function RemboursementsPageContent() {
           paidMap[memberId] = (paidMap[memberId] ?? 0) + Number(remboursement.principal || 0)
         }
       }
+      
+      // Ajouter les remboursements de groupe au résumé
+      for (const groupRemboursement of groupData || []) {
+        if (groupRemboursement.statut === 'paye' || groupRemboursement.statut === 'paye_partiel') {
+          const memberId = groupRemboursement.membre_id
+          if (!memberId) continue
+          paidMap[memberId] = (paidMap[memberId] ?? 0) + Number(groupRemboursement.principal || 0)
+        }
+      }
+      
       setMemberPaidSummary(paidMap)
     } catch (error) {
       console.error('Erreur lors du chargement des remboursements:', error)
@@ -541,8 +752,54 @@ function computeScheduledAmounts(remboursement: Remboursement) {
   }
 }
 
-  function handlePaymentPretChange(value: string) {
+  async function loadGroupMembersForPayment(groupPretId: string) {
+    const groupPret = groupPrets.find((gp) => gp.pret_id === groupPretId)
+    if (!groupPret) {
+      setGroupMembersForPayment([])
+      return
+    }
+
+    try {
+      // Charger les membres du groupe depuis la table membre_group_members
+      const { data: groupMembers, error: groupMembersError } = await supabase
+        .from('membre_group_members')
+        .select('membre_id')
+        .eq('group_id', groupPret.group_id)
+
+      if (groupMembersError) {
+        // Si la table n'existe pas (404), ignorer l'erreur et retourner un tableau vide
+        const isTableNotFound = 
+          groupMembersError.code === 'PGRST116' || 
+          groupMembersError.status === 404 ||
+          groupMembersError.message?.includes('404') ||
+          groupMembersError.message?.includes('does not exist') ||
+          (groupMembersError.message?.includes('relation') && groupMembersError.message?.includes('not found'))
+        
+        if (isTableNotFound) {
+          console.warn('Table membre_group_members non trouvée, utilisation d\'un tableau vide')
+          setGroupMembersForPayment([])
+          return
+        }
+        throw groupMembersError
+      }
+
+      const memberIds = groupMembers?.map((gm) => gm.membre_id) || []
+      const filteredMembers = membres.filter((m) => memberIds.includes(m.membre_id))
+      setGroupMembersForPayment(filteredMembers)
+    } catch (error) {
+      console.error('Erreur lors du chargement des membres du groupe:', error)
+      setGroupMembersForPayment([])
+    }
+  }
+
+  async function handlePaymentPretChange(value: string) {
+    // Détecter si c'est un prêt de groupe ou individuel
+    const isGroupPret = groupPrets.some((gp) => gp.pret_id === value)
+    const pretType: 'individual' | 'group' = isGroupPret ? 'group' : 'individual'
+    
     setPaymentPretId(value)
+    setPaymentPretType(pretType)
+    setPaymentMemberId('') // Réinitialiser le membre sélectionné
     setPaymentForm({
       remboursementId: '',
       montant: '',
@@ -553,33 +810,88 @@ function computeScheduledAmounts(remboursement: Remboursement) {
     setPaymentSuccess('')
     setPaymentInterestDue(0)
     setPaymentPrincipalDue(0)
-    loadPaymentRemboursements(value)
+    
+    // Pour les prêts de groupe, charger les membres et attendre la sélection
+    if (pretType === 'group') {
+      setPaymentRemboursements([])
+      setPaymentGroupRemboursements([])
+      await loadGroupMembersForPayment(value)
+    } else {
+      setGroupMembersForPayment([])
+      loadPaymentRemboursements(value, 'individual')
+    }
+  }
+
+  function handlePaymentMemberChange(value: string) {
+    setPaymentMemberId(value)
+    setPaymentForm({
+      remboursementId: '',
+      montant: '',
+      principal: '',
+      datePaiement: new Date().toISOString().split('T')[0],
+    })
+    setPaymentError('')
+    setPaymentSuccess('')
+    setPaymentInterestDue(0)
+    setPaymentPrincipalDue(0)
+    
+    if (paymentPretId && value) {
+      loadPaymentRemboursements(paymentPretId, 'group', value)
+    }
   }
 
   function handlePaymentRemboursementChange(value: string) {
-    const remboursement = paymentRemboursements.find((r) => r.id.toString() === value)
-    if (!remboursement) {
+    if (paymentPretType === 'group') {
+      // Traiter les remboursements de groupe
+      const remboursement = paymentGroupRemboursements.find((r) => r.id.toString() === value)
+      if (!remboursement) {
+        setPaymentForm((prev) => ({
+          ...prev,
+          remboursementId: value,
+          montant: '',
+          principal: '',
+        }))
+        setPaymentInterestDue(0)
+        setPaymentPrincipalDue(0)
+        return
+      }
+      const amounts = computeScheduledAmountsGroup(remboursement)
+      const remainingInterest = Math.max(amounts.remainingInterest, 0)
+      const remainingPrincipal = Math.max(amounts.remainingPrincipal, 0)
+      setPaymentInterestDue(remainingInterest)
+      setPaymentPrincipalDue(remainingPrincipal)
       setPaymentForm((prev) => ({
         ...prev,
         remboursementId: value,
-        montant: '',
-        principal: '',
+        montant: (remainingInterest + remainingPrincipal).toFixed(2),
+        principal: remainingPrincipal.toFixed(2),
       }))
-      setPaymentInterestDue(0)
-      setPaymentPrincipalDue(0)
-      return
+    } else {
+      // Traiter les remboursements individuels
+      const remboursement = paymentRemboursements.find((r) => r.id.toString() === value)
+      if (!remboursement) {
+        setPaymentForm((prev) => ({
+          ...prev,
+          remboursementId: value,
+          montant: '',
+          principal: '',
+        }))
+        setPaymentInterestDue(0)
+        setPaymentPrincipalDue(0)
+        return
+      }
+      const amounts = computeScheduledAmounts(remboursement)
+      const remainingInterest = Math.max(amounts.remainingInterest, 0)
+      const remainingPrincipal = Math.max(amounts.remainingPrincipal, 0)
+      setPaymentInterestDue(remainingInterest)
+      setPaymentPrincipalDue(remainingPrincipal)
+      setPaymentForm((prev) => ({
+        ...prev,
+        remboursementId: value,
+        montant: (remainingInterest + remainingPrincipal).toFixed(2),
+        principal: remainingPrincipal.toFixed(2),
+      }))
     }
-    const amounts = computeScheduledAmounts(remboursement)
-    const remainingInterest = Math.max(amounts.remainingInterest, 0)
-    const remainingPrincipal = Math.max(amounts.remainingPrincipal, 0)
-    setPaymentInterestDue(remainingInterest)
-    setPaymentPrincipalDue(remainingPrincipal)
-    setPaymentForm((prev) => ({
-      ...prev,
-      remboursementId: value,
-      montant: (remainingInterest + remainingPrincipal).toFixed(2),
-      principal: remainingPrincipal.toFixed(2),
-    }))
     setPaymentError('')
     setPaymentSuccess('')
   }
@@ -593,9 +905,18 @@ function computeScheduledAmounts(remboursement: Remboursement) {
       setPaymentError('Veuillez sélectionner un prêt')
       return
     }
-    const remboursement = paymentRemboursements.find(
-      (r) => r.id.toString() === paymentForm.remboursementId,
-    )
+
+    // Pour les prêts de groupe, vérifier qu'un membre est sélectionné
+    if (paymentPretType === 'group' && !paymentMemberId) {
+      setPaymentError('Veuillez sélectionner un membre')
+      return
+    }
+
+    // Trouver le remboursement approprié selon le type
+    const remboursement = paymentPretType === 'group'
+      ? paymentGroupRemboursements.find((r) => r.id.toString() === paymentForm.remboursementId)
+      : paymentRemboursements.find((r) => r.id.toString() === paymentForm.remboursementId)
+
     if (!remboursement) {
       setPaymentError('Veuillez sélectionner une échéance à payer')
       return
@@ -609,14 +930,32 @@ function computeScheduledAmounts(remboursement: Remboursement) {
 
     // Vérifier que tous les remboursements précédents sont complètement payés
     try {
-      const { data: previousRemboursements, error: checkError } = await supabase
-        .from('remboursements')
-        .select('numero_remboursement, statut')
-        .eq('pret_id', remboursement.pret_id)
-        .lt('numero_remboursement', remboursement.numero_remboursement)
-        .order('numero_remboursement', { ascending: true })
+      let previousRemboursements: any[] = []
+      
+      if (paymentPretType === 'group') {
+        // Pour les remboursements de groupe, vérifier les remboursements précédents du même membre
+        const { data, error: checkError } = await supabase
+          .from('group_remboursements')
+          .select('numero_remboursement, statut')
+          .eq('pret_id', remboursement.pret_id)
+          .eq('membre_id', paymentMemberId)
+          .lt('numero_remboursement', remboursement.numero_remboursement)
+          .order('numero_remboursement', { ascending: true })
 
-      if (checkError) throw checkError
+        if (checkError) throw checkError
+        previousRemboursements = data || []
+      } else {
+        // Pour les remboursements individuels
+        const { data, error: checkError } = await supabase
+          .from('remboursements')
+          .select('numero_remboursement, statut')
+          .eq('pret_id', remboursement.pret_id)
+          .lt('numero_remboursement', remboursement.numero_remboursement)
+          .order('numero_remboursement', { ascending: true })
+
+        if (checkError) throw checkError
+        previousRemboursements = data || []
+      }
 
       // Vérifier qu'il n'y a pas de remboursements précédents non payés
       const unpaidPrevious = previousRemboursements?.find((r) => r.statut !== 'paye')
@@ -652,69 +991,137 @@ function computeScheduledAmounts(remboursement: Remboursement) {
 
     try {
       setPaymentLoading(true)
-      const pretRecord = getPretById(remboursement.pret_id)
       const interet = Math.max(interestPortion, 0)
       const principal = Math.max(principalPortion, 0)
       const expectedTotal =
         Math.max(paymentInterestDue, 0) + Math.max(paymentPrincipalDue, 0)
       const newStatus = montant >= expectedTotal - 0.01 ? 'paye' : 'paye_partiel'
-      const amountsBeforePayment = computeScheduledAmounts(remboursement)
-      const cumulativePrincipal = Math.min(
-        amountsBeforePayment.paidPrincipal + principal,
-        amountsBeforePayment.scheduledPrincipal,
-      )
-      const cumulativeInterest = Math.min(
-        amountsBeforePayment.paidInterest + interet,
-        amountsBeforePayment.scheduledInterest,
-      )
-      const previousPaidTotal =
-        remboursement.statut === 'paye_partiel'
-          ? Math.max(Number(remboursement.montant || 0), 0)
-          : 0
-      const cumulativeMontant = Math.min(
-        previousPaidTotal + montant,
-        amountsBeforePayment.scheduledTotal,
-      )
 
-      const { error } = await supabase
-        .from('remboursements')
-        .update({
-          statut: newStatus,
-          date_paiement: paymentForm.datePaiement,
-          montant: cumulativeMontant,
-          principal: cumulativePrincipal,
-          interet: cumulativeInterest,
-        })
-        .eq('id', remboursement.id)
-
-      if (error) throw error
-
-      if (pretRecord) {
-        const nouveauCapital = Math.max(
-          (pretRecord.capital_restant ?? pretRecord.montant_pret ?? 0) - principal,
-          0,
+      if (paymentPretType === 'group') {
+        // Traiter les remboursements de groupe
+        const groupRemboursement = remboursement as GroupRemboursement
+        const amountsBeforePayment = computeScheduledAmountsGroup(groupRemboursement)
+        const cumulativePrincipal = Math.min(
+          amountsBeforePayment.paidPrincipal + principal,
+          amountsBeforePayment.scheduledPrincipal,
         )
-        const { error: capitalError } = await supabase
-          .from('prets')
-          .update({ capital_restant: nouveauCapital })
-          .eq('pret_id', remboursement.pret_id)
-        if (capitalError) throw capitalError
-      }
+        const cumulativeInterest = Math.min(
+          amountsBeforePayment.paidInterest + interet,
+          amountsBeforePayment.scheduledInterest,
+        )
+        const previousPaidTotal =
+          groupRemboursement.statut === 'paye_partiel'
+            ? Math.max(Number(groupRemboursement.montant || 0), 0)
+            : 0
+        const cumulativeMontant = Math.min(
+          previousPaidTotal + montant,
+          amountsBeforePayment.scheduledTotal,
+        )
 
-      const { data: allRemboursements, error: checkError } = await supabase
-        .from('remboursements')
-        .select('statut')
-        .eq('pret_id', remboursement.pret_id)
+        const { error } = await supabase
+          .from('group_remboursements')
+          .update({
+            statut: newStatus,
+            date_paiement: paymentForm.datePaiement,
+            montant: cumulativeMontant,
+            principal: cumulativePrincipal,
+            interet: cumulativeInterest,
+          })
+          .eq('id', groupRemboursement.id)
 
-      if (checkError) throw checkError
+        if (error) throw error
 
-      const allPaid = allRemboursements?.every((r) => r.statut === 'paye')
-      if (allPaid) {
-        const { error: updateError } = await supabase
-          .from('prets')
-          .update({ statut: 'termine' })
-          .eq('pret_id', remboursement.pret_id)
-        if (updateError) throw updateError
+        // Vérifier si tous les remboursements de ce membre sont payés
+        const { data: allMemberRemboursements, error: checkError } = await supabase
+          .from('group_remboursements')
+          .select('statut')
+          .eq('pret_id', groupRemboursement.pret_id)
+          .eq('membre_id', paymentMemberId)
+
+        if (checkError) throw checkError
+
+        const allMemberPaid = allMemberRemboursements?.every((r) => r.statut === 'paye')
+        
+        // Vérifier si tous les membres du groupe ont payé tous leurs remboursements
+        if (allMemberPaid) {
+          const { data: allGroupRemboursements, error: allGroupError } = await supabase
+            .from('group_remboursements')
+            .select('statut')
+            .eq('pret_id', groupRemboursement.pret_id)
+
+          if (allGroupError) throw allGroupError
+
+          const allGroupPaid = allGroupRemboursements?.every((r) => r.statut === 'paye')
+          if (allGroupPaid) {
+            const { error: updateError } = await supabase
+              .from('group_prets')
+              .update({ statut: 'termine' })
+              .eq('pret_id', groupRemboursement.pret_id)
+            if (updateError) throw updateError
+          }
+        }
+      } else {
+        // Traiter les remboursements individuels
+        const individualRemboursement = remboursement as Remboursement
+        const pretRecord = getPretById(individualRemboursement.pret_id)
+        const amountsBeforePayment = computeScheduledAmounts(individualRemboursement)
+        const cumulativePrincipal = Math.min(
+          amountsBeforePayment.paidPrincipal + principal,
+          amountsBeforePayment.scheduledPrincipal,
+        )
+        const cumulativeInterest = Math.min(
+          amountsBeforePayment.paidInterest + interet,
+          amountsBeforePayment.scheduledInterest,
+        )
+        const previousPaidTotal =
+          individualRemboursement.statut === 'paye_partiel'
+            ? Math.max(Number(individualRemboursement.montant || 0), 0)
+            : 0
+        const cumulativeMontant = Math.min(
+          previousPaidTotal + montant,
+          amountsBeforePayment.scheduledTotal,
+        )
+
+        const { error } = await supabase
+          .from('remboursements')
+          .update({
+            statut: newStatus,
+            date_paiement: paymentForm.datePaiement,
+            montant: cumulativeMontant,
+            principal: cumulativePrincipal,
+            interet: cumulativeInterest,
+          })
+          .eq('id', individualRemboursement.id)
+
+        if (error) throw error
+
+        if (pretRecord) {
+          const nouveauCapital = Math.max(
+            (pretRecord.capital_restant ?? pretRecord.montant_pret ?? 0) - principal,
+            0,
+          )
+          const { error: capitalError } = await supabase
+            .from('prets')
+            .update({ capital_restant: nouveauCapital })
+            .eq('pret_id', individualRemboursement.pret_id)
+          if (capitalError) throw capitalError
+        }
+
+        const { data: allRemboursements, error: checkError } = await supabase
+          .from('remboursements')
+          .select('statut')
+          .eq('pret_id', individualRemboursement.pret_id)
+
+        if (checkError) throw checkError
+
+        const allPaid = allRemboursements?.every((r) => r.statut === 'paye')
+        if (allPaid) {
+          const { error: updateError } = await supabase
+            .from('prets')
+            .update({ statut: 'termine' })
+            .eq('pret_id', individualRemboursement.pret_id)
+          if (updateError) throw updateError
+        }
       }
 
       setPaymentSuccess(
@@ -724,15 +1131,11 @@ function computeScheduledAmounts(remboursement: Remboursement) {
       )
       loadRemboursements()
       loadPrets()
-      loadPaymentRemboursements(paymentPretId)
-      setPaymentInterestDue(0)
-      setPaymentPrincipalDue(0)
-      setPaymentForm((prev) => ({
-        ...prev,
-        remboursementId: '',
-        montant: '',
-        principal: '',
-      }))
+      if (paymentPretType === 'group' && paymentMemberId) {
+        loadPaymentRemboursements(paymentPretId, 'group', paymentMemberId)
+      } else {
+        loadPaymentRemboursements(paymentPretId, 'individual')
+      }
       setPaymentInterestDue(0)
       setPaymentPrincipalDue(0)
       setPaymentForm((prev) => ({
@@ -742,8 +1145,8 @@ function computeScheduledAmounts(remboursement: Remboursement) {
         principal: '',
       }))
     } catch (error: any) {
-      console.error('Erreur lors de l’enregistrement du paiement:', error)
-      setPaymentError(error.message || 'Erreur lors de l’enregistrement du paiement')
+      console.error("Erreur lors de l'enregistrement du paiement:", error)
+      setPaymentError(error.message || "Erreur lors de l'enregistrement du paiement")
     } finally {
       setPaymentLoading(false)
     }
@@ -792,12 +1195,18 @@ function computeScheduledAmounts(remboursement: Remboursement) {
     )
   }
 
+  // Combiner tous les remboursements (individuels et de groupe) pour les statistiques et l'affichage
+  const allRemboursements = [
+    ...remboursements.map(r => ({ ...r, type: 'individual' as const })),
+    ...groupRemboursements.map(r => ({ ...r, type: 'group' as const }))
+  ]
+
   const stats = {
-    total: remboursements.length,
-    payes: remboursements.filter(r => r.statut === 'paye').length,
-    payesPartiels: remboursements.filter(r => r.statut === 'paye_partiel').length,
-    en_attente: remboursements.filter(r => r.statut === 'en_attente').length,
-    en_retard: remboursements.filter(r => {
+    total: allRemboursements.length,
+    payes: allRemboursements.filter(r => r.statut === 'paye').length,
+    payesPartiels: allRemboursements.filter(r => r.statut === 'paye_partiel').length,
+    en_attente: allRemboursements.filter(r => r.statut === 'en_attente').length,
+    en_retard: allRemboursements.filter(r => {
       const today = new Date()
       today.setHours(0, 0, 0, 0)
       const dateRemb = new Date(r.date_remboursement)
@@ -806,13 +1215,16 @@ function computeScheduledAmounts(remboursement: Remboursement) {
     }).length,
   }
 
-  const paidRemboursements = remboursements.filter(
-    (r) => r.statut === 'paye' || r.statut === 'paye_partiel',
-  )
+  // Afficher TOUS les remboursements, triés par date de remboursement (plus récent en premier)
+  const displayedRemboursements = [...allRemboursements].sort((a, b) => {
+    const dateA = new Date(a.date_remboursement).getTime()
+    const dateB = new Date(b.date_remboursement).getTime()
+    return dateB - dateA // Tri décroissant (plus récent en premier)
+  })
 
-  const selectedPayment = paymentRemboursements.find(
-    (r) => r.id.toString() === paymentForm.remboursementId,
-  )
+  const selectedPayment = paymentPretType === 'group'
+    ? null
+    : paymentRemboursements.find((r) => r.id.toString() === paymentForm.remboursementId)
   const selectedPaymentAmounts = selectedPayment
     ? computeScheduledAmounts(selectedPayment)
     : null
@@ -911,13 +1323,47 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                     required
                   >
                     <option value="">Sélectionner un prêt</option>
-                    {prets.map((pret) => (
-                      <option key={pret.id} value={pret.pret_id}>
-                        {pret.pret_id} - {getMemberLabel(pret.membre_id)}
-                      </option>
-                    ))}
+                    {prets.length > 0 && (
+                      <optgroup label="Prêts individuels">
+                        {prets.map((pret) => (
+                          <option key={pret.id} value={pret.pret_id}>
+                            {pret.pret_id} - {getMemberLabel(pret.membre_id)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {groupPrets.length > 0 && (
+                      <optgroup label="Prêts de groupe">
+                        {groupPrets.map((pret) => (
+                          <option key={pret.id} value={pret.pret_id}>
+                            {pret.pret_id} - Groupe {pret.group_id} (Agent: {pret.agent_id})
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
+                {paymentPretType === 'group' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Membre du groupe *
+                    </label>
+                    <select
+                      value={paymentMemberId}
+                      onChange={(e) => handlePaymentMemberChange(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      disabled={!paymentPretId || paymentLoading}
+                      required
+                    >
+                      <option value="">Sélectionner un membre</option>
+                      {groupMembersForPayment.map((m) => (
+                        <option key={m.membre_id} value={m.membre_id}>
+                          {m.membre_id} - {m.prenom} {m.nom}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Échéance à payer *
@@ -926,69 +1372,143 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                     value={paymentForm.remboursementId}
                     onChange={(e) => handlePaymentRemboursementChange(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    disabled={!paymentPretId || paymentLoading}
+                    disabled={!paymentPretId || (paymentPretType === 'group' && !paymentMemberId) || paymentLoading}
                     required
                   >
                     <option value="">Sélectionner une échéance</option>
-                    {paymentRemboursements.map((r) => {
-                      const amounts = computeScheduledAmounts(r)
-                      const alreadyPaid =
-                        r.statut === 'paye_partiel' ? Math.max(Number(r.montant || 0), 0) : 0
-                      return (
-                        <option
-                          key={r.id}
-                          value={r.id}
-                          disabled={partialLockInfo.active && r.statut !== 'paye_partiel'}
-                        >
-                          #{r.numero_remboursement} · {formatDate(r.date_remboursement)} ·{' '}
-                          {getStatutLabel(r.statut, r.date_remboursement)} (
-                          {formatCurrency(amounts.remainingTotal + alreadyPaid)})
-                        </option>
-                      )
-                    })}
+                    {paymentPretType === 'group' ? (
+                      // Afficher les remboursements de groupe
+                      paymentGroupRemboursements.map((r) => {
+                        const amounts = computeScheduledAmountsGroup(r)
+                        const alreadyPaid =
+                          r.statut === 'paye_partiel' ? Math.max(Number(r.montant || 0), 0) : 0
+                        return (
+                          <option
+                            key={r.id}
+                            value={r.id}
+                            disabled={partialLockInfo.active && r.statut !== 'paye_partiel'}
+                          >
+                            #{r.numero_remboursement} · {formatDate(r.date_remboursement)} ·{' '}
+                            {getStatutLabel(r.statut, r.date_remboursement)} (
+                            {formatCurrency(amounts.remainingTotal + alreadyPaid)})
+                          </option>
+                        )
+                      })
+                    ) : (
+                      // Afficher les remboursements individuels
+                      paymentRemboursements.map((r) => {
+                        const amounts = computeScheduledAmounts(r)
+                        const alreadyPaid =
+                          r.statut === 'paye_partiel' ? Math.max(Number(r.montant || 0), 0) : 0
+                        return (
+                          <option
+                            key={r.id}
+                            value={r.id}
+                            disabled={partialLockInfo.active && r.statut !== 'paye_partiel'}
+                          >
+                            #{r.numero_remboursement} · {formatDate(r.date_remboursement)} ·{' '}
+                            {getStatutLabel(r.statut, r.date_remboursement)} (
+                            {formatCurrency(amounts.remainingTotal + alreadyPaid)})
+                          </option>
+                        )
+                      })
+                    )}
                   </select>
-                  {!paymentLoading && paymentPretId && paymentRemboursements.length === 0 && (
+                  {!paymentLoading && paymentPretId && 
+                   ((paymentPretType === 'group' && paymentGroupRemboursements.length === 0) ||
+                    (paymentPretType === 'individual' && paymentRemboursements.length === 0)) && (
                     <p className="text-xs text-gray-500 mt-1">
-                      Aucune échéance en attente pour ce prêt.
+                      {paymentPretType === 'group' && !paymentMemberId
+                        ? 'Veuillez sélectionner un membre pour voir les échéances.'
+                        : 'Aucune échéance en attente pour ce prêt.'}
                     </p>
                   )}
                 </div>
                 {paymentPretId && (
                   <div className="md:col-span-2 bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 text-sm text-blue-900">
-                    <p className="font-semibold">
-                      Membre : {getMemberName(getPretById(paymentPretId)?.membre_id)}
-                    </p>
-                    <p>
-                      Prêt : {paymentPretId}{' '}
-                      {getPretById(paymentPretId)?.montant_pret
-                        ? ` • Montant initial : ${formatCurrency(
-                            Number(getPretById(paymentPretId)?.montant_pret || 0),
-                          )}`
-                        : ''}
-                    </p>
-                    {paymentForm.remboursementId && selectedPayment && selectedPaymentAmounts && (
-                      <p className="space-y-1">
-                        <span className="block">
-                          Échéance sélectionnée : #{selectedPayment.numero_remboursement} • Montant
-                          prévu : {formatCurrency(selectedPaymentAmounts.scheduledTotal)}
-                        </span>
-                        <span className="block">
-                          Déjà payé : {formatCurrency(selectedAlreadyPaid)} • Solde restant :{' '}
-                          {formatCurrency(paymentInterestDue + paymentPrincipalDue)}
-                        </span>
-                        <span className="block">
-                          Intérêt restant : {formatCurrency(paymentInterestDue)} • Principal restant
-                          : {formatCurrency(paymentPrincipalDue)}
-                          {getPretById(paymentPretId)?.membre_id &&
-                          memberPaidSummary[getPretById(paymentPretId)?.membre_id ?? '']
-                            ? ` • Principal déjà remboursé (tout prêt) : ${formatCurrency(
-                                memberPaidSummary[
-                                  getPretById(paymentPretId)?.membre_id ?? ''
-                                ] ?? 0,
+                    {paymentPretType === 'group' ? (
+                      <>
+                        <p className="font-semibold">
+                          Membre : {paymentMemberId ? getMemberName(paymentMemberId) : 'Sélectionner un membre'}
+                        </p>
+                        <p>
+                          Prêt de groupe : {paymentPretId}{' '}
+                          {groupPrets.find((gp) => gp.pret_id === paymentPretId)?.montant_pret
+                            ? ` • Montant total du groupe : ${formatCurrency(
+                                Number(groupPrets.find((gp) => gp.pret_id === paymentPretId)?.montant_pret || 0),
                               )}`
                             : ''}
-                        </span>
-                      </p>
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-semibold">
+                          Membre : {getMemberName(getPretById(paymentPretId)?.membre_id)}
+                        </p>
+                        <p>
+                          Prêt : {paymentPretId}{' '}
+                          {getPretById(paymentPretId)?.montant_pret
+                            ? ` • Montant initial : ${formatCurrency(
+                                Number(getPretById(paymentPretId)?.montant_pret || 0),
+                              )}`
+                            : ''}
+                        </p>
+                      </>
+                    )}
+                    {paymentForm.remboursementId && (
+                      paymentPretType === 'group' ? (
+                        (() => {
+                          const selectedGroupRemboursement = paymentGroupRemboursements.find(
+                            (r) => r.id.toString() === paymentForm.remboursementId
+                          )
+                          if (!selectedGroupRemboursement) return null
+                          const amounts = computeScheduledAmountsGroup(selectedGroupRemboursement)
+                          const alreadyPaid = selectedGroupRemboursement.statut === 'paye_partiel'
+                            ? Math.max(Number(selectedGroupRemboursement.montant || 0), 0)
+                            : 0
+                          return (
+                            <p className="space-y-1">
+                              <span className="block">
+                                Échéance sélectionnée : #{selectedGroupRemboursement.numero_remboursement} • Montant
+                                prévu : {formatCurrency(amounts.scheduledTotal)}
+                              </span>
+                              <span className="block">
+                                Déjà payé : {formatCurrency(alreadyPaid)} • Solde restant :{' '}
+                                {formatCurrency(paymentInterestDue + paymentPrincipalDue)}
+                              </span>
+                              <span className="block">
+                                Intérêt restant : {formatCurrency(paymentInterestDue)} • Principal restant
+                                : {formatCurrency(paymentPrincipalDue)}
+                              </span>
+                            </p>
+                          )
+                        })()
+                      ) : (
+                        selectedPayment && selectedPaymentAmounts && (
+                          <p className="space-y-1">
+                            <span className="block">
+                              Échéance sélectionnée : #{selectedPayment.numero_remboursement} • Montant
+                              prévu : {formatCurrency(selectedPaymentAmounts.scheduledTotal)}
+                            </span>
+                            <span className="block">
+                              Déjà payé : {formatCurrency(selectedAlreadyPaid)} • Solde restant :{' '}
+                              {formatCurrency(paymentInterestDue + paymentPrincipalDue)}
+                            </span>
+                            <span className="block">
+                              Intérêt restant : {formatCurrency(paymentInterestDue)} • Principal restant
+                              : {formatCurrency(paymentPrincipalDue)}
+                              {getPretById(paymentPretId)?.membre_id &&
+                              memberPaidSummary[getPretById(paymentPretId)?.membre_id ?? '']
+                                ? ` • Principal déjà remboursé (tout prêt) : ${formatCurrency(
+                                    memberPaidSummary[
+                                      getPretById(paymentPretId)?.membre_id ?? ''
+                                    ] ?? 0,
+                                  )}`
+                                : ''}
+                            </span>
+                          </p>
+                        )
+                      )
                     )}
                   </div>
                 )}
@@ -1145,11 +1665,24 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
                 <option value="">Tous les prêts</option>
-                {prets.map((pret) => (
-                  <option key={pret.id} value={pret.pret_id}>
-                    {pret.pret_id} - {pret.membre_id}
-                  </option>
-                ))}
+                {prets.length > 0 && (
+                  <optgroup label="Prêts individuels">
+                    {prets.map((pret) => (
+                      <option key={pret.id} value={pret.pret_id}>
+                        {pret.pret_id} - {pret.membre_id}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {groupPrets.length > 0 && (
+                  <optgroup label="Prêts de groupe">
+                    {groupPrets.map((pret) => (
+                      <option key={pret.id} value={pret.pret_id}>
+                        {pret.pret_id} - Groupe {pret.group_id}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </div>
             <div>
@@ -1213,32 +1746,47 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {paidRemboursements.length === 0 ? (
+                {displayedRemboursements.length === 0 ? (
                   <tr>
                     <td colSpan={11} className="px-6 py-4 text-center text-gray-500">
-                      Aucun remboursement payé pour le moment
+                      {loading ? 'Chargement...' : 'Aucun remboursement trouvé'}
                     </td>
                   </tr>
                 ) : (
-                  paidRemboursements.map((remboursement) => {
+                  displayedRemboursements.map((remboursement) => {
                     const montantPrevu = Number(remboursement.montant || 0)
                     const principalApplique = Number(remboursement.principal || 0)
                     const interetApplique = Number(remboursement.interet || 0)
                     const interetRestant = Math.max(montantPrevu - principalApplique - interetApplique, 0)
                     const isPartial = remboursement.statut === 'paye_partiel' || interetRestant > 0
-                    const pretRecord = getPretById(remboursement.pret_id)
-                    const totalInstallments =
-                      pretRecord?.nombre_remboursements ?? paidRemboursements.length
+                    
+                    // Pour les remboursements individuels, utiliser getPretById
+                    // Pour les remboursements de groupe, utiliser groupPrets
+                    const pretRecord = remboursement.type === 'group'
+                      ? groupPrets.find((gp) => gp.pret_id === remboursement.pret_id)
+                      : getPretById(remboursement.pret_id)
+                    
+                    const totalInstallments = pretRecord?.nombre_remboursements ?? 0
+                    const isGroupLoan = remboursement.type === 'group'
+                    
                     return (
-                      <tr key={remboursement.id} className="hover:bg-gray-50">
+                      <tr key={`${remboursement.type}-${remboursement.id}`} className="hover:bg-gray-50">
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                           {remboursement.pret_id}
+                          {isGroupLoan && (
+                            <span className="ml-2 text-xs text-blue-600">(Groupe)</span>
+                          )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                           {remboursement.membre_id}
+                          {isGroupLoan && (
+                            <span className="ml-1 text-xs text-gray-400">
+                              ({getMemberName(remboursement.membre_id)})
+                            </span>
+                          )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {remboursement.numero_remboursement}/{totalInstallments}
+                          {remboursement.numero_remboursement}{totalInstallments > 0 ? `/${totalInstallments}` : ''}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                           {formatCurrency(remboursement.montant)}
@@ -1260,31 +1808,33 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span
-                            className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                              isPartial
-                                ? 'bg-blue-100 text-blue-800'
-                                : 'bg-green-100 text-green-800'
-                            }`}
+                            className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatutColor(
+                              remboursement.statut,
+                              remboursement.date_remboursement
+                            )}`}
                           >
-                            {isPartial ? 'Payé partiel' : 'Payé'}
+                            {getStatutLabel(remboursement.statut, remboursement.date_remboursement)}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
+                          {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && remboursement.type === 'individual' && (
                             <div className="flex gap-2">
                               <button
-                                onClick={() => handleEditRemboursement(remboursement)}
+                                onClick={() => handleEditRemboursement(remboursement as Remboursement)}
                                 className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
                               >
                                 Modifier
                               </button>
                               <button
-                                onClick={() => handleDeleteRemboursement(remboursement)}
+                                onClick={() => handleDeleteRemboursement(remboursement as Remboursement)}
                                 className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
                               >
                                 Supprimer
                               </button>
                             </div>
+                          )}
+                          {remboursement.type === 'group' && (
+                            <span className="text-xs text-gray-400">Groupe</span>
                           )}
                         </td>
                       </tr>

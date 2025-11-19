@@ -60,6 +60,7 @@ export default function ProfitLossPage() {
   const [agentRows, setAgentRows] = useState<AgentRow[]>([])
   const [commissionRatePercent, setCommissionRatePercent] = useState<number>(30)
   const [baseInterestRatePercent, setBaseInterestRatePercent] = useState<number>(15)
+  const [realtimeConnected, setRealtimeConnected] = useState(false)
   const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
     maximumFractionDigits: 2,
   })}%`
@@ -72,8 +73,138 @@ export default function ProfitLossPage() {
   }, [])
 
   useEffect(() => {
-    if (userProfile) {
-      loadProfitLoss()
+    if (!userProfile) return
+
+    // Charger les données initiales
+    loadProfitLoss()
+
+    // Configurer les subscriptions Supabase Realtime pour rendre la page totalement dynamique
+    const subscriptions: Array<{ channel: any; unsubscribe: () => void }> = []
+
+    // Construire les filtres selon le rôle
+    let remboursementsFilter = ''
+    let pretsFilter = ''
+    let expensesFilter = ''
+
+    if (userProfile.role === 'agent' && userProfile.agent_id) {
+      remboursementsFilter = `agent_id=eq.${userProfile.agent_id}`
+      pretsFilter = `agent_id=eq.${userProfile.agent_id}`
+      expensesFilter = `agent_id=eq.${userProfile.agent_id}`
+    }
+
+    // Subscription pour les remboursements
+    const remboursementsChannel = supabase
+      .channel('pnl-remboursements')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'remboursements',
+          filter: remboursementsFilter || undefined,
+        },
+        (payload) => {
+          console.log('💰 Changement détecté dans remboursements (P&L):', payload.eventType)
+          loadProfitLoss(false)
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRealtimeConnected(true)
+          console.log('✅ Subscription remboursements P&L active')
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('❌ Erreur de subscription remboursements P&L')
+          setRealtimeConnected(false)
+        }
+      })
+
+    subscriptions.push({
+      channel: remboursementsChannel,
+      unsubscribe: () => remboursementsChannel.unsubscribe(),
+    })
+
+    // Subscription pour les dépenses
+    const expensesChannel = supabase
+      .channel('pnl-expenses')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'agent_expenses',
+          filter: expensesFilter || undefined,
+        },
+        (payload) => {
+          console.log('💸 Changement détecté dans agent_expenses (P&L):', payload.eventType)
+          loadProfitLoss(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: expensesChannel,
+      unsubscribe: () => expensesChannel.unsubscribe(),
+    })
+
+    // Subscription pour les prêts (pour mettre à jour les informations de prêt)
+    const pretsChannel = supabase
+      .channel('pnl-prets')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'prets',
+          filter: pretsFilter || undefined,
+        },
+        (payload) => {
+          console.log('📊 Changement détecté dans prets (P&L):', payload.eventType)
+          loadProfitLoss(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: pretsChannel,
+      unsubscribe: () => pretsChannel.unsubscribe(),
+    })
+
+    // Subscription pour les agents (pour les admins et managers)
+    if (userProfile.role === 'admin' || userProfile.role === 'manager') {
+      const agentsChannel = supabase
+        .channel('pnl-agents')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'agents',
+          },
+          (payload) => {
+            console.log('👤 Changement détecté dans agents (P&L):', payload.eventType)
+            loadProfitLoss(false)
+          }
+        )
+        .subscribe()
+
+      subscriptions.push({
+        channel: agentsChannel,
+        unsubscribe: () => agentsChannel.unsubscribe(),
+      })
+    }
+
+    // Rafraîchissement périodique de secours (toutes les 60 secondes) au cas où les subscriptions échouent
+    const intervalId = setInterval(() => {
+      if (!realtimeConnected) {
+        loadProfitLoss(false)
+      }
+    }, 60000) // 60 secondes comme backup
+
+    // Nettoyer les subscriptions et l'intervalle lors du démontage
+    return () => {
+      console.log('🧹 Nettoyage des subscriptions P&L')
+      subscriptions.forEach((sub) => sub.unsubscribe())
+      clearInterval(intervalId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
@@ -90,9 +221,11 @@ export default function ProfitLossPage() {
     }
   }
 
-  async function loadProfitLoss() {
+  async function loadProfitLoss(showLoading = true) {
     if (!userProfile) return
-    setLoading(true)
+    if (showLoading) {
+      setLoading(true)
+    }
     try {
       if (userProfile.role === 'admin' || userProfile.role === 'manager') {
         await loadProfitLossForAdmin()
@@ -102,7 +235,9 @@ export default function ProfitLossPage() {
     } catch (error) {
       console.error('Erreur lors du chargement du P&L:', error)
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }
 

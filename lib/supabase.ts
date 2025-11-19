@@ -173,3 +173,20 @@ export interface GroupPret {
   updated_at: string
 }
 
+export interface GroupRemboursement {
+  id: number
+  pret_id: string
+  group_id: number
+  membre_id: string
+  agent_id: string
+  numero_remboursement: number
+  montant: number
+  principal?: number
+  interet?: number
+  date_remboursement: string
+  date_paiement?: string
+  statut: 'en_attente' | 'paye' | 'en_retard' | 'paye_partiel'
+  created_at: string
+  updated_at: string
+}
+

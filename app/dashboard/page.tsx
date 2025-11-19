@@ -86,6 +86,8 @@ export default function DashboardPage() {
   const [previousPortefeuilleActif, setPreviousPortefeuilleActif] = useState<number>(0)
   const [portefeuilleActifChanged, setPortefeuilleActifChanged] = useState(false)
   const [realtimeConnected, setRealtimeConnected] = useState(false)
+  const [previousStats, setPreviousStats] = useState<typeof stats | null>(null)
+  const [changedCards, setChangedCards] = useState<Set<string>>(new Set())
   const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
     maximumFractionDigits: 2,
   })}%`
@@ -186,6 +188,52 @@ export default function DashboardPage() {
     subscriptions.push({
       channel: remboursementsChannel,
       unsubscribe: () => remboursementsChannel.unsubscribe(),
+    })
+
+    // Subscription pour les remboursements de groupe
+    const groupRemboursementsChannel = supabase
+      .channel('dashboard-group-remboursements')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'group_remboursements',
+          filter: remboursementsFilter || undefined,
+        },
+        (payload) => {
+          console.log('💰 Changement détecté dans group_remboursements:', payload.eventType)
+          loadStats(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: groupRemboursementsChannel,
+      unsubscribe: () => groupRemboursementsChannel.unsubscribe(),
+    })
+
+    // Subscription pour les prêts de groupe
+    const groupPretsChannel = supabase
+      .channel('dashboard-group-prets')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'group_prets',
+          filter: pretsFilter || undefined,
+        },
+        (payload) => {
+          console.log('📊 Changement détecté dans group_prets:', payload.eventType)
+          loadStats(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: groupPretsChannel,
+      unsubscribe: () => groupPretsChannel.unsubscribe(),
     })
 
     // Subscription pour les membres
@@ -366,6 +414,8 @@ export default function DashboardPage() {
         let membresQuery = supabase.from('membres').select('id', { count: 'exact', head: true })
         let pretsQuery = supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant')
         let remboursementsQuery = supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet')
+        let groupPretsQuery = supabase.from('group_prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant, agent_id')
+        let groupRemboursementsQuery = supabase.from('group_remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet')
         let expensesQuery = supabase.from('agent_expenses').select('amount, expense_date')
         let epargnesQuery = supabase.from('epargne_transactions').select('type, montant')
 
@@ -375,6 +425,8 @@ export default function DashboardPage() {
           membresQuery = membresQuery.in('agent_id', managerAgentIds)
           pretsQuery = pretsQuery.in('agent_id', managerAgentIds)
           remboursementsQuery = remboursementsQuery.in('agent_id', managerAgentIds)
+          groupPretsQuery = groupPretsQuery.in('agent_id', managerAgentIds)
+          groupRemboursementsQuery = groupRemboursementsQuery.in('agent_id', managerAgentIds)
           expensesQuery = expensesQuery.in('agent_id', managerAgentIds)
           epargnesQuery = epargnesQuery.in('agent_id', managerAgentIds)
         }
@@ -385,6 +437,8 @@ export default function DashboardPage() {
           membresRes,
           pretsRes,
           remboursementsRes,
+          groupPretsRes,
+          groupRemboursementsRes,
           expensesRes,
           epargnesRes,
         ] = await Promise.all([
@@ -393,6 +447,8 @@ export default function DashboardPage() {
           membresQuery,
           pretsQuery,
           remboursementsQuery,
+          groupPretsQuery.catch(() => ({ data: [], error: null })), // Ignorer si la table n'existe pas
+          groupRemboursementsQuery.catch(() => ({ data: [], error: null })), // Ignorer si la table n'existe pas
           expensesQuery,
           epargnesQuery,
         ])
@@ -423,17 +479,24 @@ export default function DashboardPage() {
         const agentsData = agentsRes.data || []
         const activePrets =
           pretsRes.data?.filter((pret) => pret.statut === 'actif') || []
+        const activeGroupPrets =
+          (groupPretsRes.data || []).filter((pret) => pret.statut === 'actif') || []
         const totalActivePrincipal =
-          activePrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0) || 0
-        const totalRemboursements = remboursementsRes.data?.length || 0
+          activePrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0) +
+          activeGroupPrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0)
+        const totalRemboursements = (remboursementsRes.data?.length || 0) + (groupRemboursementsRes.data?.length || 0)
         const remboursementsPayes =
-          remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0
+          (remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0) +
+          (groupRemboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0)
 
         const pretMapByNumericId = new Map(
           (pretsRes.data || []).map((pret) => [pret.id, pret]),
         )
         const pretMapByCode = new Map(
           (pretsRes.data || []).map((pret) => [pret.pret_id, pret]),
+        )
+        const groupPretMapByCode = new Map(
+          (groupPretsRes.data || []).map((pret) => [pret.pret_id, pret]),
         )
 
         const today = new Date()
@@ -442,8 +505,14 @@ export default function DashboardPage() {
         const todayRemboursements = (remboursementsRes.data || []).filter(
           (r) => r.date_remboursement === todayDateString,
         )
-        const todayRemboursementsCount = todayRemboursements.length
+        const todayGroupRemboursements = (groupRemboursementsRes.data || []).filter(
+          (r) => r.date_remboursement === todayDateString,
+        )
+        const todayRemboursementsCount = todayRemboursements.length + todayGroupRemboursements.length
         const todayRemboursementsAmount = todayRemboursements.reduce(
+          (sum, remboursement) => sum + Number(remboursement.montant || 0),
+          0,
+        ) + todayGroupRemboursements.reduce(
           (sum, remboursement) => sum + Number(remboursement.montant || 0),
           0,
         )
@@ -458,7 +527,8 @@ export default function DashboardPage() {
           }
           const pret =
             pretMapByNumericId.get(remboursement.pret_id as number) ||
-            pretMapByCode.get(remboursement.pret_id as string)
+            pretMapByCode.get(remboursement.pret_id as string) ||
+            groupPretMapByCode.get(remboursement.pret_id as string)
           if (pret && pret.nombre_remboursements) {
             const base =
               Number(pret.montant_pret || 0) /
@@ -470,9 +540,10 @@ export default function DashboardPage() {
           return Math.round(fallback * 100) / 100
         }
 
-        const activePretIds = new Set(
-          activePrets.map((pret) => pret.pret_id),
-        )
+        const activePretIds = new Set([
+          ...activePrets.map((pret) => pret.pret_id),
+          ...activeGroupPrets.map((pret) => pret.pret_id),
+        ])
 
         const overdueRemboursements =
           remboursementsRes.data?.filter((r) => {
@@ -487,13 +558,38 @@ export default function DashboardPage() {
             return false
           }) || []
 
-        const impayesCount = overdueRemboursements.length
+        const overdueGroupRemboursements =
+          groupRemboursementsRes.data?.filter((r) => {
+            if (r.statut === 'paye') return false
+            if (r.statut === 'en_retard') return true
+            if (r.statut === 'en_attente' && r.date_remboursement) {
+              const dueDate = new Date(r.date_remboursement)
+              if (Number.isNaN(dueDate.getTime())) return false
+              dueDate.setHours(0, 0, 0, 0)
+              return dueDate < today
+            }
+            return false
+          }) || []
+
+        const impayesCount = overdueRemboursements.length + overdueGroupRemboursements.length
         const impayesPrincipal =
           overdueRemboursements.reduce((sum, remboursement) => {
+            return sum + getPrincipalValue(remboursement)
+          }, 0) +
+          overdueGroupRemboursements.reduce((sum, remboursement) => {
             return sum + getPrincipalValue(remboursement)
           }, 0) || 0
         const principalPayesActifs =
           (remboursementsRes.data || [])
+            .filter(
+              (remboursement) =>
+                remboursement.statut === 'paye' &&
+                activePretIds.has(remboursement.pret_id),
+            )
+            .reduce((sum, remboursement) => {
+              return sum + getPrincipalValue(remboursement)
+            }, 0) +
+          (groupRemboursementsRes.data || [])
             .filter(
               (remboursement) =>
                 remboursement.statut === 'paye' &&
@@ -518,9 +614,36 @@ export default function DashboardPage() {
             return acc
           }, new Map())
 
+        // Ajouter les remboursements de groupe à la collection
+        for (const remboursement of groupRemboursementsRes.data || []) {
+          if (qualifyingStatuses.has(remboursement.statut) && remboursement.agent_id) {
+            const key = remboursement.agent_id
+            const current = collectionMap.get(key) ?? 0
+            collectionMap.set(key, current + Number(remboursement.montant || 0))
+          }
+        }
+
         const interestMap = new Map<string, number>()
         let totalInterest = 0
         for (const remboursement of remboursementsRes.data || []) {
+          if (!qualifyingStatuses.has(remboursement.statut)) continue
+          const principalValue = getPrincipalValue(remboursement)
+          const interestValue =
+            remboursement.interet != null
+              ? Number(remboursement.interet)
+              : Math.max(Number(remboursement.montant || 0) - principalValue, 0)
+          if (interestValue <= 0) continue
+          totalInterest += interestValue
+          const rawDate = remboursement.date_paiement || remboursement.date_remboursement
+          if (!rawDate) continue
+          const dateObj = new Date(rawDate)
+          if (Number.isNaN(dateObj.getTime())) continue
+          const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`
+          interestMap.set(key, (interestMap.get(key) ?? 0) + interestValue)
+        }
+        
+        // Ajouter les intérêts des remboursements de groupe
+        for (const remboursement of groupRemboursementsRes.data || []) {
           if (!qualifyingStatuses.has(remboursement.statut)) continue
           const principalValue = getPrincipalValue(remboursement)
           const interestValue =
@@ -545,18 +668,12 @@ export default function DashboardPage() {
           return { agent_id: agentId, total_collected: total, displayName }
         })
 
-        // Détecter si le portefeuille actif a changé pour l'animation
-        if (previousPortefeuilleActif !== portefeuilleActif) {
-          setPortefeuilleActifChanged(true)
-          setTimeout(() => setPortefeuilleActifChanged(false), 2000) // Réinitialiser après 2 secondes
-        }
-        setPreviousPortefeuilleActif(portefeuilleActif)
-        
-        setStats({
+        // Détecter les changements pour toutes les cartes
+        const newStats = {
           agents: agentsData.length || 0,
           membres: membresRes.count || 0,
-          prets: pretsRes.data?.length || 0,
-          remboursements: remboursementsRes.data?.length || 0,
+          prets: (pretsRes.data?.length || 0) + (groupPretsRes.data?.length || 0),
+          remboursements: totalRemboursements,
           remboursementsPayes,
           montantTotal: portefeuilleActif,
           impayesCount,
@@ -564,19 +681,51 @@ export default function DashboardPage() {
           impayesPrincipal,
           todayRemboursementsCount,
           todayRemboursementsAmount,
-        })
+        }
+
+        // Détecter quelles cartes ont changé
+        const changed = new Set<string>()
+        if (previousStats) {
+          if (previousStats.agents !== newStats.agents) changed.add('agents')
+          if (previousStats.membres !== newStats.membres) changed.add('membres')
+          if (previousStats.prets !== newStats.prets) changed.add('prets')
+          if (previousStats.remboursements !== newStats.remboursements) changed.add('remboursements')
+          if (previousStats.impayesCount !== newStats.impayesCount || previousStats.impayesRate !== newStats.impayesRate) changed.add('impayes')
+          if (previousPortefeuilleActif !== portefeuilleActif) {
+            changed.add('portefeuille')
+            setPortefeuilleActifChanged(true)
+            setTimeout(() => setPortefeuilleActifChanged(false), 2000)
+          }
+          if (previousStats.todayRemboursementsCount !== newStats.todayRemboursementsCount) changed.add('remboursements-jour')
+        }
+        setChangedCards(changed)
+        setTimeout(() => setChangedCards(new Set()), 2000) // Réinitialiser après 2 secondes
+        
+        setPreviousPortefeuilleActif(portefeuilleActif)
+        setPreviousStats(newStats)
+        setStats(newStats)
         setAgentCollections(
           collections.sort((a, b) => b.total_collected - a.total_collected),
         )
         const expensesTotal =
           expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
-        setExpensesSummary(expensesTotal)
-
+        
         // Calculer le total des épargnes (dépôts - retraits)
         const epargnesTotal = (epargnesRes.data || []).reduce((sum, transaction) => {
           const montant = Number(transaction.montant || 0)
           return sum + (transaction.type === 'depot' ? montant : -montant)
         }, 0)
+        
+        // Détecter les changements dans les intérêts, dépenses et épargnes
+        const previousInterestTotal = interestSummary.total
+        const previousExpensesTotal = expensesSummary
+        const previousEpargnesTotal = totalEpargnes
+        
+        if (previousStats && previousInterestTotal !== totalInterest) changed.add('interet')
+        if (previousStats && previousExpensesTotal !== expensesTotal) changed.add('depenses')
+        if (previousStats && previousEpargnesTotal !== epargnesTotal) changed.add('epargnes')
+        
+        setExpensesSummary(expensesTotal)
         setTotalEpargnes(epargnesTotal)
 
         const monthlyExpensesMap = new Map<string, number>()
@@ -728,14 +877,8 @@ export default function DashboardPage() {
         const impayesRate =
           totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
-        // Détecter si le portefeuille actif a changé pour l'animation
-        if (previousPortefeuilleActif !== portefeuilleActif) {
-          setPortefeuilleActifChanged(true)
-          setTimeout(() => setPortefeuilleActifChanged(false), 2000) // Réinitialiser après 2 secondes
-        }
-        setPreviousPortefeuilleActif(portefeuilleActif)
-        
-        setStats({
+        // Détecter les changements pour toutes les cartes (section Agent)
+        const newStatsAgent = {
           agents: 0,
           membres: membresRes.count || 0,
           prets: pretsRes.data?.length || 0,
@@ -747,7 +890,28 @@ export default function DashboardPage() {
           impayesPrincipal,
           todayRemboursementsCount,
           todayRemboursementsAmount,
-        })
+        }
+
+        // Détecter quelles cartes ont changé
+        const changedAgent = new Set<string>()
+        if (previousStats) {
+          if (previousStats.membres !== newStatsAgent.membres) changedAgent.add('membres')
+          if (previousStats.prets !== newStatsAgent.prets) changedAgent.add('prets')
+          if (previousStats.remboursements !== newStatsAgent.remboursements) changedAgent.add('remboursements')
+          if (previousStats.impayesCount !== newStatsAgent.impayesCount || previousStats.impayesRate !== newStatsAgent.impayesRate) changedAgent.add('impayes')
+          if (previousPortefeuilleActif !== portefeuilleActif) {
+            changedAgent.add('portefeuille')
+            setPortefeuilleActifChanged(true)
+            setTimeout(() => setPortefeuilleActifChanged(false), 2000)
+          }
+          if (previousStats.todayRemboursementsCount !== newStatsAgent.todayRemboursementsCount) changedAgent.add('remboursements-jour')
+        }
+        setChangedCards(changedAgent)
+        setTimeout(() => setChangedCards(new Set()), 2000) // Réinitialiser après 2 secondes
+        
+        setPreviousPortefeuilleActif(portefeuilleActif)
+        setPreviousStats(newStatsAgent)
+        setStats(newStatsAgent)
         const qualifyingStatuses = new Set(['paye', 'paye_partiel'])
 
         const totalCollected =
@@ -769,13 +933,20 @@ export default function DashboardPage() {
         setAgentCollections(collections)
         const expensesTotal =
           expensesRes.data?.reduce((sum, item) => sum + Number(item.amount || 0), 0) || 0
-        setExpensesSummary(expensesTotal)
-
+        // Détecter les changements dans les dépenses et épargnes (section Agent)
+        const previousExpensesTotalAgent = expensesSummary
+        const previousEpargnesTotalAgent = totalEpargnes
+        
         // Calculer le total des épargnes (dépôts - retraits)
         const epargnesTotal = (epargnesRes.data || []).reduce((sum, transaction) => {
           const montant = Number(transaction.montant || 0)
           return sum + (transaction.type === 'depot' ? montant : -montant)
         }, 0)
+        
+        if (previousStats && previousExpensesTotalAgent !== expensesTotal) changedAgent.add('depenses')
+        if (previousStats && previousEpargnesTotalAgent !== epargnesTotal) changedAgent.add('epargnes')
+        
+        setExpensesSummary(expensesTotal)
         setTotalEpargnes(epargnesTotal)
 
         const interestMap = new Map<string, number>()
@@ -824,6 +995,12 @@ export default function DashboardPage() {
           .sort((a, b) => a.key.localeCompare(b.key))
         const commissionTotal =
           monthly.reduce((sum, entry) => sum + entry.commission, 0) || 0
+        
+        // Détecter les changements dans les intérêts (section Agent)
+        if (previousStats && interestSummary.total !== totalInterest) {
+          changedAgent.add('interet')
+        }
+        
         setInterestSummary({
           total: totalInterest,
           commissionTotal,
@@ -1081,37 +1258,44 @@ export default function DashboardPage() {
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 mb-8">
         {statCards.map((stat, index) => {
           const Icon = stat.icon
-          const isPortefeuilleActif = stat.title === 'Portefeuille actif'
+          // Identifier quelle carte a changé
+          const cardKey = stat.title.toLowerCase().replace(/\s+/g, '-')
+          const hasChanged = changedCards.has(cardKey) || 
+            (stat.title === 'Portefeuille actif' && portefeuilleActifChanged) ||
+            (stat.title === 'Intérêt brut' && changedCards.has('interet')) ||
+            (stat.title.includes('Commission') && changedCards.has('interet')) ||
+            (stat.title === 'Total dépenses' && changedCards.has('depenses')) ||
+            (stat.title === 'Total épargnes' && changedCards.has('epargnes')) ||
+            (stat.title === 'Remboursements' && changedCards.has('remboursements-jour'))
+          
           const cardContent = (
             <Card
-              className={`border-0 shadow-sm overflow-hidden text-white ${stat.gradient} ${stat.href ? 'transition-transform hover:-translate-y-1 hover:shadow-lg cursor-pointer' : ''} ${isPortefeuilleActif && portefeuilleActifChanged ? 'animate-pulse ring-2 ring-white/50' : ''}`}
+              className={`border-0 shadow-sm overflow-hidden text-white ${stat.gradient} ${stat.href ? 'transition-transform hover:-translate-y-1 hover:shadow-lg cursor-pointer' : ''} ${hasChanged ? 'animate-pulse ring-2 ring-white/50' : ''}`}
             >
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium text-white/90">
                   {stat.title}
                 </CardTitle>
-                <div className={`p-2 rounded-lg bg-white/20 ${isPortefeuilleActif && portefeuilleActifChanged ? 'animate-bounce' : ''}`}>
-                  <Icon className={`w-4 h-4 text-white ${isPortefeuilleActif ? 'transition-all duration-300' : ''}`} />
+                <div className={`p-2 rounded-lg bg-white/20 ${hasChanged ? 'animate-bounce' : ''}`}>
+                  <Icon className={`w-4 h-4 text-white transition-all duration-300`} />
                 </div>
               </CardHeader>
               <CardContent>
-                <div className={`text-2xl font-bold text-white mb-1 transition-all duration-500 ${isPortefeuilleActif && portefeuilleActifChanged ? 'scale-110' : ''}`}>
+                <div className={`text-2xl font-bold text-white mb-1 transition-all duration-500 ${hasChanged ? 'scale-110' : ''}`}>
                   {stat.value}
                 </div>
                 <p className="text-xs text-white/80 flex items-center gap-2">
                   {stat.description}
-                  {isPortefeuilleActif && (
-                    <span className="text-[10px] opacity-75 flex items-center gap-1">
-                      <span className="relative flex h-1.5 w-1.5">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-white"></span>
-                      </span>
-                      Temps réel
+                  <span className="text-[10px] opacity-75 flex items-center gap-1">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className={`${hasChanged ? 'animate-ping' : ''} absolute inline-flex h-full w-full rounded-full bg-white opacity-75`}></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-white"></span>
                     </span>
-                  )}
+                    Temps réel
+                  </span>
                 </p>
                 {stat.badgeContent ? (
-                  <Badge className="mt-3 bg-white/25 text-white border border-white/40 font-medium">
+                  <Badge className={`mt-3 bg-white/25 text-white border border-white/40 font-medium ${hasChanged ? 'animate-pulse' : ''}`}>
                     {stat.badgeContent}
                   </Badge>
                 ) : null}

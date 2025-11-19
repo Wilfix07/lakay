@@ -45,14 +45,123 @@ function RemboursementsJourContent() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [remboursements, setRemboursements] = useState<DailyRemboursementRow[]>([])
+  const [realtimeConnected, setRealtimeConnected] = useState(false)
 
   useEffect(() => {
     loadUserProfile()
   }, [])
 
   useEffect(() => {
-    if (userProfile) {
-      loadRemboursements()
+    if (!userProfile) return
+
+    // Charger les remboursements initiaux
+    loadRemboursements()
+
+    // Configurer les subscriptions Supabase Realtime pour rendre la page totalement dynamique
+    const subscriptions: Array<{ channel: any; unsubscribe: () => void }> = []
+
+    // Construire les filtres selon le rôle
+    let remboursementsFilter = ''
+    let pretsFilter = ''
+    let membresFilter = ''
+
+    if (userProfile.role === 'agent' && userProfile.agent_id) {
+      remboursementsFilter = `agent_id=eq.${userProfile.agent_id}`
+      pretsFilter = `agent_id=eq.${userProfile.agent_id}`
+      membresFilter = `agent_id=eq.${userProfile.agent_id}`
+    }
+
+    // Subscription pour les remboursements
+    const remboursementsChannel = supabase
+      .channel('remboursements-jour-remboursements')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'remboursements',
+          filter: remboursementsFilter || undefined,
+        },
+        (payload) => {
+          console.log('📊 Changement détecté dans remboursements:', payload.eventType)
+          // Mettre à jour immédiatement sans afficher le spinner de rafraîchissement
+          loadRemboursements(false)
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRealtimeConnected(true)
+          console.log('✅ Subscription remboursements active')
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('❌ Erreur de subscription remboursements')
+          setRealtimeConnected(false)
+        }
+      })
+
+    subscriptions.push({
+      channel: remboursementsChannel,
+      unsubscribe: () => remboursementsChannel.unsubscribe(),
+    })
+
+    // Subscription pour les prêts (pour mettre à jour les informations de prêt)
+    const pretsChannel = supabase
+      .channel('remboursements-jour-prets')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'prets',
+          filter: pretsFilter || undefined,
+        },
+        (payload) => {
+          console.log('📊 Changement détecté dans prets:', payload.eventType)
+          loadRemboursements(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: pretsChannel,
+      unsubscribe: () => pretsChannel.unsubscribe(),
+    })
+
+    // Subscription pour les membres (pour mettre à jour les noms)
+    const membresChannel = supabase
+      .channel('remboursements-jour-membres')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'membres',
+          filter: membresFilter || undefined,
+        },
+        (payload) => {
+          console.log('👥 Changement détecté dans membres:', payload.eventType)
+          loadRemboursements(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: membresChannel,
+      unsubscribe: () => membresChannel.unsubscribe(),
+    })
+
+    // Rafraîchissement périodique de secours (toutes les 60 secondes) au cas où les subscriptions échouent
+    const intervalId = setInterval(() => {
+      if (!realtimeConnected) {
+        // Si Realtime n'est pas connecté, rafraîchir plus souvent
+        loadRemboursements(false)
+      }
+    }, 60000) // 60 secondes comme backup
+
+    // Nettoyer les subscriptions et l'intervalle lors du démontage
+    return () => {
+      console.log('🧹 Nettoyage des subscriptions remboursements du jour')
+      subscriptions.forEach((sub) => sub.unsubscribe())
+      clearInterval(intervalId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
@@ -71,11 +180,13 @@ function RemboursementsJourContent() {
     }
   }
 
-  async function loadRemboursements() {
+  async function loadRemboursements(showRefreshing = true) {
     if (!userProfile) return
 
     try {
-      setRefreshing(true)
+      if (showRefreshing) {
+        setRefreshing(true)
+      }
       const today = new Date()
       today.setHours(0, 0, 0, 0)
       const todayString = today.toISOString().split('T')[0]
