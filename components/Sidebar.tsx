@@ -17,6 +17,7 @@ import {
   Settings,
   Wallet,
   CheckCircle2,
+  FileText,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -89,6 +90,12 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Remboursements du jour',
       href: '/remboursements/aujourdhui',
       icon: CalendarDays,
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Résumé',
+      href: '/resume',
+      icon: FileText,
       roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
     {

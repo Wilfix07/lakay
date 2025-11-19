@@ -675,30 +675,58 @@ function PretsPageContent() {
 
       // Vérifier si le membre/groupe a déjà un prêt actif
       if (loanType === 'membre') {
+        // 1. Vérifier les prêts individuels actifs
         const { data: activeLoans, error: activeLoansError } = await supabase
           .from('prets')
-          .select('id')
+          .select('id, pret_id, statut')
           .eq('membre_id', formData.membre_id)
           .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
-          .limit(1)
 
         if (activeLoansError) throw activeLoansError
         if (activeLoans && activeLoans.length > 0) {
-          alert("Ce membre a déjà un prêt actif, en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.")
+          alert(`Ce membre a déjà un prêt actif (${activeLoans[0].pret_id}), en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.`)
           return
+        }
+
+        // 2. Vérifier si le membre a un prêt de groupe actif
+        try {
+          const { data: activeGroupRemboursements, error: groupRemboursementsError } = await supabase
+            .from('group_remboursements')
+            .select('pret_id, statut')
+            .eq('membre_id', formData.membre_id)
+            .in('statut', ['en_attente', 'paye_partiel', 'en_retard'])
+
+          if (!groupRemboursementsError && activeGroupRemboursements && activeGroupRemboursements.length > 0) {
+            // Récupérer les prêts de groupe associés
+            const pretIds = [...new Set(activeGroupRemboursements.map(r => r.pret_id))]
+            const { data: activeGroupPrets, error: groupPretsError } = await supabase
+              .from('group_prets')
+              .select('pret_id, statut')
+              .in('pret_id', pretIds)
+              .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+
+            if (!groupPretsError && activeGroupPrets && activeGroupPrets.length > 0) {
+              alert(`Ce membre fait déjà partie d'un prêt de groupe actif (${activeGroupPrets[0].pret_id}). Il ne peut pas contracter un prêt individuel tant qu'il n'a pas terminé de rembourser son prêt de groupe.`)
+              return
+            }
+          }
+        } catch (error: any) {
+          // Si la table group_remboursements n'existe pas, ignorer l'erreur
+          if (error?.code !== '42P01' && error?.code !== 'PGRST116') {
+            console.warn('Erreur lors de la vérification des prêts de groupe:', error)
+          }
         }
       } else {
         // Pour les groupes, vérifier si le groupe a déjà un prêt actif
         const { data: activeGroupLoans, error: activeGroupLoansError } = await supabase
           .from('group_prets')
-          .select('id')
+          .select('id, pret_id, statut')
           .eq('group_id', parseInt(formData.group_id))
           .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
-          .limit(1)
 
         if (activeGroupLoansError) throw activeGroupLoansError
         if (activeGroupLoans && activeGroupLoans.length > 0) {
-          alert("Ce groupe a déjà un prêt actif, en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser avant de contracter un nouveau prêt.")
+          alert(`Ce groupe a déjà un prêt actif (${activeGroupLoans[0].pret_id}), en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser avant de contracter un nouveau prêt.`)
           return
         }
 
@@ -706,6 +734,63 @@ function PretsPageContent() {
         if (selectedGroupMembers.length === 0) {
           alert('Erreur: Aucun membre trouvé dans ce groupe')
           return
+        }
+
+        // Vérifier que chaque membre du groupe n'a pas déjà un prêt individuel actif
+        const memberIds = selectedGroupMembers.map(m => m.membre_id)
+        const { data: membersWithActiveLoans, error: membersLoansError } = await supabase
+          .from('prets')
+          .select('membre_id, pret_id, statut')
+          .in('membre_id', memberIds)
+          .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+
+        if (membersLoansError) throw membersLoansError
+        if (membersWithActiveLoans && membersWithActiveLoans.length > 0) {
+          const problematicMembers = membersWithActiveLoans.map(loan => {
+            const member = selectedGroupMembers.find(m => m.membre_id === loan.membre_id)
+            return member ? `${member.membre_id} - ${member.prenom} ${member.nom}` : loan.membre_id
+          }).join(', ')
+          alert(`Les membres suivants ont déjà un prêt individuel actif et ne peuvent pas faire partie d'un prêt de groupe:\n\n${problematicMembers}\n\nIls doivent terminer leur prêt individuel avant de pouvoir participer à un prêt de groupe.`)
+          return
+        }
+
+        // Vérifier que chaque membre du groupe n'a pas déjà un autre prêt de groupe actif
+        try {
+          const { data: membersWithActiveGroupLoans, error: membersGroupLoansError } = await supabase
+            .from('group_remboursements')
+            .select('membre_id, pret_id, statut')
+            .in('membre_id', memberIds)
+            .in('statut', ['en_attente', 'paye_partiel', 'en_retard'])
+
+          if (!membersGroupLoansError && membersWithActiveGroupLoans && membersWithActiveGroupLoans.length > 0) {
+            // Récupérer les prêts de groupe associés pour vérifier leur statut
+            const pretIds = [...new Set(membersWithActiveGroupLoans.map(r => r.pret_id))]
+            const { data: activeGroupPretsForMembers, error: groupPretsForMembersError } = await supabase
+              .from('group_prets')
+              .select('pret_id, statut, group_id')
+              .in('pret_id', pretIds)
+              .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+              .neq('group_id', parseInt(formData.group_id)) // Exclure le groupe actuel
+
+            if (!groupPretsForMembersError && activeGroupPretsForMembers && activeGroupPretsForMembers.length > 0) {
+              const problematicMembers = membersWithActiveGroupLoans
+                .filter(r => activeGroupPretsForMembers.some(p => p.pret_id === r.pret_id))
+                .map(r => {
+                  const member = selectedGroupMembers.find(m => m.membre_id === r.membre_id)
+                  return member ? `${member.membre_id} - ${member.prenom} ${member.nom}` : r.membre_id
+                })
+                .filter((v, i, a) => a.indexOf(v) === i) // Dédupliquer
+                .join(', ')
+              
+              alert(`Les membres suivants font déjà partie d'un autre prêt de groupe actif et ne peuvent pas participer à un nouveau prêt de groupe:\n\n${problematicMembers}\n\nIls doivent terminer leur prêt de groupe actuel avant de pouvoir participer à un nouveau prêt de groupe.`)
+              return
+            }
+          }
+        } catch (error: any) {
+          // Si la table group_remboursements n'existe pas, ignorer l'erreur
+          if (error?.code !== '42P01' && error?.code !== 'PGRST116') {
+            console.warn('Erreur lors de la vérification des prêts de groupe pour les membres:', error)
+          }
         }
 
         const totalMemberAmounts = selectedGroupMembers.reduce((sum, member) => {
@@ -1140,17 +1225,46 @@ function PretsPageContent() {
       }
 
       if (formData.membre_id !== editingPret.membre_id) {
+        // Vérifier les prêts individuels actifs (exclure le prêt en cours d'édition)
         const { data: activeLoans, error: activeLoansError } = await supabase
           .from('prets')
-          .select('id')
+          .select('id, pret_id, statut')
           .eq('membre_id', formData.membre_id)
           .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
-          .limit(1)
+          .neq('pret_id', editingPret.pret_id) // Exclure le prêt en cours d'édition
 
         if (activeLoansError) throw activeLoansError
         if (activeLoans && activeLoans.length > 0) {
-          alert('Le membre sélectionné a déjà un prêt actif ou en attente de garantie. Terminez-le ou complétez la garantie avant de modifier ce prêt.')
+          alert(`Le membre sélectionné a déjà un prêt actif (${activeLoans[0].pret_id}) ou en attente de garantie. Terminez-le ou complétez la garantie avant de modifier ce prêt.`)
           return
+        }
+
+        // Vérifier si le membre a un prêt de groupe actif
+        try {
+          const { data: activeGroupRemboursements, error: groupRemboursementsError } = await supabase
+            .from('group_remboursements')
+            .select('pret_id, statut')
+            .eq('membre_id', formData.membre_id)
+            .in('statut', ['en_attente', 'paye_partiel', 'en_retard'])
+
+          if (!groupRemboursementsError && activeGroupRemboursements && activeGroupRemboursements.length > 0) {
+            const pretIds = [...new Set(activeGroupRemboursements.map(r => r.pret_id))]
+            const { data: activeGroupPrets, error: groupPretsError } = await supabase
+              .from('group_prets')
+              .select('pret_id, statut')
+              .in('pret_id', pretIds)
+              .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+
+            if (!groupPretsError && activeGroupPrets && activeGroupPrets.length > 0) {
+              alert(`Le membre sélectionné fait déjà partie d'un prêt de groupe actif (${activeGroupPrets[0].pret_id}). Il ne peut pas avoir un prêt individuel tant qu'il n'a pas terminé de rembourser son prêt de groupe.`)
+              return
+            }
+          }
+        } catch (error: any) {
+          // Si la table group_remboursements n'existe pas, ignorer l'erreur
+          if (error?.code !== '42P01' && error?.code !== 'PGRST116') {
+            console.warn('Erreur lors de la vérification des prêts de groupe:', error)
+          }
         }
       }
 
@@ -1420,25 +1534,36 @@ function PretsPageContent() {
                       <option value="">
                         {formData.agent_id || userProfile?.role === 'agent' ? 'Sélectionner un membre' : 'Sélectionnez d\'abord un agent'}
                       </option>
-                      {filteredMembres.map((membre) => (
-                      (() => {
+                      {filteredMembres.map((membre) => {
                         const hasActiveLoan = prets.some(
-                          (pret) => pret.membre_id === membre.membre_id && pret.statut === 'actif',
+                          (pret) => pret.membre_id === membre.membre_id && 
+                          ['actif', 'en_attente_garantie', 'en_attente_approbation'].includes(pret.statut),
                         )
-                        const isCurrentSelection =
-                          editingPret?.membre_id === membre.membre_id
+                        // Vérifier si le membre a un prêt de groupe actif
+                        const hasActiveGroupLoan = groupPrets.some((groupPret) => {
+                          if (!['actif', 'en_attente_garantie', 'en_attente_approbation'].includes(groupPret.statut)) {
+                            return false
+                          }
+                          // Vérifier si ce membre fait partie de ce groupe
+                          // On vérifie via les remboursements de groupe ou les membres du groupe
+                          // Pour simplifier, on vérifie si le membre est dans selectedGroupMembers d'un groupe avec prêt actif
+                          // Mais ici on ne peut pas facilement vérifier sans requête supplémentaire
+                          // On laisse cette vérification pour la validation au moment de la soumission
+                          return false // Temporairement désactivé car nécessite une requête supplémentaire
+                        })
+                        const isCurrentSelection = editingPret?.membre_id === membre.membre_id
+                        const isDisabled = hasActiveLoan && !isCurrentSelection
                         return (
                           <option
                             key={membre.id}
                             value={membre.membre_id}
-                            disabled={hasActiveLoan && !isCurrentSelection}
+                            disabled={isDisabled}
                           >
                             {membre.membre_id} - {membre.prenom} {membre.nom}
-                            {hasActiveLoan && !isCurrentSelection ? ' (prêt actif)' : ''}
+                            {hasActiveLoan && !isCurrentSelection ? ' (prêt individuel actif)' : ''}
                           </option>
                         )
-                      })()
-                    ))}
+                      })}
                   </select>
                 </div>
                 ) : (
