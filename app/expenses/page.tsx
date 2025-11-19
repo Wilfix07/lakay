@@ -353,7 +353,17 @@ function ExpensesPageContent() {
   }
 
   const isAdmin = userProfile.role === 'admin'
+  const isManager = userProfile.role === 'manager'
+  const isAgent = userProfile.role === 'agent'
   const canManage = userProfile.role !== 'manager' ? isAdmin || userProfile.role === 'agent' : true
+
+  // Fonction helper pour vérifier si un agent peut modifier/supprimer une dépense
+  // Les agents peuvent modifier/supprimer seulement les dépenses du jour même
+  function canAgentModifyExpense(expense: AgentExpense): boolean {
+    if (!isAgent) return true // Les managers et admins peuvent toujours modifier
+    const today = new Date().toISOString().split('T')[0]
+    return expense.expense_date === today
+  }
 
   return (
     <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
@@ -591,7 +601,7 @@ function ExpensesPageContent() {
                       <TableHead>Catégorie</TableHead>
                       <TableHead>Description</TableHead>
                       <TableHead className="text-right">Montant</TableHead>
-                      <TableHead>{isAdmin ? 'Actions' : ''}</TableHead>
+                      <TableHead>{(isAdmin || isManager || isAgent) ? 'Actions' : ''}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -615,12 +625,18 @@ function ExpensesPageContent() {
                           {formatCurrency(expense.amount)}
                         </TableCell>
                         <TableCell className="text-right">
-                          {isAdmin && (
+                          {(isAdmin || isManager || isAgent) && (
                             <div className="flex justify-end gap-2">
                               <Button
                                 size="icon"
                                 variant="outline"
                                 onClick={() => handleEdit(expense)}
+                                disabled={!canAgentModifyExpense(expense)}
+                                title={
+                                  !canAgentModifyExpense(expense)
+                                    ? 'Vous ne pouvez modifier que les dépenses du jour même. Contactez votre manager pour modifier les dépenses des jours précédents.'
+                                    : 'Modifier la dépense'
+                                }
                               >
                                 <Pencil className="w-4 h-4" />
                               </Button>
@@ -628,6 +644,12 @@ function ExpensesPageContent() {
                                 size="icon"
                                 variant="destructive"
                                 onClick={() => handleDelete(expense)}
+                                disabled={!canAgentModifyExpense(expense)}
+                                title={
+                                  !canAgentModifyExpense(expense)
+                                    ? 'Vous ne pouvez supprimer que les dépenses du jour même. Contactez votre manager pour supprimer les dépenses des jours précédents.'
+                                    : 'Supprimer la dépense'
+                                }
                               >
                                 <Trash2 className="w-4 h-4" />
                               </Button>

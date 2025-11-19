@@ -6,6 +6,7 @@ import { DashboardLayout } from '@/components/DashboardLayout'
 import { supabase, type UserProfile, type Membre } from '@/lib/supabase'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { formatCurrency, formatDate } from '@/lib/utils'
+import { Pencil, Trash2 } from 'lucide-react'
 
 type TransactionType = 'depot' | 'retrait'
 
@@ -46,6 +47,14 @@ function EpargnePageContent() {
       return sum + (t.type === 'depot' ? Number(t.montant || 0) : -Number(t.montant || 0))
     }, 0)
   }, [transactions])
+
+  // Fonction helper pour vérifier si un agent peut modifier/supprimer une transaction
+  // Les agents peuvent modifier/supprimer seulement les transactions du jour même
+  function canAgentModifyTransaction(transaction: EpargneTransaction): boolean {
+    if (userProfile?.role !== 'agent') return true // Les managers et admins peuvent toujours modifier
+    const today = new Date().toISOString().split('T')[0]
+    return transaction.date_operation === today
+  }
 
   useEffect(() => {
     loadUserProfile()
@@ -140,6 +149,8 @@ function EpargnePageContent() {
     }
   }
 
+  const [editingTransaction, setEditingTransaction] = useState<EpargneTransaction | null>(null)
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!selectedMembreId) {
@@ -172,28 +183,53 @@ function EpargnePageContent() {
         return
       }
 
-      const { error } = await supabase
-        .from('epargne_transactions')
-        .insert([{
-          membre_id: selectedMembreId,
-          agent_id: finalAgentId,
-          type: formData.type,
-          montant,
-          date_operation: formData.date_operation,
-          // Note: La colonne 'notes' n'existe pas dans la table epargne_transactions
-        }])
+      if (editingTransaction) {
+        // Mise à jour d'une transaction existante
+        const { error } = await supabase
+          .from('epargne_transactions')
+          .update({
+            type: formData.type,
+            montant,
+            date_operation: formData.date_operation,
+          })
+          .eq('id', editingTransaction.id)
 
-      if (error) {
-        console.error('Erreur lors de l\'enregistrement de l\'opération d\'épargne:', error)
-        if ((error as any).code === '42P01') {
-          setErrorMessage(
-            "La table 'epargne_transactions' n'existe pas encore. Veuillez créer la table côté Supabase pour activer l'épargne."
-          )
-        } else {
+        if (error) {
+          console.error('Erreur lors de la mise à jour de l\'opération d\'épargne:', error)
           const errorMessage = error.message || 'Erreur inconnue'
-          setErrorMessage(`Erreur lors de l'enregistrement de l'opération: ${errorMessage}`)
+          setErrorMessage(`Erreur lors de la mise à jour de l'opération: ${errorMessage}`)
+          return
         }
-        return
+
+        setEditingTransaction(null)
+        alert('Opération mise à jour avec succès.')
+      } else {
+        // Création d'une nouvelle transaction
+        const { error } = await supabase
+          .from('epargne_transactions')
+          .insert([{
+            membre_id: selectedMembreId,
+            agent_id: finalAgentId,
+            type: formData.type,
+            montant,
+            date_operation: formData.date_operation,
+            // Note: La colonne 'notes' n'existe pas dans la table epargne_transactions
+          }])
+
+        if (error) {
+          console.error('Erreur lors de l\'enregistrement de l\'opération d\'épargne:', error)
+          if ((error as any).code === '42P01') {
+            setErrorMessage(
+              "La table 'epargne_transactions' n'existe pas encore. Veuillez créer la table côté Supabase pour activer l'épargne."
+            )
+          } else {
+            const errorMessage = error.message || 'Erreur inconnue'
+            setErrorMessage(`Erreur lors de l'enregistrement de l'opération: ${errorMessage}`)
+          }
+          return
+        }
+
+        alert('Opération enregistrée avec succès.')
       }
 
       setFormData({
@@ -203,12 +239,47 @@ function EpargnePageContent() {
         notes: '',
       })
       await loadTransactions(selectedMembreId)
-      alert('Opération enregistrée avec succès.')
     } catch (error) {
       console.error('Erreur enregistrement épargne:', error)
-      setErrorMessage('Erreur lors de l’enregistrement de l’opération.')
+      setErrorMessage('Erreur lors de l\'enregistrement de l\'opération.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  function handleEdit(transaction: EpargneTransaction) {
+    setEditingTransaction(transaction)
+    setFormData({
+      type: transaction.type,
+      montant: transaction.montant.toString(),
+      date_operation: transaction.date_operation,
+      notes: transaction.notes || '',
+    })
+  }
+
+  function handleCancelEdit() {
+    setEditingTransaction(null)
+    setFormData({
+      type: 'depot',
+      montant: '',
+      date_operation: new Date().toISOString().split('T')[0],
+      notes: '',
+    })
+  }
+
+  async function handleDelete(transaction: EpargneTransaction) {
+    if (!confirm('Supprimer cette transaction ?')) return
+    try {
+      const { error } = await supabase
+        .from('epargne_transactions')
+        .delete()
+        .eq('id', transaction.id)
+      if (error) throw error
+      alert('Transaction supprimée avec succès.')
+      await loadTransactions(selectedMembreId)
+    } catch (err: any) {
+      console.error(err)
+      setErrorMessage('Impossible de supprimer la transaction: ' + (err.message || 'Erreur inconnue'))
     }
   }
 
@@ -355,13 +426,24 @@ function EpargnePageContent() {
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={!canOperate || !selectedMembreId || submitting}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              {submitting ? 'Enregistrement...' : 'Enregistrer l’opération'}
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={!canOperate || !selectedMembreId || submitting}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                {submitting ? 'Enregistrement...' : editingTransaction ? 'Mettre à jour' : "Enregistrer l'opération"}
+              </button>
+              {editingTransaction && (
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="px-6 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600"
+                >
+                  Annuler
+                </button>
+              )}
+            </div>
           </form>
         </div>
 
@@ -388,12 +470,17 @@ function EpargnePageContent() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Notes
                   </th>
+                  {(userProfile?.role === 'admin' || userProfile?.role === 'manager' || userProfile?.role === 'agent') && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {selectedMembreId && transactions.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-6 py-4 text-center text-gray-500">
+                    <td colSpan={(userProfile?.role === 'admin' || userProfile?.role === 'manager' || userProfile?.role === 'agent') ? 5 : 4} className="px-6 py-4 text-center text-gray-500">
                       Aucune opération enregistrée
                     </td>
                   </tr>
@@ -420,6 +507,44 @@ function EpargnePageContent() {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {t.notes || '-'}
                       </td>
+                      {(userProfile?.role === 'admin' || userProfile?.role === 'manager' || userProfile?.role === 'agent') && (
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleEdit(t)}
+                              disabled={!canAgentModifyTransaction(t)}
+                              className={`p-2 rounded ${
+                                canAgentModifyTransaction(t)
+                                  ? 'text-blue-600 hover:bg-blue-50'
+                                  : 'text-gray-400 cursor-not-allowed'
+                              }`}
+                              title={
+                                !canAgentModifyTransaction(t)
+                                  ? 'Vous ne pouvez modifier que les transactions du jour même. Contactez votre manager pour modifier les transactions des jours précédents.'
+                                  : 'Modifier la transaction'
+                              }
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(t)}
+                              disabled={!canAgentModifyTransaction(t)}
+                              className={`p-2 rounded ${
+                                canAgentModifyTransaction(t)
+                                  ? 'text-red-600 hover:bg-red-50'
+                                  : 'text-gray-400 cursor-not-allowed'
+                              }`}
+                              title={
+                                !canAgentModifyTransaction(t)
+                                  ? 'Vous ne pouvez supprimer que les transactions du jour même. Contactez votre manager pour supprimer les transactions des jours précédents.'
+                                  : 'Supprimer la transaction'
+                              }
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   ))
                 )}
