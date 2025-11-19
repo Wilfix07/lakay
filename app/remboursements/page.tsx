@@ -449,7 +449,7 @@ function RemboursementsPageContent() {
       const { data: groupData, error: groupError } = await groupQuery
       if (groupError) {
         // Si la table n'existe pas encore, ignorer l'erreur
-        if (groupError.code !== '42P01' && groupError.code !== 'PGRST116' && groupError.status !== 404) {
+        if (groupError.code !== '42P01' && groupError.code !== 'PGRST116') {
           console.error('Erreur lors du chargement des remboursements de groupe:', groupError)
         }
         setGroupRemboursements([])
@@ -770,7 +770,7 @@ function computeScheduledAmounts(remboursement: Remboursement) {
         // Si la table n'existe pas (404), ignorer l'erreur et retourner un tableau vide
         const isTableNotFound = 
           groupMembersError.code === 'PGRST116' || 
-          groupMembersError.status === 404 ||
+          groupMembersError.code === '42P01' ||
           groupMembersError.message?.includes('404') ||
           groupMembersError.message?.includes('does not exist') ||
           (groupMembersError.message?.includes('relation') && groupMembersError.message?.includes('not found'))

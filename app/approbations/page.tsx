@@ -131,7 +131,7 @@ function ApprobationsPageContent() {
         // Si la table group_prets n'existe pas, ignorer l'erreur
         const isTableNotFound = 
           groupPretsRes.error.code === 'PGRST116' || 
-          groupPretsRes.error.status === 404 ||
+          groupPretsRes.error.code === '42P01' ||
           groupPretsRes.error.message?.includes('404') ||
           groupPretsRes.error.message?.includes('does not exist')
         
@@ -144,7 +144,7 @@ function ApprobationsPageContent() {
         // Ignorer l'erreur si la table n'existe pas
         const isTableNotFound = 
           groupsRes.error.code === 'PGRST116' || 
-          groupsRes.error.status === 404 ||
+          groupsRes.error.code === '42P01' ||
           groupsRes.error.message?.includes('404') ||
           groupsRes.error.message?.includes('does not exist')
         

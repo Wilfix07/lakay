@@ -177,7 +177,6 @@ export async function POST(request: NextRequest) {
       if (createResult.error) {
         console.error('Erreur lors de la création de l\'utilisateur Auth:', {
           message: createResult.error.message,
-          status: createResult.error.status,
           code: createResult.error.code,
           name: createResult.error.name
         })
@@ -191,7 +190,7 @@ export async function POST(request: NextRequest) {
         }
         
         // Si l'erreur est "User not allowed", c'est probablement un problème de permissions avec l'API Auth
-        if (createResult.error.message.includes('not allowed') || createResult.error.message.includes('User not allowed') || createResult.error.status === 403) {
+        if (createResult.error.message.includes('not allowed') || createResult.error.message.includes('User not allowed')) {
           console.error('Erreur 403 - Vérification de la configuration:', {
             hasServiceRoleKey: !!supabaseServiceRoleKey,
             serviceRoleKeyLength: supabaseServiceRoleKey?.length,

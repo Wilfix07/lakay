@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase, type Membre, type Pret, type Collateral, type EpargneTransaction, type Remboursement, type UserProfile, type ChefZoneMembre } from '@/lib/supabase'
+import { supabase, type Membre, type Pret, type Collateral, type Remboursement, type UserProfile, type ChefZoneMembre, type GroupPret } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile } from '@/lib/auth'
@@ -33,7 +33,7 @@ function MembresAssignesContent() {
   }>>({})
   const [selectedMembre, setSelectedMembre] = useState<Membre | null>(null)
   const [showDetails, setShowDetails] = useState(false)
-  const [epargneTransactions, setEpargneTransactions] = useState<EpargneTransaction[]>([])
+  const [epargneTransactions, setEpargneTransactions] = useState<any[]>([])
   const [memberGroupInfo, setMemberGroupInfo] = useState<{ group_name: string; group_id: number } | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
 

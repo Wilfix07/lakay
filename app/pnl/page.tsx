@@ -63,6 +63,8 @@ export default function ProfitLossPage() {
   const [baseInterestRatePercent, setBaseInterestRatePercent] = useState<number>(15)
   const [realtimeConnected, setRealtimeConnected] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [previousSummary, setPreviousSummary] = useState<Summary | null>(null)
+  const [changedCards, setChangedCards] = useState<Set<string>>(new Set())
   const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
     maximumFractionDigits: 2,
   })}%`
@@ -289,7 +291,7 @@ export default function ProfitLossPage() {
       return result
     } catch (error: any) {
       // Si une exception est lancée, vérifier le code d'erreur
-      if (error?.code === '42P01' || error?.code === 'PGRST116' || error?.status === 404) {
+      if (error?.code === '42P01' || error?.code === 'PGRST116') {
         return { data: [], error: null }
       }
       throw error
@@ -560,13 +562,22 @@ export default function ProfitLossPage() {
     }
 
     for (const remboursement of remboursements) {
-      if (remboursement.statut !== 'paye') continue
+      // Inclure les remboursements payés et partiellement payés
+      if (remboursement.statut !== 'paye' && remboursement.statut !== 'paye_partiel') continue
       const agentId = remboursement.agent_id ?? 'unknown'
-      const principalValue = getPrincipalValue(remboursement)
-      const interestValue =
-        remboursement.interet != null
-          ? Number(remboursement.interet)
-          : Math.max(Number(remboursement.montant || 0) - principalValue, 0)
+      
+      // Pour les remboursements partiels, utiliser directement les valeurs principal/interet
+      // qui représentent le montant réellement payé
+      let interestValue = 0
+      if (remboursement.interet != null && remboursement.interet > 0) {
+        // Utiliser directement l'intérêt si disponible (cas des remboursements partiels)
+        interestValue = Number(remboursement.interet)
+      } else {
+        // Calculer l'intérêt à partir du montant total pour les remboursements complets
+        const principalValue = getPrincipalValue(remboursement)
+        interestValue = Math.max(Number(remboursement.montant || 0) - principalValue, 0)
+      }
+      
       if (interestValue <= 0) continue
 
       totalInterest += interestValue
@@ -589,13 +600,28 @@ export default function ProfitLossPage() {
     const commission = net > 0 ? net * commissionRate : 0
     const netAfterCommission = net - commission
 
-    setSummary({
+    const newSummary: Summary = {
       interest: totalInterest,
       expenses: totalExpenses,
       net,
       commission,
       netAfterCommission,
-    })
+    }
+
+    // Détecter les changements dans les cartes
+    const changed = new Set<string>()
+    if (previousSummary) {
+      if (previousSummary.interest !== newSummary.interest) changed.add('interets')
+      if (previousSummary.expenses !== newSummary.expenses) changed.add('depenses')
+      if (previousSummary.net !== newSummary.net) changed.add('resultat-net')
+      if (previousSummary.commission !== newSummary.commission) changed.add('commission')
+      if (previousSummary.netAfterCommission !== newSummary.netAfterCommission) changed.add('profit-apres-commission')
+    }
+    setChangedCards(changed)
+    setTimeout(() => setChangedCards(new Set()), 2000) // Réinitialiser après 2 secondes
+    
+    setPreviousSummary(newSummary)
+    setSummary(newSummary)
 
     const monthlyKeys = new Set([
       ...monthlyInterestMap.keys(),
@@ -665,6 +691,7 @@ export default function ProfitLossPage() {
       icon: ArrowDownRight,
       color: 'text-rose-600',
       bgColor: 'bg-rose-50',
+      key: 'interets',
     },
     {
       title: 'Dépenses',
@@ -673,6 +700,7 @@ export default function ProfitLossPage() {
       icon: AlertTriangle,
       color: 'text-amber-600',
       bgColor: 'bg-amber-50',
+      key: 'depenses',
     },
     {
       title: 'Résultat net',
@@ -681,6 +709,7 @@ export default function ProfitLossPage() {
       icon: TrendingUp,
       color: 'text-green-600',
       bgColor: 'bg-green-50',
+      key: 'resultat-net',
     },
     {
       title: `Commission agents (${commissionRateLabel})`,
@@ -689,6 +718,7 @@ export default function ProfitLossPage() {
       icon: Wallet,
       color: 'text-teal-600',
       bgColor: 'bg-teal-50',
+      key: 'commission',
     },
     {
       title: 'Profit après commission',
@@ -697,6 +727,7 @@ export default function ProfitLossPage() {
       icon: PiggyBank,
       color: 'text-indigo-600',
       bgColor: 'bg-indigo-50',
+      key: 'profit-apres-commission',
     },
   ], [summary, commissionRateLabel, baseInterestRateLabel])
 
@@ -767,20 +798,43 @@ export default function ProfitLossPage() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
           {summaryCards.map((card, index) => {
             const Icon = card.icon
+            const hasChanged = changedCards.has(card.key)
             return (
-              <Card key={index} className="border-0 shadow-sm">
+              <Card 
+                key={index} 
+                className={`border-0 shadow-sm transition-all duration-300 ${
+                  hasChanged ? 'ring-2 ring-primary/50 animate-pulse' : ''
+                }`}
+              >
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm text-muted-foreground">
-                    {card.title}
-                  </CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm text-muted-foreground">
+                      {card.title}
+                    </CardTitle>
+                    {hasChanged && (
+                      <span className="text-[10px] opacity-75 flex items-center gap-1">
+                        <span className="relative flex h-1.5 w-1.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
+                        </span>
+                        Mis à jour
+                      </span>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="text-2xl font-bold text-foreground">{card.value}</div>
+                      <div className={`text-2xl font-bold text-foreground transition-all ${
+                        hasChanged ? 'scale-105' : ''
+                      }`}>
+                        {card.value}
+                      </div>
                       <p className="text-xs text-muted-foreground mt-1">{card.description}</p>
                     </div>
-                    <div className={`p-3 rounded-lg ${card.bgColor}`}>
+                    <div className={`p-3 rounded-lg ${card.bgColor} transition-all ${
+                      hasChanged ? 'animate-bounce' : ''
+                    }`}>
                       <Icon className={`w-5 h-5 ${card.color}`} />
                     </div>
                   </div>

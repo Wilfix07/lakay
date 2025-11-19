@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
-import type { UserProfile as UserProfileType } from '@/lib/supabase'
+import type { UserProfile as UserProfileType, GroupPret, GroupRemboursement, Pret } from '@/lib/supabase'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -451,7 +451,7 @@ export default function DashboardPage() {
             return result
           } catch (error: any) {
             // Si une exception est lancée, vérifier le code d'erreur
-            if (error?.code === '42P01' || error?.code === 'PGRST116' || error?.status === 404) {
+            if (error?.code === '42P01' || error?.code === 'PGRST116') {
               return { data: [], error: null }
             }
             throw error
@@ -507,14 +507,14 @@ export default function DashboardPage() {
         const activePrets =
           pretsRes.data?.filter((pret) => pret.statut === 'actif') || []
         const activeGroupPrets =
-          (groupPretsRes.data || []).filter((pret) => pret.statut === 'actif') || []
+          (groupPretsRes.data || []).filter((pret: GroupPret) => pret.statut === 'actif') || []
         const totalActivePrincipal =
-          activePrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0) +
-          activeGroupPrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0)
+          activePrets.reduce((sum: number, pret) => sum + Number(pret.montant_pret || 0), 0) +
+          activeGroupPrets.reduce((sum: number, pret: GroupPret) => sum + Number(pret.montant_pret || 0), 0)
         const totalRemboursements = (remboursementsRes.data?.length || 0) + (groupRemboursementsRes.data?.length || 0)
         const remboursementsPayes =
           (remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0) +
-          (groupRemboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0)
+          (groupRemboursementsRes.data?.filter((r: any) => r.statut === 'paye').length || 0)
 
         const pretMapByNumericId = new Map(
           (pretsRes.data || []).map((pret) => [pret.id, pret]),
@@ -522,8 +522,8 @@ export default function DashboardPage() {
         const pretMapByCode = new Map(
           (pretsRes.data || []).map((pret) => [pret.pret_id, pret]),
         )
-        const groupPretMapByCode = new Map(
-          (groupPretsRes.data || []).map((pret) => [pret.pret_id, pret]),
+        const groupPretMapByCode = new Map<string, GroupPret>(
+          (groupPretsRes.data || []).map((pret: GroupPret) => [pret.pret_id, pret]),
         )
 
         const today = new Date()
@@ -533,14 +533,14 @@ export default function DashboardPage() {
           (r) => r.date_remboursement === todayDateString,
         )
         const todayGroupRemboursements = (groupRemboursementsRes.data || []).filter(
-          (r) => r.date_remboursement === todayDateString,
+          (r: any) => r.date_remboursement === todayDateString,
         )
         const todayRemboursementsCount = todayRemboursements.length + todayGroupRemboursements.length
         const todayRemboursementsAmount = todayRemboursements.reduce(
           (sum, remboursement) => sum + Number(remboursement.montant || 0),
           0,
         ) + todayGroupRemboursements.reduce(
-          (sum, remboursement) => sum + Number(remboursement.montant || 0),
+          (sum: number, remboursement: GroupRemboursement) => sum + Number(remboursement.montant || 0),
           0,
         )
 
@@ -556,7 +556,7 @@ export default function DashboardPage() {
             pretMapByNumericId.get(remboursement.pret_id as number) ||
             pretMapByCode.get(remboursement.pret_id as string) ||
             groupPretMapByCode.get(remboursement.pret_id as string)
-          if (pret && pret.nombre_remboursements) {
+          if (pret && 'nombre_remboursements' in pret && pret.nombre_remboursements) {
             const base =
               Number(pret.montant_pret || 0) /
               Number(pret.nombre_remboursements || 1)
@@ -569,7 +569,7 @@ export default function DashboardPage() {
 
         const activePretIds = new Set([
           ...activePrets.map((pret) => pret.pret_id),
-          ...activeGroupPrets.map((pret) => pret.pret_id),
+          ...activeGroupPrets.map((pret: GroupPret) => pret.pret_id),
         ])
 
         const overdueRemboursements =
@@ -585,8 +585,8 @@ export default function DashboardPage() {
             return false
           }) || []
 
-        const overdueGroupRemboursements =
-          groupRemboursementsRes.data?.filter((r) => {
+        const overdueGroupRemboursements: any[] =
+          groupRemboursementsRes.data?.filter((r: any) => {
             if (r.statut === 'paye') return false
             if (r.statut === 'en_retard') return true
             if (r.statut === 'en_attente' && r.date_remboursement) {
@@ -601,29 +601,29 @@ export default function DashboardPage() {
         const impayesCount = overdueRemboursements.length + overdueGroupRemboursements.length
         const impayesPrincipal =
           overdueRemboursements.reduce((sum, remboursement) => {
-            return sum + getPrincipalValue(remboursement)
+            return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
           }, 0) +
-          overdueGroupRemboursements.reduce((sum, remboursement) => {
-            return sum + getPrincipalValue(remboursement)
+          overdueGroupRemboursements.reduce((sum: number, remboursement: any) => {
+            return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
           }, 0) || 0
         const principalPayesActifs =
           (remboursementsRes.data || [])
             .filter(
-              (remboursement) =>
-                remboursement.statut === 'paye' &&
-                activePretIds.has(remboursement.pret_id),
+              (remboursement: any) =>
+                 remboursement.statut === 'paye' &&
+                 activePretIds.has(remboursement.pret_id),
             )
-            .reduce((sum, remboursement) => {
-              return sum + getPrincipalValue(remboursement)
+            .reduce((sum: number, remboursement: any) => {
+              return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
             }, 0) +
           (groupRemboursementsRes.data || [])
             .filter(
-              (remboursement) =>
-                remboursement.statut === 'paye' &&
-                activePretIds.has(remboursement.pret_id),
+              (remboursement: any) =>
+                 remboursement.statut === 'paye' &&
+                 activePretIds.has(remboursement.pret_id),
             )
-            .reduce((sum, remboursement) => {
-              return sum + getPrincipalValue(remboursement)
+            .reduce((sum: number, remboursement: any) => {
+              return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
             }, 0) || 0
         const portefeuilleActif = Math.max(totalActivePrincipal - principalPayesActifs, 0)
 
@@ -844,7 +844,7 @@ export default function DashboardPage() {
         if (pretsError) throw pretsError
 
         // Charger seulement les prêts de groupe actifs pour les groupes contenant les membres assignés
-        let groupPretsData: any[] = []
+        let groupPretsData: GroupPret[] = []
         let groupPretIds: string[] = []
         if (groupIds.length > 0) {
           const { data: groupPretsDataRes, error: groupPretsError } = await supabase
@@ -856,7 +856,7 @@ export default function DashboardPage() {
           if (groupPretsError && groupPretsError.code !== '42P01' && groupPretsError.code !== 'PGRST116') {
             throw groupPretsError
           }
-          groupPretsData = groupPretsDataRes || []
+          groupPretsData = (groupPretsDataRes || []) as GroupPret[]
           groupPretIds = groupPretsData.map(gp => gp.pret_id)
         }
 
@@ -903,7 +903,7 @@ export default function DashboardPage() {
         const totalRemboursements = (remboursementsRes.data?.length || 0) + (groupRemboursementsRes.data?.length || 0)
         const remboursementsPayes = 
           (remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0) +
-          (groupRemboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0)
+          (groupRemboursementsRes.data?.filter((r: any) => r.statut === 'paye').length || 0)
 
         const today = new Date()
         today.setHours(0, 0, 0, 0)
@@ -912,18 +912,18 @@ export default function DashboardPage() {
           (r) => r.date_remboursement === todayDateString,
         )
         const todayGroupRemboursements = (groupRemboursementsRes.data || []).filter(
-          (r) => r.date_remboursement === todayDateString,
+          (r: any) => r.date_remboursement === todayDateString,
         )
         const todayRemboursementsCount = todayRemboursements.length + todayGroupRemboursements.length
         const todayRemboursementsAmount = 
-          todayRemboursements.reduce((sum, remboursement) => sum + Number(remboursement.montant || 0), 0) +
-          todayGroupRemboursements.reduce((sum, remboursement) => sum + Number(remboursement.montant || 0), 0)
+          todayRemboursements.reduce((sum: number, remboursement: any) => sum + Number(remboursement.montant || 0), 0) +
+          todayGroupRemboursements.reduce((sum: number, remboursement: any) => sum + Number(remboursement.montant || 0), 0)
 
         const pretMapByCode = new Map(
           (pretsRes.data || []).map((pret) => [pret.pret_id, pret]),
         )
-        const groupPretMapByCode = new Map(
-          (groupPretsRes.data || []).map((pret) => [pret.pret_id, pret]),
+        const groupPretMapByCode = new Map<string, GroupPret>(
+          (groupPretsRes.data || []).map((pret: GroupPret) => [pret.pret_id, pret]),
         )
 
         const getPrincipalValue = (remboursement: {
@@ -950,7 +950,7 @@ export default function DashboardPage() {
 
         const activePretIds = new Set([
           ...activePrets.map((pret) => pret.pret_id),
-          ...activeGroupPrets.map((pret) => pret.pret_id),
+          ...activeGroupPrets.map((pret: GroupPret) => pret.pret_id),
         ])
 
         const overdueRemboursements =
@@ -966,8 +966,8 @@ export default function DashboardPage() {
             return false
           }) || []
 
-        const overdueGroupRemboursements =
-          groupRemboursementsRes.data?.filter((r) => {
+        const overdueGroupRemboursements: any[] =
+          groupRemboursementsRes.data?.filter((r: any) => {
             if (r.statut === 'paye') return false
             if (r.statut === 'en_retard') return true
             if (r.statut === 'en_attente' && r.date_remboursement) {
@@ -982,29 +982,29 @@ export default function DashboardPage() {
         const impayesCount = overdueRemboursements.length + overdueGroupRemboursements.length
         const impayesPrincipal =
           overdueRemboursements.reduce((sum, remboursement) => {
-            return sum + getPrincipalValue(remboursement)
+            return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
           }, 0) +
-          overdueGroupRemboursements.reduce((sum, remboursement) => {
-            return sum + getPrincipalValue(remboursement)
+          overdueGroupRemboursements.reduce((sum: number, remboursement: any) => {
+            return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
           }, 0) || 0
         const principalPayesActifs =
           (remboursementsRes.data || [])
             .filter(
-              (remboursement) =>
-                remboursement.statut === 'paye' &&
-                activePretIds.has(remboursement.pret_id),
+              (remboursement: any) =>
+                 remboursement.statut === 'paye' &&
+                 activePretIds.has(remboursement.pret_id),
             )
-            .reduce((sum, remboursement) => {
-              return sum + getPrincipalValue(remboursement)
+            .reduce((sum: number, remboursement: any) => {
+              return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
             }, 0) +
           (groupRemboursementsRes.data || [])
             .filter(
-              (remboursement) =>
-                remboursement.statut === 'paye' &&
-                activePretIds.has(remboursement.pret_id),
+              (remboursement: any) =>
+                 remboursement.statut === 'paye' &&
+                 activePretIds.has(remboursement.pret_id),
             )
-            .reduce((sum, remboursement) => {
-              return sum + getPrincipalValue(remboursement)
+            .reduce((sum: number, remboursement: any) => {
+              return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
             }, 0) || 0
         const portefeuilleActif = Math.max(totalActivePrincipal - principalPayesActifs, 0)
 
@@ -1076,7 +1076,7 @@ export default function DashboardPage() {
             }
             return result
           } catch (error: any) {
-            if (error?.code === '42P01' || error?.code === 'PGRST116' || error?.status === 404) {
+            if (error?.code === '42P01' || error?.code === 'PGRST116') {
               return { data: [], error: null }
             }
             throw error
@@ -1119,22 +1119,22 @@ export default function DashboardPage() {
         const activePrets =
           pretsRes.data?.filter((pret) => pret.statut === 'actif') || []
         const activeGroupPrets =
-          (groupPretsRes.data || []).filter((pret) => pret.statut === 'actif') || []
+          (groupPretsRes.data || []).filter((pret: GroupPret) => pret.statut === 'actif') || []
         const totalActivePrincipal =
-          activePrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0) +
-          activeGroupPrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0)
+          activePrets.reduce((sum: number, pret) => sum + Number(pret.montant_pret || 0), 0) +
+          activeGroupPrets.reduce((sum: number, pret: GroupPret) => sum + Number(pret.montant_pret || 0), 0)
         const totalRemboursements = (remboursementsRes.data?.length || 0) + (groupRemboursementsRes.data?.length || 0)
         const remboursementsPayes =
           (remboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0) +
-          (groupRemboursementsRes.data?.filter((r) => r.statut === 'paye').length || 0)
+          (groupRemboursementsRes.data?.filter((r: any) => r.statut === 'paye').length || 0)
         const pretMapById = new Map(
           (pretsRes.data || []).map((pret) => [pret.id, pret]),
         )
         const pretMapByCode = new Map(
           (pretsRes.data || []).map((pret) => [pret.pret_id, pret]),
         )
-        const groupPretMapByCode = new Map(
-          (groupPretsRes.data || []).map((pret) => [pret.pret_id, pret]),
+        const groupPretMapByCode = new Map<string, GroupPret>(
+          (groupPretsRes.data || []).map((pret: GroupPret) => [pret.pret_id, pret]),
         )
         const today = new Date()
         today.setHours(0, 0, 0, 0)
@@ -1143,12 +1143,12 @@ export default function DashboardPage() {
           (r) => r.date_remboursement === todayDateString,
         )
         const todayGroupRemboursements = (groupRemboursementsRes.data || []).filter(
-          (r) => r.date_remboursement === todayDateString,
+          (r: any) => r.date_remboursement === todayDateString,
         )
         const todayRemboursementsCount = todayRemboursements.length + todayGroupRemboursements.length
         const todayRemboursementsAmount = 
-          todayRemboursements.reduce((sum, remboursement) => sum + Number(remboursement.montant || 0), 0) +
-          todayGroupRemboursements.reduce((sum, remboursement) => sum + Number(remboursement.montant || 0), 0)
+          todayRemboursements.reduce((sum: number, remboursement: any) => sum + Number(remboursement.montant || 0), 0) +
+          todayGroupRemboursements.reduce((sum: number, remboursement: any) => sum + Number(remboursement.montant || 0), 0)
 
         const getPrincipalValue = (remboursement: {
           principal: number | null
@@ -1176,7 +1176,7 @@ export default function DashboardPage() {
 
         const activePretIds = new Set([
           ...activePrets.map((pret) => pret.pret_id),
-          ...activeGroupPrets.map((pret) => pret.pret_id),
+          ...activeGroupPrets.map((pret: GroupPret) => pret.pret_id),
         ])
 
         const overdueRemboursements =
@@ -1192,8 +1192,8 @@ export default function DashboardPage() {
             return false
           }) || []
 
-        const overdueGroupRemboursements =
-          groupRemboursementsRes.data?.filter((r) => {
+        const overdueGroupRemboursements: any[] =
+          groupRemboursementsRes.data?.filter((r: any) => {
             if (r.statut === 'paye') return false
             if (r.statut === 'en_retard') return true
             if (r.statut === 'en_attente' && r.date_remboursement) {
@@ -1208,29 +1208,29 @@ export default function DashboardPage() {
         const impayesCount = overdueRemboursements.length + overdueGroupRemboursements.length
         const impayesPrincipal =
           overdueRemboursements.reduce((sum, remboursement) => {
-            return sum + getPrincipalValue(remboursement)
+            return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
           }, 0) +
-          overdueGroupRemboursements.reduce((sum, remboursement) => {
-            return sum + getPrincipalValue(remboursement)
+          overdueGroupRemboursements.reduce((sum: number, remboursement: any) => {
+            return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
           }, 0) || 0
         const principalPayesActifs =
           (remboursementsRes.data || [])
             .filter(
-              (remboursement) =>
-                remboursement.statut === 'paye' &&
-                activePretIds.has(remboursement.pret_id),
+              (remboursement: any) =>
+                 remboursement.statut === 'paye' &&
+                 activePretIds.has(remboursement.pret_id),
             )
-            .reduce((sum, remboursement) => {
-              return sum + getPrincipalValue(remboursement)
+            .reduce((sum: number, remboursement: any) => {
+              return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
             }, 0) +
           (groupRemboursementsRes.data || [])
             .filter(
-              (remboursement) =>
-                remboursement.statut === 'paye' &&
-                activePretIds.has(remboursement.pret_id),
+              (remboursement: any) =>
+                 remboursement.statut === 'paye' &&
+                 activePretIds.has(remboursement.pret_id),
             )
-            .reduce((sum, remboursement) => {
-              return sum + getPrincipalValue(remboursement)
+            .reduce((sum: number, remboursement: any) => {
+              return sum + getPrincipalValue({ ...remboursement, principal: remboursement.principal ?? null, montant: remboursement.montant ?? null })
             }, 0) || 0
         const portefeuilleActif = Math.max(totalActivePrincipal - principalPayesActifs, 0)
 
@@ -1276,11 +1276,11 @@ export default function DashboardPage() {
 
         const totalCollected =
           (remboursementsRes.data
-            ?.filter((item) => qualifyingStatuses.has(item.statut))
-            .reduce((sum, item) => sum + Number(item.montant || 0), 0) || 0) +
+            ?.filter((item: any) => qualifyingStatuses.has(item.statut))
+            .reduce((sum: number, item: any) => sum + Number(item.montant || 0), 0) || 0) +
           (groupRemboursementsRes.data
-            ?.filter((item) => qualifyingStatuses.has(item.statut))
-            .reduce((sum, item) => sum + Number(item.montant || 0), 0) || 0)
+            ?.filter((item: any) => qualifyingStatuses.has(item.statut))
+            .reduce((sum: number, item: any) => sum + Number(item.montant || 0), 0) || 0)
         const displayName =
           `${userProfile.prenom ?? ''} ${userProfile.nom ?? ''}`.trim() || userProfile.agent_id || 'Vous'
         const collections =

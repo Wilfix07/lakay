@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { supabase, type Pret, type Membre, type Agent, type UserProfile } from '@/lib/supabase'
+import { supabase, type Pret, type Membre, type Agent, type UserProfile, type GroupPret, type Collateral } from '@/lib/supabase'
 import { formatCurrency, formatDate, getMonthName } from '@/lib/utils'
 import { addDays, addMonths, getDay } from 'date-fns'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -42,10 +42,10 @@ function PretsPageContent() {
   const router = useRouter()
   const { repaymentFrequencies } = useDynamicData()
   const [prets, setPrets] = useState<Pret[]>([])
-  const [groupPrets, setGroupPrets] = useState<any[]>([])
+  const [groupPrets, setGroupPrets] = useState<GroupPret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
-  const [collaterals, setCollaterals] = useState<any[]>([])
+  const [collaterals, setCollaterals] = useState<Collateral[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingPret, setEditingPret] = useState<Pret | null>(null)
@@ -545,7 +545,8 @@ function PretsPageContent() {
           .in('pret_id', pretIds)
 
         if (!collateralsError && collateralsData) {
-          setCollaterals(collateralsData)
+          // Store partial collateral data for status checking - cast to Collateral[] for compatibility
+          setCollaterals(collateralsData as unknown as Collateral[])
         }
       } else {
         setCollaterals([])
@@ -583,7 +584,7 @@ function PretsPageContent() {
         // Si c'est une erreur 404 (table n'existe pas), ignorer silencieusement
         const isTableNotFound = 
           groupPretsError.code === 'PGRST116' || 
-          groupPretsError.status === 404 ||
+          groupPretsError.code === '42P01' ||
           groupPretsError.message?.includes('404') ||
           groupPretsError.message?.includes('does not exist') ||
           (groupPretsError.message?.includes('relation') && groupPretsError.message?.includes('not found'))
@@ -794,7 +795,7 @@ function PretsPageContent() {
 
       // Déterminer le statut initial selon le rôle de l'utilisateur
       const initialStatus = 'en_attente_garantie'
-      let groupCollaterals: any[] = [] // Pour stocker les garanties de groupe
+      let groupCollaterals: Partial<Collateral>[] = [] // Pour stocker les garanties de groupe
 
       if (loanType === 'membre') {
         // Créer le prêt pour un membre individuel

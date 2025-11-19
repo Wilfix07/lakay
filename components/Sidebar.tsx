@@ -35,6 +35,7 @@ const roleLabels: Record<UserRole, string> = {
   admin: 'Administrateur',
   manager: 'Manager',
   agent: 'Agent de Crédit',
+  chef_zone: 'Chef de Zone',
 }
 
 export function Sidebar({ userProfile, onSignOut }: SidebarProps) {

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement, type EpargneTransaction } from '@/lib/supabase'
+import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement, type GroupPret } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
@@ -109,7 +109,7 @@ function MembresPageContent() {
   const [memberGroupNames, setMemberGroupNames] = useState<Map<string, string>>(new Map())
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [selectedMembreForDetails, setSelectedMembreForDetails] = useState<Membre | null>(null)
-  const [epargneTransactions, setEpargneTransactions] = useState<EpargneTransaction[]>([])
+  const [epargneTransactions, setEpargneTransactions] = useState<any[]>([])
   const [memberGroupInfo, setMemberGroupInfo] = useState<{ group_name: string; group_id: number } | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [membresDetails, setMembresDetails] = useState<Record<string, {

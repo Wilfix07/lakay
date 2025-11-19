@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useMemo } from 'react'
-import { supabase, type Collateral, type Pret, type Membre, type UserProfile } from '@/lib/supabase'
+import { supabase, type Collateral, type Pret, type Membre, type UserProfile, type GroupPret } from '@/lib/supabase'
 import { getUserProfile, signOut } from '@/lib/auth'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { DashboardLayout } from '@/components/DashboardLayout'
@@ -38,7 +38,7 @@ function CollateralsPageContent() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [collaterals, setCollaterals] = useState<Collateral[]>([])
   const [prets, setPrets] = useState<Pret[]>([])
-  const [groupPrets, setGroupPrets] = useState<any[]>([])
+  const [groupPrets, setGroupPrets] = useState<GroupPret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -179,7 +179,7 @@ function CollateralsPageContent() {
         // Si c'est une erreur 404 (table n'existe pas), ignorer silencieusement
         const isTableNotFound = 
           groupPretsError.code === 'PGRST116' || 
-          groupPretsError.status === 404 ||
+          groupPretsError.code === '42P01' ||
           groupPretsError.message?.includes('404') ||
           groupPretsError.message?.includes('does not exist') ||
           (groupPretsError.message?.includes('relation') && groupPretsError.message?.includes('not found'))
