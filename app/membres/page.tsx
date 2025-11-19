@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement } from '@/lib/supabase'
+import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement, type EpargneTransaction } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, X, Loader2, User, Users, CheckCircle2 } from 'lucide-react'
+import { Plus, X, Loader2, User, Users, CheckCircle2, Clock, TrendingUp, TrendingDown, DollarSign, UserPlus, Calendar, Wallet, PiggyBank, CreditCard } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
@@ -107,6 +107,17 @@ function MembresPageContent() {
   const [transferMemberError, setTransferMemberError] = useState<string | null>(null)
   const [membersInGroups, setMembersInGroups] = useState<Set<string>>(new Set())
   const [memberGroupNames, setMemberGroupNames] = useState<Map<string, string>>(new Map())
+  const [showDetailsModal, setShowDetailsModal] = useState(false)
+  const [selectedMembreForDetails, setSelectedMembreForDetails] = useState<Membre | null>(null)
+  const [epargneTransactions, setEpargneTransactions] = useState<EpargneTransaction[]>([])
+  const [memberGroupInfo, setMemberGroupInfo] = useState<{ group_name: string; group_id: number } | null>(null)
+  const [loadingDetails, setLoadingDetails] = useState(false)
+  const [membresDetails, setMembresDetails] = useState<Record<string, {
+    garantie: number
+    epargne: number
+    pretActif: number
+    echeancier: Remboursement[]
+  }>>({})
 
   const currentLoan =
     memberLoans.find((loan) => loan.pret_id === selectedLoanId) ?? memberLoans[0] ?? null
@@ -807,6 +818,190 @@ function MembresPageContent() {
     setTransferDialogOpen(true)
   }
 
+  // Fonction helper pour calculer les jours de retard
+  function calculateDaysOverdue(dateRemboursement: string): number {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const dateRemb = new Date(dateRemboursement)
+    dateRemb.setHours(0, 0, 0, 0)
+    
+    if (dateRemb >= today) return 0
+    
+    const diffTime = today.getTime() - dateRemb.getTime()
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
+    return diffDays
+  }
+
+  async function handleViewDetails(membre: Membre) {
+    setSelectedMembreForDetails(membre)
+    setShowDetailsModal(true)
+    setLoadingDetails(true)
+    
+    try {
+      // Charger les transactions d'épargne détaillées
+      const { data: transactions, error: transactionsError } = await supabase
+        .from('epargne_transactions')
+        .select('*')
+        .eq('membre_id', membre.membre_id)
+        .order('date_operation', { ascending: false })
+
+      if (transactionsError) throw transactionsError
+      setEpargneTransactions(transactions || [])
+
+      // Vérifier si le membre est dans un groupe
+      const { data: groupMember, error: groupMemberError } = await supabase
+        .from('membre_group_members')
+        .select('group_id, membre_groups!inner(group_name)')
+        .eq('membre_id', membre.membre_id)
+        .limit(1)
+        .single()
+
+      if (groupMemberError && groupMemberError.code !== 'PGRST116') {
+        console.error('Erreur lors du chargement du groupe:', groupMemberError)
+      }
+
+      if (groupMember && (groupMember as any).membre_groups) {
+        setMemberGroupInfo({
+          group_name: (groupMember as any).membre_groups.group_name,
+          group_id: groupMember.group_id,
+        })
+      } else {
+        setMemberGroupInfo(null)
+      }
+
+      // Charger les détails financiers du membre
+      await loadMembreDetails(membre.membre_id)
+    } catch (error) {
+      console.error('Erreur lors du chargement des détails:', error)
+    } finally {
+      setLoadingDetails(false)
+    }
+  }
+
+  async function loadMembreDetails(membreId: string) {
+    // Charger les groupes qui contiennent le membre
+    const { data: groupMembersData } = await supabase
+      .from('membre_group_members')
+      .select('group_id, membre_id')
+      .eq('membre_id', membreId)
+
+    const groupIds = [...new Set((groupMembersData || []).map(gm => gm.group_id))]
+
+    // Charger les prêts de groupe actifs pour ces groupes
+    let groupPretsMap: any[] = []
+    if (groupIds.length > 0) {
+      const { data: groupPretsData } = await supabase
+        .from('group_prets')
+        .select('pret_id, montant_pret, capital_restant, group_id')
+        .in('group_id', groupIds)
+        .eq('statut', 'actif')
+
+      if (groupPretsData) {
+        groupPretsMap = groupPretsData.filter(gp => groupIds.includes(gp.group_id))
+      }
+    }
+
+    // Charger les prêts actifs individuels
+    const { data: pretsActifs } = await supabase
+      .from('prets')
+      .select('pret_id, montant_pret, capital_restant')
+      .eq('membre_id', membreId)
+      .eq('statut', 'actif')
+
+    const pretIds = (pretsActifs || []).map(p => p.pret_id)
+    
+    // Charger les garanties (collaterals) seulement pour les prêts actifs
+    let garantieTotal = 0
+    if (pretIds.length > 0) {
+      const { data: collaterals } = await supabase
+        .from('collaterals')
+        .select('montant')
+        .in('pret_id', pretIds)
+        .is('group_pret_id', null)
+
+      garantieTotal = (collaterals || []).reduce((sum, c) => sum + Number(c.montant || 0), 0)
+    }
+
+    // Ajouter les garanties pour les prêts de groupe actifs
+    if (groupPretsMap.length > 0) {
+      const groupPretIds = groupPretsMap.map(gp => gp.pret_id)
+      const { data: groupCollaterals } = await supabase
+        .from('collaterals')
+        .select('montant')
+        .in('group_pret_id', groupPretIds)
+        .eq('membre_id', membreId)
+
+      garantieTotal += (groupCollaterals || []).reduce((sum, c) => sum + Number(c.montant || 0), 0)
+    }
+
+    // Charger les épargnes
+    const { data: epargnes } = await supabase
+      .from('epargne_transactions')
+      .select('type, montant')
+      .eq('membre_id', membreId)
+
+    const epargneTotal = (epargnes || []).reduce((sum, t) => {
+      const montant = Number(t.montant || 0)
+      return sum + (t.type === 'depot' ? montant : -montant)
+    }, 0)
+
+    // Calculer le total des prêts actifs (individuels + groupe)
+    const pretActifTotal = 
+      (pretsActifs || []).reduce((sum, p) => {
+        return sum + Number(p.capital_restant || p.montant_pret || 0)
+      }, 0) +
+      groupPretsMap.reduce((sum, p) => {
+        return sum + Number(p.capital_restant || p.montant_pret || 0)
+      }, 0)
+
+    // Charger l'échéancier (remboursements en attente ou en retard seulement)
+    let echeancier: Remboursement[] = []
+    
+    // Remboursements pour prêts individuels actifs
+    if (pretIds.length > 0) {
+      const { data: remboursements } = await supabase
+        .from('remboursements')
+        .select('*')
+        .in('pret_id', pretIds)
+        .in('statut', ['en_attente', 'en_retard'])
+        .order('date_remboursement', { ascending: true })
+
+      echeancier = remboursements || []
+    }
+
+    // Remboursements pour prêts de groupe actifs
+    if (groupPretsMap.length > 0) {
+      const groupPretIds = groupPretsMap.map(gp => gp.pret_id)
+      const { data: groupRemboursements } = await supabase
+        .from('group_remboursements')
+        .select('*')
+        .in('pret_id', groupPretIds)
+        .eq('membre_id', membreId)
+        .in('statut', ['en_attente', 'en_retard'])
+        .order('date_remboursement', { ascending: true })
+
+      if (groupRemboursements) {
+        echeancier = [...echeancier, ...groupRemboursements]
+      }
+    }
+
+    // Trier l'échéancier par date
+    echeancier.sort((a, b) => {
+      const dateA = new Date(a.date_remboursement).getTime()
+      const dateB = new Date(b.date_remboursement).getTime()
+      return dateA - dateB
+    })
+
+    setMembresDetails({
+      [membreId]: {
+        garantie: garantieTotal,
+        epargne: epargneTotal,
+        pretActif: pretActifTotal,
+        echeancier,
+      }
+    })
+  }
+
   async function handleTransferSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     if (!transferMember || !transferAgentId) {
@@ -1247,6 +1442,16 @@ function MembresPageContent() {
                           {new Date(membre.created_at).toLocaleDateString('fr-FR')}
                         </TableCell>
                         <TableCell className="text-right space-x-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleViewDetails(membre)
+                            }}
+                          >
+                            Voir détails
+                          </Button>
                           {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && (
                             <Button
                               variant="outline"
@@ -1721,6 +1926,273 @@ function MembresPageContent() {
             </form>
           </DialogContent>
         </Dialog>
+      )}
+
+      {/* Modal de détails */}
+      {showDetailsModal && selectedMembreForDetails && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>
+                    Détails - {selectedMembreForDetails.prenom} {selectedMembreForDetails.nom} ({selectedMembreForDetails.membre_id})
+                  </CardTitle>
+                  <CardDescription className="mt-2">
+                    Informations financières complètes du membre
+                  </CardDescription>
+                </div>
+                <Button variant="ghost" onClick={() => {
+                  setShowDetailsModal(false)
+                  setEpargneTransactions([])
+                  setMemberGroupInfo(null)
+                  setSelectedMembreForDetails(null)
+                }}>
+                  ✕
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {loadingDetails ? (
+                <div className="text-center py-8">
+                  <div className="text-muted-foreground">Chargement des détails...</div>
+                </div>
+              ) : (
+                <>
+                  {/* Informations sur le type de membre */}
+                  <div className="flex items-center gap-2 p-4 bg-muted rounded-lg">
+                    <Badge variant={memberGroupInfo ? 'default' : 'secondary'} className="text-sm">
+                      {memberGroupInfo ? (
+                        <>
+                          <Users className="w-4 h-4 mr-1" />
+                          Membre de groupe
+                        </>
+                      ) : (
+                        <>
+                          <UserPlus className="w-4 h-4 mr-1" />
+                          Membre individuel
+                        </>
+                      )}
+                    </Badge>
+                    {memberGroupInfo && (
+                      <span className="text-sm text-muted-foreground">
+                        Groupe: <strong>{memberGroupInfo.group_name}</strong>
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Cartes de résumé */}
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm">Garantie Totale</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-2xl font-bold">
+                          {formatCurrency(membresDetails[selectedMembreForDetails.membre_id]?.garantie || 0)}
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm">Épargne Totale</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-2xl font-bold">
+                          {formatCurrency(membresDetails[selectedMembreForDetails.membre_id]?.epargne || 0)}
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm">Prêt Actif</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-2xl font-bold">
+                          {formatCurrency(membresDetails[selectedMembreForDetails.membre_id]?.pretActif || 0)}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Informations sur les remboursements */}
+                  {(() => {
+                    const echeancier = membresDetails[selectedMembreForDetails.membre_id]?.echeancier || []
+                    const remboursementsEnAttente = echeancier.filter(r => r.statut === 'en_attente' || r.statut === 'en_retard')
+                    const montantARembourser = remboursementsEnAttente.reduce((sum, r) => sum + Number(r.montant || 0), 0)
+                    const prochainRemboursement = echeancier.find(r => r.statut === 'en_attente' || r.statut === 'en_retard')
+                    const remboursementsEnRetard = echeancier.filter(r => r.statut === 'en_retard')
+                    const joursRetardMax = remboursementsEnRetard.length > 0 
+                      ? Math.max(...remboursementsEnRetard.map(r => calculateDaysOverdue(r.date_remboursement)))
+                      : 0
+
+                    return (
+                      <div className="grid gap-4 md:grid-cols-3">
+                        <Card>
+                          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Montant à rembourser</CardTitle>
+                            <DollarSign className="h-4 w-4 text-muted-foreground" />
+                          </CardHeader>
+                          <CardContent>
+                            <div className="text-2xl font-bold">{formatCurrency(montantARembourser)}</div>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {remboursementsEnAttente.length} remboursement{remboursementsEnAttente.length > 1 ? 's' : ''} en attente
+                            </p>
+                          </CardContent>
+                        </Card>
+                        <Card>
+                          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Prochain remboursement</CardTitle>
+                            <Calendar className="h-4 w-4 text-muted-foreground" />
+                          </CardHeader>
+                          <CardContent>
+                            {prochainRemboursement ? (
+                              <>
+                                <div className="text-2xl font-bold">{formatDate(prochainRemboursement.date_remboursement)}</div>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  {formatCurrency(prochainRemboursement.montant)}
+                                </p>
+                              </>
+                            ) : (
+                              <div className="text-lg text-muted-foreground">Aucun</div>
+                            )}
+                          </CardContent>
+                        </Card>
+                        <Card>
+                          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Jours de retard</CardTitle>
+                            <Clock className="h-4 w-4 text-muted-foreground" />
+                          </CardHeader>
+                          <CardContent>
+                            {joursRetardMax > 0 ? (
+                              <>
+                                <div className="text-2xl font-bold text-destructive">{joursRetardMax}</div>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  {remboursementsEnRetard.length} remboursement{remboursementsEnRetard.length > 1 ? 's' : ''} en retard
+                                </p>
+                              </>
+                            ) : (
+                              <div className="text-lg text-green-600">0</div>
+                            )}
+                          </CardContent>
+                        </Card>
+                      </div>
+                    )
+                  })()}
+
+                  {/* Échéancier */}
+                  <div>
+                    <h3 className="text-lg font-semibold mb-4">Échéancier</h3>
+                    {membresDetails[selectedMembreForDetails.membre_id]?.echeancier.length === 0 ? (
+                      <p className="text-muted-foreground">Aucun remboursement en attente</p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>N°</TableHead>
+                            <TableHead>Date prévue</TableHead>
+                            <TableHead>Montant</TableHead>
+                            <TableHead>Principal</TableHead>
+                            <TableHead>Intérêt</TableHead>
+                            <TableHead>Statut</TableHead>
+                            <TableHead>Jours retard</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {membresDetails[selectedMembreForDetails.membre_id]?.echeancier.map((remboursement) => {
+                            const joursRetard = remboursement.statut === 'en_retard' 
+                              ? calculateDaysOverdue(remboursement.date_remboursement)
+                              : 0
+                            return (
+                              <TableRow key={remboursement.id}>
+                                <TableCell>{remboursement.numero_remboursement}</TableCell>
+                                <TableCell>{formatDate(remboursement.date_remboursement)}</TableCell>
+                                <TableCell>{formatCurrency(remboursement.montant)}</TableCell>
+                                <TableCell>{formatCurrency(remboursement.principal || 0)}</TableCell>
+                                <TableCell>{formatCurrency(remboursement.interet || 0)}</TableCell>
+                                <TableCell>
+                                  <Badge
+                                    variant={
+                                      remboursement.statut === 'en_retard'
+                                        ? 'destructive'
+                                        : remboursement.statut === 'paye'
+                                        ? 'default'
+                                        : 'secondary'
+                                    }
+                                  >
+                                    {remboursement.statut === 'en_retard'
+                                      ? 'En retard'
+                                      : remboursement.statut === 'paye'
+                                      ? 'Payé'
+                                      : 'En attente'}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell>
+                                  {joursRetard > 0 ? (
+                                    <span className="text-destructive font-semibold">{joursRetard}</span>
+                                  ) : (
+                                    <span className="text-muted-foreground">-</span>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            )
+                          })}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </div>
+
+                  {/* Détails des dépôts et retraits */}
+                  <div>
+                    <h3 className="text-lg font-semibold mb-4">Dépôts et Retraits</h3>
+                    {epargneTransactions.length === 0 ? (
+                      <p className="text-muted-foreground">Aucune transaction d'épargne</p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Type</TableHead>
+                            <TableHead>Montant</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {epargneTransactions.map((transaction) => (
+                            <TableRow key={transaction.id}>
+                              <TableCell>{formatDate(transaction.date_operation)}</TableCell>
+                              <TableCell>
+                                <Badge
+                                  variant={transaction.type === 'depot' ? 'default' : 'secondary'}
+                                  className="flex items-center gap-1 w-fit"
+                                >
+                                  {transaction.type === 'depot' ? (
+                                    <>
+                                      <TrendingUp className="w-3 h-3" />
+                                      Dépôt
+                                    </>
+                                  ) : (
+                                    <>
+                                      <TrendingDown className="w-3 h-3" />
+                                      Retrait
+                                    </>
+                                  )}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className={transaction.type === 'depot' ? 'text-green-600' : 'text-red-600'}>
+                                {transaction.type === 'depot' ? '+' : '-'}
+                                {formatCurrency(transaction.montant)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
     </DashboardLayout>
   )

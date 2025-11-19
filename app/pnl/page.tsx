@@ -6,6 +6,7 @@ import { getUserProfile, signOut } from '@/lib/auth'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Table,
   TableBody,
@@ -16,7 +17,7 @@ import {
 } from '@/components/ui/table'
 import { formatCurrency } from '@/lib/utils'
 import { getInterestRates } from '@/lib/systemSettings'
-import { AlertTriangle, Loader2, TrendingUp, ArrowDownRight, Wallet, PiggyBank } from 'lucide-react'
+import { AlertTriangle, Loader2, TrendingUp, ArrowDownRight, Wallet, PiggyBank, RefreshCcw } from 'lucide-react'
 
 type MonthlyRow = {
   key: string
@@ -61,6 +62,7 @@ export default function ProfitLossPage() {
   const [commissionRatePercent, setCommissionRatePercent] = useState<number>(30)
   const [baseInterestRatePercent, setBaseInterestRatePercent] = useState<number>(15)
   const [realtimeConnected, setRealtimeConnected] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
     maximumFractionDigits: 2,
   })}%`
@@ -92,7 +94,7 @@ export default function ProfitLossPage() {
       expensesFilter = `agent_id=eq.${userProfile.agent_id}`
     }
 
-    // Subscription pour les remboursements
+    // Subscription pour les remboursements individuels
     const remboursementsChannel = supabase
       .channel('pnl-remboursements')
       .on(
@@ -123,6 +125,34 @@ export default function ProfitLossPage() {
       unsubscribe: () => remboursementsChannel.unsubscribe(),
     })
 
+    // Subscription pour les remboursements de groupe (si la table existe)
+    const groupRemboursementsChannel = supabase
+      .channel('pnl-group-remboursements')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'group_remboursements',
+          filter: remboursementsFilter || undefined,
+        },
+        (payload) => {
+          console.log('💰 Changement détecté dans group_remboursements (P&L):', payload.eventType)
+          loadProfitLoss(false)
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRealtimeConnected(true)
+          console.log('✅ Subscription group_remboursements P&L active')
+        }
+      })
+
+    subscriptions.push({
+      channel: groupRemboursementsChannel,
+      unsubscribe: () => groupRemboursementsChannel.unsubscribe(),
+    })
+
     // Subscription pour les dépenses
     const expensesChannel = supabase
       .channel('pnl-expenses')
@@ -146,7 +176,7 @@ export default function ProfitLossPage() {
       unsubscribe: () => expensesChannel.unsubscribe(),
     })
 
-    // Subscription pour les prêts (pour mettre à jour les informations de prêt)
+    // Subscription pour les prêts individuels
     const pretsChannel = supabase
       .channel('pnl-prets')
       .on(
@@ -167,6 +197,29 @@ export default function ProfitLossPage() {
     subscriptions.push({
       channel: pretsChannel,
       unsubscribe: () => pretsChannel.unsubscribe(),
+    })
+
+    // Subscription pour les prêts de groupe (si la table existe)
+    const groupPretsChannel = supabase
+      .channel('pnl-group-prets')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'group_prets',
+          filter: pretsFilter || undefined,
+        },
+        (payload) => {
+          console.log('📊 Changement détecté dans group_prets (P&L):', payload.eventType)
+          loadProfitLoss(false)
+        }
+      )
+      .subscribe()
+
+    subscriptions.push({
+      channel: groupPretsChannel,
+      unsubscribe: () => groupPretsChannel.unsubscribe(),
     })
 
     // Subscription pour les agents (pour les admins et managers)
@@ -221,6 +274,28 @@ export default function ProfitLossPage() {
     }
   }
 
+  // Helper function pour gérer les erreurs de tables optionnelles
+  const safeQuery = async (query: any) => {
+    try {
+      const result = await query
+      // Si la requête retourne une erreur (table n'existe pas, etc.), retourner un résultat vide
+      if (result.error) {
+        const errorCode = (result.error as any)?.code
+        const errorStatus = (result.error as any)?.status
+        if (errorCode === '42P01' || errorCode === 'PGRST116' || errorStatus === 404) {
+          return { data: [], error: null }
+        }
+      }
+      return result
+    } catch (error: any) {
+      // Si une exception est lancée, vérifier le code d'erreur
+      if (error?.code === '42P01' || error?.code === 'PGRST116' || error?.status === 404) {
+        return { data: [], error: null }
+      }
+      throw error
+    }
+  }
+
   async function loadProfitLoss(showLoading = true) {
     if (!userProfile) return
     if (showLoading) {
@@ -241,12 +316,23 @@ export default function ProfitLossPage() {
     }
   }
 
+  async function handleRefresh() {
+    setRefreshing(true)
+    try {
+      await loadProfitLoss(true)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   async function loadProfitLossForAdmin() {
     const [
       interestRates,
       agentsRes,
       pretsRes,
       remboursementsRes,
+      groupPretsRes,
+      groupRemboursementsRes,
       expensesRes,
     ] = await Promise.all([
       getInterestRates(),
@@ -257,6 +343,12 @@ export default function ProfitLossPage() {
         .select(
           'agent_id, montant, statut, pret_id, principal, interet, date_paiement, date_remboursement',
         ),
+      safeQuery(supabase.from('group_prets').select('pret_id, montant_pret, nombre_remboursements, agent_id')),
+      safeQuery(supabase
+        .from('group_remboursements')
+        .select(
+          'agent_id, montant, statut, pret_id, principal, interet, date_paiement, date_remboursement',
+        )),
       supabase.from('agent_expenses').select('agent_id, amount, expense_date'),
     ])
 
@@ -264,6 +356,7 @@ export default function ProfitLossPage() {
     if (pretsRes.error) throw pretsRes.error
     if (remboursementsRes.error) throw remboursementsRes.error
     if (expensesRes.error) throw expensesRes.error
+    
     const commissionRate =
       interestRates?.commissionRate !== undefined && !Number.isNaN(interestRates.commissionRate)
         ? interestRates.commissionRate
@@ -277,11 +370,23 @@ export default function ProfitLossPage() {
     const baseRatePercentValue = Number((baseRate * 100).toFixed(2))
     setBaseInterestRatePercent(baseRatePercentValue)
 
+    // Combiner les prêts individuels et de groupe
+    const allPrets = [
+      ...(pretsRes.data || []),
+      ...(groupPretsRes.data || []),
+    ]
+
+    // Combiner les remboursements individuels et de groupe
+    const allRemboursements = [
+      ...(remboursementsRes.data || []),
+      ...(groupRemboursementsRes.data || []),
+    ]
+
     computeProfitLoss(
       {
         agents: agentsRes.data || [],
-        prets: pretsRes.data || [],
-        remboursements: remboursementsRes.data || [],
+        prets: allPrets,
+        remboursements: allRemboursements,
         expenses: expensesRes.data || [],
       },
       commissionRate,
@@ -289,7 +394,14 @@ export default function ProfitLossPage() {
   }
 
   async function loadProfitLossForAgent(agentId: string) {
-    const [interestRates, pretsRes, remboursementsRes, expensesRes] = await Promise.all([
+    const [
+      interestRates,
+      pretsRes,
+      remboursementsRes,
+      groupPretsRes,
+      groupRemboursementsRes,
+      expensesRes,
+    ] = await Promise.all([
       getInterestRates(),
       supabase
         .from('prets')
@@ -301,12 +413,23 @@ export default function ProfitLossPage() {
           'agent_id, montant, statut, pret_id, principal, interet, date_paiement, date_remboursement',
         )
         .eq('agent_id', agentId),
+      safeQuery(supabase
+        .from('group_prets')
+        .select('pret_id, montant_pret, nombre_remboursements, agent_id')
+        .eq('agent_id', agentId)),
+      safeQuery(supabase
+        .from('group_remboursements')
+        .select(
+          'agent_id, montant, statut, pret_id, principal, interet, date_paiement, date_remboursement',
+        )
+        .eq('agent_id', agentId)),
       supabase.from('agent_expenses').select('agent_id, amount, expense_date').eq('agent_id', agentId),
     ])
 
     if (pretsRes.error) throw pretsRes.error
     if (remboursementsRes.error) throw remboursementsRes.error
     if (expensesRes.error) throw expensesRes.error
+    
     const commissionRate =
       interestRates?.commissionRate !== undefined && !Number.isNaN(interestRates.commissionRate)
         ? interestRates.commissionRate
@@ -319,6 +442,18 @@ export default function ProfitLossPage() {
         : 0.15
     const baseRatePercentValue = Number((baseRate * 100).toFixed(2))
     setBaseInterestRatePercent(baseRatePercentValue)
+
+    // Combiner les prêts individuels et de groupe
+    const allPrets = [
+      ...(pretsRes.data || []),
+      ...(groupPretsRes.data || []),
+    ]
+
+    // Combiner les remboursements individuels et de groupe
+    const allRemboursements = [
+      ...(remboursementsRes.data || []),
+      ...(groupRemboursementsRes.data || []),
+    ]
 
     computeProfitLoss(
       {
@@ -331,8 +466,8 @@ export default function ProfitLossPage() {
               },
             ]
           : [],
-        prets: pretsRes.data || [],
-        remboursements: remboursementsRes.data || [],
+        prets: allPrets,
+        remboursements: allRemboursements,
         expenses: expensesRes.data || [],
       },
       commissionRate,
@@ -597,9 +732,36 @@ export default function ProfitLossPage() {
             </h1>
             <p className="text-muted-foreground mt-2">
               Analyse des revenus, dépenses et commissions pour{' '}
-              {userProfile.role === 'agent' ? 'votre portefeuille' : 'l’ensemble de l’organisation'}.
+              {userProfile.role === 'agent' ? 'votre portefeuille' : "l'ensemble de l'organisation"}.
+            </p>
+            <p className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+              <span className="inline-flex items-center gap-1">
+                <span className="relative flex h-2 w-2">
+                  {realtimeConnected ? (
+                    <>
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    </>
+                  ) : (
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+                  )}
+                </span>
+                {realtimeConnected ? 'Temps réel actif' : 'Connexion en cours...'}
+              </span>
+              <span>•</span>
+              <span>Mise à jour instantanée des données</span>
             </p>
           </div>
+          <Button
+            onClick={handleRefresh}
+            disabled={refreshing || loading}
+            variant="outline"
+            size="sm"
+            className="flex items-center gap-2"
+          >
+            <RefreshCcw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? 'Rafraîchissement...' : 'Rafraîchir'}
+          </Button>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
