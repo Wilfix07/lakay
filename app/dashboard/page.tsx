@@ -83,6 +83,8 @@ export default function DashboardPage() {
   const [commissionRatePercent, setCommissionRatePercent] = useState<number>(30)
   const [baseInterestRatePercent, setBaseInterestRatePercent] = useState<number>(15)
   const [refreshing, setRefreshing] = useState(false)
+  const [previousPortefeuilleActif, setPreviousPortefeuilleActif] = useState<number>(0)
+  const [portefeuilleActifChanged, setPortefeuilleActifChanged] = useState(false)
   const commissionRateLabel = `${commissionRatePercent.toLocaleString('fr-FR', {
     maximumFractionDigits: 2,
   })}%`
@@ -361,6 +363,13 @@ export default function DashboardPage() {
           return { agent_id: agentId, total_collected: total, displayName }
         })
 
+        // Détecter si le portefeuille actif a changé pour l'animation
+        if (previousPortefeuilleActif !== portefeuilleActif) {
+          setPortefeuilleActifChanged(true)
+          setTimeout(() => setPortefeuilleActifChanged(false), 2000) // Réinitialiser après 2 secondes
+        }
+        setPreviousPortefeuilleActif(portefeuilleActif)
+        
         setStats({
           agents: agentsData.length || 0,
           membres: membresRes.count || 0,
@@ -537,6 +546,13 @@ export default function DashboardPage() {
         const impayesRate =
           totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
+        // Détecter si le portefeuille actif a changé pour l'animation
+        if (previousPortefeuilleActif !== portefeuilleActif) {
+          setPortefeuilleActifChanged(true)
+          setTimeout(() => setPortefeuilleActifChanged(false), 2000) // Réinitialiser après 2 secondes
+        }
+        setPreviousPortefeuilleActif(portefeuilleActif)
+        
         setStats({
           agents: 0,
           membres: membresRes.count || 0,
@@ -724,6 +740,7 @@ export default function DashboardPage() {
       description: 'Principal restant sur prêts actifs',
       gradient: 'bg-gradient-to-r from-cyan-500 to-teal-600',
       href: '/prets',
+      isDynamic: true, // Marquer cette carte comme dynamique
     },
     {
       title: 'Intérêt brut',
@@ -868,24 +885,30 @@ export default function DashboardPage() {
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 mb-8">
         {statCards.map((stat, index) => {
           const Icon = stat.icon
+          const isPortefeuilleActif = stat.title === 'Portefeuille actif'
           const cardContent = (
             <Card
-              className={`border-0 shadow-sm overflow-hidden text-white ${stat.gradient} ${stat.href ? 'transition-transform hover:-translate-y-1 hover:shadow-lg cursor-pointer' : ''}`}
+              className={`border-0 shadow-sm overflow-hidden text-white ${stat.gradient} ${stat.href ? 'transition-transform hover:-translate-y-1 hover:shadow-lg cursor-pointer' : ''} ${isPortefeuilleActif && portefeuilleActifChanged ? 'animate-pulse ring-2 ring-white/50' : ''}`}
             >
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium text-white/90">
                   {stat.title}
                 </CardTitle>
-                <div className="p-2 rounded-lg bg-white/20">
-                  <Icon className="w-4 h-4 text-white" />
+                <div className={`p-2 rounded-lg bg-white/20 ${isPortefeuilleActif && portefeuilleActifChanged ? 'animate-bounce' : ''}`}>
+                  <Icon className={`w-4 h-4 text-white ${isPortefeuilleActif ? 'transition-all duration-300' : ''}`} />
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-white mb-1">
+                <div className={`text-2xl font-bold text-white mb-1 transition-all duration-500 ${isPortefeuilleActif && portefeuilleActifChanged ? 'scale-110' : ''}`}>
                   {stat.value}
                 </div>
                 <p className="text-xs text-white/80 flex items-center gap-2">
                   {stat.description}
+                  {isPortefeuilleActif && (
+                    <span className="text-[10px] opacity-75">
+                      • Mis à jour automatiquement
+                    </span>
+                  )}
                 </p>
                 {stat.badgeContent ? (
                   <Badge className="mt-3 bg-white/25 text-white border border-white/40 font-medium">
