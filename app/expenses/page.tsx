@@ -255,14 +255,19 @@ function ExpensesPageContent() {
       return
     }
     
-    // S'assurer que l'agent_id est défini pour les agents
-    // FORCER l'agent_id de l'agent connecté, ignorer toute valeur du formulaire
+    // Pour les agents, l'agent_id est automatiquement défini depuis leur profil
+    // Aucune sélection nécessaire - l'agent_id est forcé à celui de l'agent connecté
     const finalAgentId = userProfile?.role === 'agent' 
       ? (userProfile.agent_id || '')
       : formData.agent_id
     
+    // Vérifier que l'agent_id est défini
     if (!finalAgentId) {
-      setError('Agent de crédit introuvable.')
+      if (userProfile?.role === 'agent') {
+        setError('Votre profil agent n\'est pas correctement configuré. Veuillez contacter l\'administrateur.')
+      } else {
+        setError('Veuillez sélectionner un agent.')
+      }
       return
     }
     
