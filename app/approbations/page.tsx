@@ -235,71 +235,65 @@ function ApprobationsPageContent() {
 
         if (collateralUpdateError) {
           console.error('Erreur lors de la mise à jour de la garantie:', collateralUpdateError)
-          throw new Error('Erreur lors de la mise à jour de la garantie')
+          throw new Error('Erreur lors de la mise à jour de la garantie: ' + collateralUpdateError.message)
         }
       }
 
-      // Mettre à jour le statut du prêt à "en_attente_garantie" d'abord
-      const { error: updateError } = await supabase
+      // La garantie est complète, donc on peut activer le prêt directement
+      // Calculer le plan de remboursement
+      const frequency: FrequenceRemboursement = 
+        pret.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'
+      
+      const plan = await calculateLoanPlan(
+        pret.montant_pret,
+        frequency,
+        pret.nombre_remboursements,
+        pret.date_decaissement,
+      )
+
+      // Créer les remboursements
+      const remboursements = plan.schedule.map((entry) => ({
+        pret_id: pret.pret_id,
+        membre_id: pret.membre_id,
+        agent_id: pret.agent_id,
+        numero_remboursement: entry.numero,
+        montant: entry.montant,
+        principal: entry.principal,
+        interet: entry.interet,
+        date_remboursement: entry.date.toISOString().split('T')[0],
+        statut: 'en_attente',
+      }))
+
+      const { error: rembError } = await supabase
+        .from('remboursements')
+        .insert(remboursements)
+
+      if (rembError) {
+        console.error('Erreur lors de la création des remboursements:', rembError)
+        throw new Error('Erreur lors de la création des remboursements: ' + rembError.message)
+      }
+
+      // Activer le prêt directement (statut = 'actif')
+      const { error: activateError } = await supabase
         .from('prets')
-        .update({ statut: 'en_attente_garantie' })
+        .update({ 
+          statut: 'actif',
+          updated_at: new Date().toISOString(),
+        })
         .eq('pret_id', pret.pret_id)
 
-      if (updateError) throw updateError
-
-      // Si la garantie est complète, activer automatiquement le prêt
-      // (créer les remboursements et passer le statut à "actif")
-      if (montantDepose >= montantRequis && montantRestant <= 0) {
-        // Calculer le plan de remboursement
-        const frequency: FrequenceRemboursement = 
-          pret.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'
-        
-        const plan = await calculateLoanPlan(
-          pret.montant_pret,
-          frequency,
-          pret.nombre_remboursements,
-          pret.date_decaissement,
-        )
-
-        // Créer les remboursements
-        const remboursements = plan.schedule.map((entry) => ({
-          pret_id: pret.pret_id,
-          membre_id: pret.membre_id,
-          agent_id: pret.agent_id,
-          numero_remboursement: entry.numero,
-          montant: entry.montant,
-          principal: entry.principal,
-          interet: entry.interet,
-          date_remboursement: entry.date.toISOString().split('T')[0],
-          statut: 'en_attente',
-        }))
-
-        const { error: rembError } = await supabase
-          .from('remboursements')
-          .insert(remboursements)
-
-        if (rembError) throw rembError
-
-        // Activer le prêt
-        const { error: activateError } = await supabase
-          .from('prets')
-          .update({ 
-            statut: 'actif',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('pret_id', pret.pret_id)
-
-        if (activateError) throw activateError
-
-        alert(`✅ Prêt ${pret.pret_id} approuvé et activé avec succès!\n\nLa garantie est complète. Le prêt a été activé et les remboursements ont été créés. Le décaissement peut maintenant être effectué.`)
-      } else {
-        alert(`✅ Prêt ${pret.pret_id} approuvé avec succès!\n\nLe prêt est maintenant en attente de garantie.`)
+      if (activateError) {
+        console.error('Erreur lors de l\'activation du prêt:', activateError)
+        throw new Error('Erreur lors de l\'activation du prêt: ' + activateError.message)
       }
+
+      alert(`✅ Prêt ${pret.pret_id} approuvé et activé avec succès!\n\nLa garantie est complète. Le prêt a été activé et les remboursements ont été créés. Le décaissement peut maintenant être effectué.`)
       
       await loadData()
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erreur lors de l\'approbation:', error)
-      alert('Erreur lors de l\'approbation du prêt')
+      const errorMessage = error?.message || error?.toString() || 'Erreur inconnue'
+      alert(`Erreur lors de l'approbation du prêt:\n\n${errorMessage}\n\nVérifiez la console pour plus de détails.`)
     } finally {
       setApproving(null)
     }

@@ -208,8 +208,13 @@ function ExpensesPageContent() {
 
   function handleEdit(expense: AgentExpense) {
     setEditingExpense(expense)
+    // Pour les agents, forcer l'agent_id à celui de l'agent connecté
+    // Empêcher toute modification de l'agent_id même si quelqu'un essaie de manipuler le formulaire
+    const agentIdForForm = userProfile?.role === 'agent' 
+      ? (userProfile.agent_id || '')
+      : expense.agent_id
     setFormData({
-      agent_id: expense.agent_id,
+      agent_id: agentIdForForm,
       category: expense.category ?? '',
       amount: expense.amount.toString(),
       expense_date: expense.expense_date,
@@ -243,7 +248,7 @@ function ExpensesPageContent() {
 
     const amountValue = parseFloat(formData.amount)
     
-    // Pour les agents, l'agent_id est automatiquement défini
+    // Pour les agents, l'agent_id est automatiquement défini et ne peut pas être modifié
     // Pour les autres rôles, vérifier qu'un agent est sélectionné
     if (userProfile?.role !== 'agent' && !formData.agent_id) {
       setError('Veuillez sélectionner un agent.')
@@ -251,13 +256,23 @@ function ExpensesPageContent() {
     }
     
     // S'assurer que l'agent_id est défini pour les agents
+    // FORCER l'agent_id de l'agent connecté, ignorer toute valeur du formulaire
     const finalAgentId = userProfile?.role === 'agent' 
-      ? (userProfile.agent_id || formData.agent_id)
+      ? (userProfile.agent_id || '')
       : formData.agent_id
     
     if (!finalAgentId) {
       setError('Agent de crédit introuvable.')
       return
+    }
+    
+    // Validation supplémentaire : pour les agents, vérifier qu'ils n'essaient pas de modifier l'agent_id
+    if (userProfile?.role === 'agent' && editingExpense) {
+      // Si un agent modifie une dépense, s'assurer que c'est bien sa propre dépense
+      if (editingExpense.agent_id !== userProfile.agent_id) {
+        setError('Vous ne pouvez modifier que vos propres dépenses.')
+        return
+      }
     }
     if (Number.isNaN(amountValue) || amountValue <= 0) {
       setError('Montant invalide.')

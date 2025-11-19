@@ -78,6 +78,21 @@ function EpargnePageContent() {
   async function loadUserProfile() {
     const profile = await getUserProfile()
     setUserProfile(profile)
+    
+    // Si l'utilisateur est un agent, vérifier que son agent_id existe
+    if (profile?.role === 'agent' && profile.agent_id) {
+      const { data: agentExists, error: agentCheckError } = await supabase
+        .from('agents')
+        .select('agent_id')
+        .eq('agent_id', profile.agent_id)
+        .single()
+      
+      if (agentCheckError || !agentExists) {
+        console.error('⚠️ L\'agent_id du profil utilisateur n\'existe pas dans la table agents:', profile.agent_id)
+        console.error('Erreur:', agentCheckError)
+      }
+    }
+    
     setLoading(false)
   }
 
@@ -172,14 +187,35 @@ function EpargnePageContent() {
       setErrorMessage(null)
 
       // Déterminer l'agent_id applicable
-      let finalAgentId = userProfile?.agent_id || ''
-      if (!finalAgentId && userProfile?.role !== 'agent') {
-        // Admin/manager doivent sélectionner un membre, on infère son agent_id
+      let finalAgentId = ''
+      
+      if (userProfile?.role === 'agent') {
+        // Pour les agents, utiliser leur agent_id du profil
+        finalAgentId = userProfile.agent_id || ''
+      } else {
+        // Pour les admins et managers, toujours utiliser l'agent_id du membre sélectionné
+        // Ne jamais utiliser l'agent_id du profil admin/manager car il peut être invalide
         const membre = membres.find(m => m.membre_id === selectedMembreId)
         finalAgentId = membre?.agent_id || ''
       }
+      
       if (!finalAgentId) {
-        alert("Agent de crédit introuvable pour cette opération.")
+        setErrorMessage("Agent de crédit introuvable pour cette opération. Veuillez sélectionner un membre valide.")
+        setSubmitting(false)
+        return
+      }
+
+      // Vérifier que l'agent_id existe dans la table agents
+      const { data: agentExists, error: agentCheckError } = await supabase
+        .from('agents')
+        .select('agent_id')
+        .eq('agent_id', finalAgentId)
+        .single()
+
+      if (agentCheckError || !agentExists) {
+        console.error('Erreur lors de la vérification de l\'agent:', agentCheckError)
+        setErrorMessage(`L'agent ${finalAgentId} n'existe pas dans la base de données. Veuillez contacter l'administrateur.`)
+        setSubmitting(false)
         return
       }
 
@@ -218,14 +254,33 @@ function EpargnePageContent() {
 
         if (error) {
           console.error('Erreur lors de l\'enregistrement de l\'opération d\'épargne:', error)
+          console.error('Détails de l\'erreur:', {
+            code: (error as any).code,
+            message: error.message,
+            details: (error as any).details,
+            hint: (error as any).hint,
+            finalAgentId: finalAgentId,
+            selectedMembreId: selectedMembreId
+          })
+          
           if ((error as any).code === '42P01') {
             setErrorMessage(
               "La table 'epargne_transactions' n'existe pas encore. Veuillez créer la table côté Supabase pour activer l'épargne."
             )
+          } else if ((error as any).code === '23503' || error.message?.includes('foreign key constraint')) {
+            // Erreur de contrainte de clé étrangère
+            if (error.message?.includes('agent_id')) {
+              setErrorMessage(`L'agent ${finalAgentId} n'existe pas dans la base de données. Veuillez contacter l'administrateur pour corriger ce problème.`)
+            } else if (error.message?.includes('membre_id')) {
+              setErrorMessage(`Le membre ${selectedMembreId} n'existe pas dans la base de données. Veuillez contacter l'administrateur.`)
+            } else {
+              setErrorMessage(`Erreur de référence: ${error.message || 'Une référence invalide a été détectée'}`)
+            }
           } else {
             const errorMessage = error.message || 'Erreur inconnue'
             setErrorMessage(`Erreur lors de l'enregistrement de l'opération: ${errorMessage}`)
           }
+          setSubmitting(false)
           return
         }
 
