@@ -834,15 +834,16 @@ export default function DashboardPage() {
         const groupIds = [...new Set((groupMembersData || []).map(gm => gm.group_id))]
 
         // Charger les données pour les membres assignés
-        // D'abord charger les prêts individuels pour obtenir les pret_ids
+        // Charger seulement les prêts actifs (pas les terminés, annulés, etc.)
         const { data: pretsData, error: pretsError } = await supabase
           .from('prets')
           .select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant, membre_id')
           .in('membre_id', membreIds)
+          .eq('statut', 'actif') // Seulement les prêts actifs
 
         if (pretsError) throw pretsError
 
-        // Charger les prêts de groupe pour les groupes contenant les membres assignés
+        // Charger seulement les prêts de groupe actifs pour les groupes contenant les membres assignés
         let groupPretsData: any[] = []
         let groupPretIds: string[] = []
         if (groupIds.length > 0) {
@@ -850,6 +851,7 @@ export default function DashboardPage() {
             .from('group_prets')
             .select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant, group_id')
             .in('group_id', groupIds)
+            .eq('statut', 'actif') // Seulement les prêts actifs
 
           if (groupPretsError && groupPretsError.code !== '42P01' && groupPretsError.code !== 'PGRST116') {
             throw groupPretsError
@@ -860,14 +862,22 @@ export default function DashboardPage() {
 
         const pretIds = (pretsData || []).map(p => p.pret_id)
 
-        // Charger les remboursements individuels et de groupe
+        // Charger les remboursements individuels et de groupe (seulement ceux en attente, en retard, ou payés)
+        // Ne pas charger les remboursements terminés/annulés pour les prêts inactifs
         const [membresRes, remboursementsRes, groupRemboursementsRes, epargnesRes, collateralsRes] = await Promise.all([
           supabase.from('membres').select('id', { count: 'exact', head: true }).in('membre_id', membreIds),
           pretIds.length > 0 
-            ? supabase.from('remboursements').select('id, statut, montant, pret_id, date_remboursement, date_paiement, principal, interet').in('pret_id', pretIds)
+            ? supabase.from('remboursements')
+                .select('id, statut, montant, pret_id, date_remboursement, date_paiement, principal, interet')
+                .in('pret_id', pretIds)
+                .in('statut', ['en_attente', 'en_retard', 'paye', 'paye_partiel']) // Exclure les statuts inactifs
             : Promise.resolve({ data: [], error: null }),
           groupPretIds.length > 0
-            ? supabase.from('group_remboursements').select('id, statut, montant, pret_id, date_remboursement, date_paiement, principal, interet, membre_id').in('pret_id', groupPretIds).in('membre_id', membreIds)
+            ? supabase.from('group_remboursements')
+                .select('id, statut, montant, pret_id, date_remboursement, date_paiement, principal, interet, membre_id')
+                .in('pret_id', groupPretIds)
+                .in('membre_id', membreIds)
+                .in('statut', ['en_attente', 'en_retard', 'paye', 'paye_partiel']) // Exclure les statuts inactifs
             : Promise.resolve({ data: [], error: null }),
           supabase.from('epargne_transactions').select('type, montant').in('membre_id', membreIds),
           supabase.from('collaterals').select('montant').in('membre_id', membreIds),
@@ -884,8 +894,9 @@ export default function DashboardPage() {
           console.error('Erreur lors du chargement des remboursements de groupe:', groupRemboursementsRes.error)
         }
 
-        const activePrets = (pretsRes.data || []).filter((pret) => pret.statut === 'actif') || []
-        const activeGroupPrets = (groupPretsRes.data || []).filter((pret) => pret.statut === 'actif') || []
+        // Les prêts sont déjà filtrés pour être actifs uniquement
+        const activePrets = pretsRes.data || []
+        const activeGroupPrets = groupPretsRes.data || []
         const totalActivePrincipal = 
           activePrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0) +
           activeGroupPrets.reduce((sum, pret) => sum + Number(pret.montant_pret || 0), 0)
@@ -1433,14 +1444,16 @@ export default function DashboardPage() {
       gradient: 'bg-gradient-to-r from-fuchsia-500 to-purple-700',
       href: userProfile.role === 'chef_zone' ? '/membres-assignes' : '/membres',
     },
-    {
-      title: 'Prêts',
-      value: stats.prets,
-      icon: CreditCard,
-      description: 'Prêts actifs',
-      gradient: 'bg-gradient-to-r from-emerald-500 to-green-600',
-      href: '/prets',
-    },
+    ...(userProfile.role !== 'chef_zone'
+      ? [{
+          title: 'Prêts',
+          value: stats.prets,
+          icon: CreditCard,
+          description: 'Prêts actifs',
+          gradient: 'bg-gradient-to-r from-emerald-500 to-green-600',
+          href: '/prets',
+        }]
+      : []),
     {
       title: 'Remboursements',
       value: stats.todayRemboursementsCount,
@@ -1462,15 +1475,17 @@ export default function DashboardPage() {
           ? `${stats.impayesCount} impayé${stats.impayesCount > 1 ? 's' : ''}`
           : null,
     },
-    {
-      title: 'Portefeuille actif',
-      value: formatCurrency(stats.montantTotal),
-      icon: TrendingUp,
-      description: 'Principal restant sur prêts actifs',
-      gradient: 'bg-gradient-to-r from-cyan-500 to-teal-600',
-      href: '/prets',
-      isDynamic: true, // Marquer cette carte comme dynamique
-    },
+    ...(userProfile.role !== 'chef_zone'
+      ? [{
+          title: 'Portefeuille actif',
+          value: formatCurrency(stats.montantTotal),
+          icon: TrendingUp,
+          description: 'Principal restant sur prêts actifs',
+          gradient: 'bg-gradient-to-r from-cyan-500 to-teal-600',
+          href: '/prets',
+          isDynamic: true, // Marquer cette carte comme dynamique
+        }]
+      : []),
     // Intérêts et commissions: seulement pour admin, manager et agent
     ...(userProfile.role !== 'chef_zone'
       ? [
@@ -1500,14 +1515,16 @@ export default function DashboardPage() {
           },
         ]
       : []),
-    {
-      title: 'Total épargnes',
-      value: formatCurrency(totalEpargnes),
-      icon: PiggyBank,
-      description: 'Solde total des épargnes (dépôts - retraits)',
-      gradient: 'bg-gradient-to-r from-emerald-500 to-teal-600',
-      href: '/epargne',
-    },
+    ...(userProfile.role !== 'chef_zone'
+      ? [{
+          title: 'Total épargnes',
+          value: formatCurrency(totalEpargnes),
+          icon: PiggyBank,
+          description: 'Solde total des épargnes (dépôts - retraits)',
+          gradient: 'bg-gradient-to-r from-emerald-500 to-teal-600',
+          href: '/epargne',
+        }]
+      : []),
   ]
 
   const actionCards = [
@@ -1743,149 +1760,154 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Agent Collections */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between flex-wrap gap-3">
-            <div>
-              <CardTitle>Performance des agents</CardTitle>
-              <CardDescription>
-                Total collecté par agent de crédit (remboursements payés)
-              </CardDescription>
+      {/* Agent Collections - Masqué pour chef_zone */}
+      {userProfile.role !== 'chef_zone' && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div>
+                <CardTitle>Performance des agents</CardTitle>
+                <CardDescription>
+                  Total collecté par agent de crédit (remboursements payés)
+                </CardDescription>
+              </div>
+              {hasCollections && (
+                <Badge variant="secondary" className="bg-primary/10 text-primary">
+                  Total HTG collecté: {formatCurrency(agentCollections.reduce((sum, item) => sum + item.total_collected, 0))}
+                </Badge>
+              )}
             </div>
-            {hasCollections && (
-              <Badge variant="secondary" className="bg-primary/10 text-primary">
-                Total HTG collecté: {formatCurrency(agentCollections.reduce((sum, item) => sum + item.total_collected, 0))}
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-8 lg:grid-cols-2">
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-8 lg:grid-cols-2">
+              <div className="h-80">
+                {hasCollections ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={agentCollections}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis
+                        dataKey="displayName"
+                        tick={{ fontSize: 12 }}
+                        interval={0}
+                        angle={-20}
+                        textAnchor="end"
+                      />
+                      <YAxis tick={{ fontSize: 12 }} tickFormatter={(value) => `${Math.round(value / 1000)}k`} />
+                      <RechartsTooltip
+                        cursor={{ fill: 'rgba(0,0,0,0.05)' }}
+                        formatter={(value: number) => formatCurrency(Number(value))}
+                        labelFormatter={(label) => `Agent: ${label}`}
+                      />
+                      <Bar dataKey="total_collected" radius={[6, 6, 0, 0]}>
+                        {agentCollections.map((entry, index) => (
+                          <Cell
+                            key={`agent-bar-${entry.agent_id}`}
+                            fill={agentBarColors[index % agentBarColors.length]}
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground text-center">
+                    Aucune donnée de collecte disponible pour le moment.
+                  </div>
+                )}
+              </div>
+              <div className="overflow-hidden rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Agent</TableHead>
+                      <TableHead className="text-right">Total collecté</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {hasCollections ? (
+                      agentCollections.map((item) => (
+                        <TableRow key={item.agent_id}>
+                          <TableCell className="font-medium">{item.displayName}</TableCell>
+                          <TableCell className="text-right text-sm">
+                            {formatCurrency(item.total_collected)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-sm text-muted-foreground py-6">
+                          Aucune donnée de collecte disponible.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Intérêt perçu - Masqué pour chef_zone */}
+      {userProfile.role !== 'chef_zone' && (
+        <Card className="mt-8">
+          <CardHeader>
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div>
+                <CardTitle>Intérêt perçu ({baseInterestRateLabel})</CardTitle>
+                <CardDescription>
+                  Total des intérêts collectés sur les remboursements payés
+                </CardDescription>
+              </div>
+              {loading ? (
+                <Skeleton className="w-48 h-7 rounded-md" />
+              ) : interestSummary.total > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary" className="bg-rose-50 text-rose-600">
+                    Total: {formatCurrency(interestSummary.total)}
+                  </Badge>
+                  <Badge variant="secondary" className="bg-teal-50 text-teal-600">
+                  Commission ({commissionRateLabel}): {formatCurrency(interestSummary.commissionTotal)}
+                  </Badge>
+                </div>
+              ) : null}
+            </div>
+          </CardHeader>
+          <CardContent>
             <div className="h-80">
-              {hasCollections ? (
+              {loading ? (
+                <div className="h-full flex items-center justify-center">
+                  <Skeleton className="w-full h-64" />
+                </div>
+              ) : interestSummary.monthly.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={agentCollections}>
+                  <BarChart data={interestSummary.monthly}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis
-                      dataKey="displayName"
+                    <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                    <YAxis
                       tick={{ fontSize: 12 }}
-                      interval={0}
-                      angle={-20}
-                      textAnchor="end"
+                      tickFormatter={(value) => `${Math.round(value / 1000)}k`}
                     />
-                    <YAxis tick={{ fontSize: 12 }} tickFormatter={(value) => `${Math.round(value / 1000)}k`} />
                     <RechartsTooltip
                       cursor={{ fill: 'rgba(0,0,0,0.05)' }}
                       formatter={(value: number) => formatCurrency(Number(value))}
-                      labelFormatter={(label) => `Agent: ${label}`}
+                      labelFormatter={(label) => `Mois: ${label}`}
                     />
-                    <Bar dataKey="total_collected" radius={[6, 6, 0, 0]}>
-                      {agentCollections.map((entry, index) => (
-                        <Cell
-                          key={`agent-bar-${entry.agent_id}`}
-                          fill={agentBarColors[index % agentBarColors.length]}
-                        />
-                      ))}
-                    </Bar>
+                    <Bar
+                      dataKey="interest"
+                      fill="var(--color-chart-5)"
+                      radius={[6, 6, 0, 0]}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-muted-foreground text-center">
-                  Aucune donnée de collecte disponible pour le moment.
+                  Aucune donnée d'intérêt disponible pour le moment.
                 </div>
               )}
             </div>
-            <div className="overflow-hidden rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Agent</TableHead>
-                    <TableHead className="text-right">Total collecté</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {hasCollections ? (
-                    agentCollections.map((item) => (
-                      <TableRow key={item.agent_id}>
-                        <TableCell className="font-medium">{item.displayName}</TableCell>
-                        <TableCell className="text-right text-sm">
-                          {formatCurrency(item.total_collected)}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  ) : (
-                    <TableRow>
-                      <TableCell colSpan={2} className="text-center text-sm text-muted-foreground py-6">
-                        Aucune donnée de collecte disponible.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="mt-8">
-        <CardHeader>
-          <div className="flex items-start justify-between flex-wrap gap-3">
-            <div>
-              <CardTitle>Intérêt perçu ({baseInterestRateLabel})</CardTitle>
-              <CardDescription>
-                Total des intérêts collectés sur les remboursements payés
-              </CardDescription>
-            </div>
-            {loading ? (
-              <Skeleton className="w-48 h-7 rounded-md" />
-            ) : interestSummary.total > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="secondary" className="bg-rose-50 text-rose-600">
-                  Total: {formatCurrency(interestSummary.total)}
-                </Badge>
-                <Badge variant="secondary" className="bg-teal-50 text-teal-600">
-                Commission ({commissionRateLabel}): {formatCurrency(interestSummary.commissionTotal)}
-                </Badge>
-              </div>
-            ) : null}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="h-80">
-            {loading ? (
-              <div className="h-full flex items-center justify-center">
-                <Skeleton className="w-full h-64" />
-              </div>
-            ) : interestSummary.monthly.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={interestSummary.monthly}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                  <YAxis
-                    tick={{ fontSize: 12 }}
-                    tickFormatter={(value) => `${Math.round(value / 1000)}k`}
-                  />
-                  <RechartsTooltip
-                    cursor={{ fill: 'rgba(0,0,0,0.05)' }}
-                    formatter={(value: number) => formatCurrency(Number(value))}
-                    labelFormatter={(label) => `Mois: ${label}`}
-                  />
-                  <Bar
-                    dataKey="interest"
-                    fill="var(--color-chart-5)"
-                    radius={[6, 6, 0, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex h-full items-center justify-center text-sm text-muted-foreground text-center">
-                Aucune donnée d'intérêt disponible pour le moment.
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
     </DashboardLayout>
   )
