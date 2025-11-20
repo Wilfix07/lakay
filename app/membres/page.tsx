@@ -117,6 +117,8 @@ function MembresPageContent() {
     epargne: number
     pretActif: number
     echeancier: Remboursement[]
+    collateralPretActif: number
+    pretActifId: string | null
   }>>({})
 
   const currentLoan =
@@ -907,8 +909,12 @@ function MembresPageContent() {
       .select('pret_id, montant_pret, capital_restant')
       .eq('membre_id', membreId)
       .eq('statut', 'actif')
+      .order('date_decaissement', { ascending: false })
 
     const pretIds = (pretsActifs || []).map(p => p.pret_id)
+    
+    // Récupérer le premier prêt actif (le plus récent)
+    const pretActifCourant = pretsActifs && pretsActifs.length > 0 ? pretsActifs[0] : null
     
     // Charger TOUTES les garanties (collaterals) pour ce membre
     // Inclure les garanties individuelles et de groupe, même si les prêts ne sont plus actifs
@@ -996,12 +1002,48 @@ function MembresPageContent() {
       return dateA - dateB
     })
 
+    // Calculer le collateral pour le prêt actif actuel
+    let collateralPretActif = 0
+    let pretActifId: string | null = null
+
+    if (pretActifCourant) {
+      // Charger tous les collaterals pour ce prêt actif
+      const { data: collateralsPret, error: collateralError } = await supabase
+        .from('collaterals')
+        .select('montant_depose')
+        .eq('membre_id', membreId)
+        .eq('pret_id', pretActifCourant.pret_id)
+        .is('group_pret_id', null)
+
+      if (!collateralError && collateralsPret) {
+        // Somme de tous les montants déposés pour ce prêt
+        collateralPretActif = collateralsPret.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
+        pretActifId = pretActifCourant.pret_id
+      }
+    } else if (groupPretsMap.length > 0) {
+      // Si pas de prêt individuel actif, vérifier le prêt de groupe actif
+      const groupPretActif = groupPretsMap[0] // Prendre le premier prêt de groupe actif
+      const { data: collateralsGroupPret, error: collateralGroupError } = await supabase
+        .from('collaterals')
+        .select('montant_depose')
+        .eq('membre_id', membreId)
+        .eq('group_pret_id', groupPretActif.pret_id)
+
+      if (!collateralGroupError && collateralsGroupPret) {
+        // Somme de tous les montants déposés pour ce prêt de groupe
+        collateralPretActif = collateralsGroupPret.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
+        pretActifId = groupPretActif.pret_id
+      }
+    }
+
     setMembresDetails({
       [membreId]: {
         garantie: garantieTotal,
         epargne: epargneTotal,
         pretActif: pretActifTotal,
         echeancier,
+        collateralPretActif,
+        pretActifId,
       }
     })
   }
@@ -1947,13 +1989,27 @@ function MembresPageContent() {
           <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
             <CardHeader>
               <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>
-                    Détails - {selectedMembreForDetails.prenom} {selectedMembreForDetails.nom} ({selectedMembreForDetails.membre_id})
-                  </CardTitle>
-                  <CardDescription className="mt-2">
-                    Informations financières complètes du membre
-                  </CardDescription>
+                <div className="flex items-center gap-4">
+                  {/* Photo du membre */}
+                  {selectedMembreForDetails.photo_url ? (
+                    <img
+                      src={selectedMembreForDetails.photo_url}
+                      alt={`${selectedMembreForDetails.prenom} ${selectedMembreForDetails.nom}`}
+                      className="w-16 h-16 rounded-full object-cover border-2 border-primary/20"
+                    />
+                  ) : (
+                    <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center border-2 border-primary/20">
+                      <User className="w-8 h-8 text-muted-foreground" />
+                    </div>
+                  )}
+                  <div>
+                    <CardTitle>
+                      Détails - {selectedMembreForDetails.prenom} {selectedMembreForDetails.nom} ({selectedMembreForDetails.membre_id})
+                    </CardTitle>
+                    <CardDescription className="mt-2">
+                      Informations financières complètes du membre
+                    </CardDescription>
+                  </div>
                 </div>
                 <Button variant="ghost" onClick={() => {
                   setShowDetailsModal(false)
@@ -2027,6 +2083,26 @@ function MembresPageContent() {
                       </CardContent>
                     </Card>
                   </div>
+
+                  {/* Collateral pour le prêt actif */}
+                  {membresDetails[selectedMembreForDetails.membre_id]?.pretActifId && membresDetails[selectedMembreForDetails.membre_id]?.collateralPretActif !== undefined && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm flex items-center gap-2">
+                          <CreditCard className="w-4 h-4" />
+                          Collateral pour le prêt en cours
+                        </CardTitle>
+                        <CardDescription className="text-xs">
+                          Prêt: {membresDetails[selectedMembreForDetails.membre_id]?.pretActifId}
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-2xl font-bold">
+                          {formatCurrency(membresDetails[selectedMembreForDetails.membre_id]?.collateralPretActif || 0)}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
 
                   {/* Informations sur les remboursements */}
                   {(() => {
