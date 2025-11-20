@@ -117,6 +117,7 @@ export interface LoanAmountBracket {
   max_amount?: number | null
   default_interest_rate?: number | null
   is_active: boolean
+  manager_id?: string | null
   created_at: string
   updated_at: string
 }

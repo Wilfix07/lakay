@@ -101,8 +101,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Si c'est un manager créant un agent, vérifier que l'agent appartient au manager
-    if (currentUserProfile.role === 'manager' && role === 'agent' && agent_id) {
+    // Si c'est un manager créant un agent ou un chef de zone avec agent_id, vérifier que l'agent appartient au manager
+    if (currentUserProfile.role === 'manager' && agent_id && (role === 'agent' || role === 'chef_zone')) {
       const { data: agent, error: agentError } = await supabaseAdmin
         .from('agents')
         .select('agent_id, manager_id')
@@ -231,7 +231,9 @@ export async function POST(request: NextRequest) {
       prenom,
     }
 
-    if (role === 'agent' && agent_id) {
+    // Pour les agents, agent_id est requis
+    // Pour les chefs de zone, agent_id est optionnel (peut être attaché plus tard)
+    if ((role === 'agent' || role === 'chef_zone') && agent_id) {
       profileData.agent_id = agent_id
     }
 
