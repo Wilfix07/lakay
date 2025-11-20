@@ -77,40 +77,68 @@ export async function DELETE(request: NextRequest) {
           return NextResponse.json({ error: 'Utilisateur non trouvé' }, { status: 404 })
         }
 
-        // Un manager ne peut supprimer que les agents
-        if (targetUserProfile.role !== 'agent') {
+        // Un manager ne peut supprimer que les agents et les chefs de zone attachés à ses agents
+        if (targetUserProfile.role !== 'agent' && targetUserProfile.role !== 'chef_zone') {
           return NextResponse.json(
             { error: 'Vous n\'êtes pas autorisé à supprimer cet utilisateur' },
             { status: 403 },
           )
         }
 
-        // Vérifier que l'agent appartient au manager
-        if (targetUserProfile.agent_id) {
-          const { data: agent, error: agentError } = await supabaseAdmin
-            .from('agents')
-            .select('manager_id')
-            .eq('agent_id', targetUserProfile.agent_id)
-            .single()
+        // Pour les agents, vérifier qu'ils appartiennent au manager
+        if (targetUserProfile.role === 'agent') {
+          if (targetUserProfile.agent_id) {
+            const { data: agent, error: agentError } = await supabaseAdmin
+              .from('agents')
+              .select('manager_id')
+              .eq('agent_id', targetUserProfile.agent_id)
+              .single()
 
-          if (agentError || !agent) {
+            if (agentError || !agent) {
+              return NextResponse.json(
+                { error: 'Agent non trouvé' },
+                { status: 404 },
+              )
+            }
+
+            if (agent.manager_id !== currentUserProfile.id) {
+              return NextResponse.json(
+                { error: 'Vous n\'êtes pas autorisé à supprimer cet agent' },
+                { status: 403 },
+              )
+            }
+          } else {
             return NextResponse.json(
-              { error: 'Agent non trouvé' },
-              { status: 404 },
+              { error: 'Agent invalide' },
+              { status: 400 },
             )
           }
+        }
 
-          if (agent.manager_id !== currentUserProfile.id) {
-            return NextResponse.json(
-              { error: 'Vous n\'êtes pas autorisé à supprimer cet agent' },
-              { status: 403 },
-            )
+        // Pour les chefs de zone, vérifier qu'ils sont attachés à un agent du manager
+        if (targetUserProfile.role === 'chef_zone') {
+          if (targetUserProfile.agent_id) {
+            const { data: agent, error: agentError } = await supabaseAdmin
+              .from('agents')
+              .select('manager_id')
+              .eq('agent_id', targetUserProfile.agent_id)
+              .single()
+
+            if (agentError || !agent) {
+              return NextResponse.json(
+                { error: 'Agent non trouvé' },
+                { status: 404 },
+              )
+            }
+
+            if (agent.manager_id !== currentUserProfile.id) {
+              return NextResponse.json(
+                { error: 'Vous n\'êtes pas autorisé à supprimer ce chef de zone' },
+                { status: 403 },
+              )
+            }
           }
-        } else {
-          return NextResponse.json(
-            { error: 'Agent invalide' },
-            { status: 400 },
-          )
+          // Si le chef de zone n'a pas d'agent_id, le manager peut quand même le supprimer
         }
       } else {
         return NextResponse.json(

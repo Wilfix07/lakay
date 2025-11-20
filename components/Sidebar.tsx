@@ -66,7 +66,7 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Membres',
       href: '/membres',
       icon: Users,
-      roles: ['admin', 'agent'] as UserRole[],
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
     {
       title: 'Prêts',

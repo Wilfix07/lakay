@@ -118,12 +118,15 @@ function UtilisateursPageContent() {
                 .in('agent_id', agentIds)
                 .order('created_at', { ascending: false })
             : Promise.resolve({ data: [], error: null }),
-          // Charger tous les chefs de zone
-          supabase
-            .from('user_profiles')
-            .select('*')
-            .eq('role', 'chef_zone')
-            .order('created_at', { ascending: false })
+          // Charger les chefs de zone attachés aux agents du manager
+          agentIds.length > 0
+            ? supabase
+                .from('user_profiles')
+                .select('*')
+                .eq('role', 'chef_zone')
+                .in('agent_id', agentIds)
+                .order('created_at', { ascending: false })
+            : Promise.resolve({ data: [], error: null })
         ])
 
         if (agentsResult.error) throw agentsResult.error
@@ -203,7 +206,7 @@ function UtilisateursPageContent() {
           role: formData.role,
           nom: formData.nom,
           prenom: formData.prenom,
-          agent_id: formData.role === 'agent' ? formData.agent_id : null,
+          agent_id: (formData.role === 'agent' || formData.role === 'chef_zone') ? formData.agent_id : null,
         }),
       })
 
@@ -300,7 +303,7 @@ function UtilisateursPageContent() {
         role: editData.role,
         nom: editData.nom,
         prenom: editData.prenom,
-        agent_id: editData.role === 'agent' ? editData.agent_id : null,
+        agent_id: (editData.role === 'agent' || editData.role === 'chef_zone') ? editData.agent_id : null,
       }
       if (editData.password) {
         payload.password = editData.password
@@ -499,16 +502,16 @@ function UtilisateursPageContent() {
                   </select>
                 </div>
 
-                {formData.role === 'agent' && (
+                {(formData.role === 'agent' || formData.role === 'chef_zone') && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Agent de crédit *
+                      {formData.role === 'agent' ? 'Agent de crédit *' : 'Agent de crédit'}
                     </label>
                     <select
                       value={formData.agent_id}
                       onChange={(e) => setFormData({ ...formData, agent_id: e.target.value })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                      required
+                      required={formData.role === 'agent'}
                     >
                       <option value="">Sélectionner un agent</option>
                       {agents.map(agent => (
@@ -517,6 +520,11 @@ function UtilisateursPageContent() {
                         </option>
                       ))}
                     </select>
+                    {formData.role === 'chef_zone' && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Optionnel : Attacher ce chef de zone à un agent de crédit spécifique
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -637,7 +645,7 @@ function UtilisateursPageContent() {
                       setEditData({
                         ...editData,
                         role: e.target.value as 'manager' | 'agent' | 'chef_zone',
-                        agent_id: e.target.value === 'agent' ? editData.agent_id : '',
+                        agent_id: (e.target.value === 'agent' || e.target.value === 'chef_zone') ? editData.agent_id : '',
                       })
                     }
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
@@ -654,16 +662,16 @@ function UtilisateursPageContent() {
                     ))}
                   </select>
                 </div>
-                {editData.role === 'agent' && (
+                {(editData.role === 'agent' || editData.role === 'chef_zone') && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Agent de crédit *
+                      {editData.role === 'agent' ? 'Agent de crédit *' : 'Agent de crédit'}
                     </label>
                     <select
                       value={editData.agent_id}
                       onChange={(e) => setEditData({ ...editData, agent_id: e.target.value })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                      required
+                      required={editData.role === 'agent'}
                     >
                       <option value="">Sélectionner un agent</option>
                       {agents.map((agent) => (
@@ -672,6 +680,11 @@ function UtilisateursPageContent() {
                         </option>
                       ))}
                     </select>
+                    {editData.role === 'chef_zone' && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Optionnel : Attacher ce chef de zone à un agent de crédit spécifique
+                      </p>
+                    )}
                   </div>
                 )}
                 <div>
@@ -769,7 +782,11 @@ function UtilisateursPageContent() {
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {user.agent_id || '-'}
+                        {user.agent_id 
+                          ? `${user.agent_id}${user.role === 'chef_zone' ? ' (attaché)' : ''}`
+                          : user.role === 'chef_zone' 
+                          ? 'Non attaché' 
+                          : '-'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {new Date(user.created_at).toLocaleDateString('fr-FR')}

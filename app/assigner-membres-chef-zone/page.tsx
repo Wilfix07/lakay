@@ -90,7 +90,7 @@ function AssignerMembresChefZoneContent() {
         .eq('role', 'chef_zone')
         .order('nom', { ascending: true })
 
-      // Les managers ne voient que les chefs de zone qui ont des membres assignés appartenant à leurs agents
+      // Les managers ne voient que les chefs de zone attachés à leurs agents
       if (userProfile?.role === 'manager') {
         // Récupérer les agent_id des agents du manager
         const { data: managerAgents, error: agentsError } = await supabase
@@ -106,36 +106,8 @@ function AssignerMembresChefZoneContent() {
           return
         }
 
-        // Récupérer les membres du manager
-        const { data: managerMembres, error: membresError } = await supabase
-          .from('membres')
-          .select('membre_id')
-          .in('agent_id', agentIds)
-
-        if (membresError) throw membresError
-
-        const membreIds = managerMembres?.map(m => m.membre_id) || []
-        if (membreIds.length === 0) {
-          setChefsZone([])
-          return
-        }
-
-        // Récupérer les chefs de zone qui ont ces membres assignés
-        const { data: chefZoneAssignations, error: assignationsError } = await supabase
-          .from('chef_zone_membres')
-          .select('chef_zone_id')
-          .in('membre_id', membreIds)
-
-        if (assignationsError) throw assignationsError
-
-        const chefZoneIds = [...new Set(chefZoneAssignations?.map(a => a.chef_zone_id) || [])]
-        if (chefZoneIds.length === 0) {
-          setChefsZone([])
-          return
-        }
-
-        // Charger uniquement ces chefs de zone
-        query = query.in('id', chefZoneIds)
+        // Charger uniquement les chefs de zone attachés aux agents du manager
+        query = query.in('agent_id', agentIds)
       }
       // Les admins voient tous les chefs de zone
 
