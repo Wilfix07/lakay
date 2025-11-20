@@ -115,6 +115,35 @@ function AssignerMembresChefZoneContent() {
       setError('')
       setSuccess('')
 
+      // Vérifier si le membre est déjà assigné à un autre chef de zone
+      const { data: existingAssignment, error: checkError } = await supabase
+        .from('chef_zone_membres')
+        .select('chef_zone_id')
+        .eq('membre_id', membreId)
+        .maybeSingle()
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        throw checkError
+      }
+
+      // Si le membre est déjà assigné au même chef de zone, ne rien faire
+      if (existingAssignment && existingAssignment.chef_zone_id === chefZoneId) {
+        setSuccess('Le membre est déjà assigné à ce chef de zone')
+        setTimeout(() => setSuccess(''), 3000)
+        return
+      }
+
+      // Si le membre est assigné à un autre chef de zone, supprimer l'ancienne assignation
+      if (existingAssignment) {
+        const { error: deleteError } = await supabase
+          .from('chef_zone_membres')
+          .delete()
+          .eq('membre_id', membreId)
+
+        if (deleteError) throw deleteError
+      }
+
+      // Créer la nouvelle assignation
       const { error: insertError } = await supabase
         .from('chef_zone_membres')
         .insert({
@@ -124,13 +153,18 @@ function AssignerMembresChefZoneContent() {
         })
 
       if (insertError) {
-        // Si c'est une erreur de clé dupliquée, ignorer
-        if (insertError.code !== '23505') {
+        // Si c'est une erreur de clé dupliquée (ne devrait plus arriver avec la contrainte unique)
+        if (insertError.code === '23505') {
+          setError('Ce membre est déjà assigné à un autre chef de zone. Veuillez réessayer.')
+        } else {
           throw insertError
         }
+        return
       }
 
-      setSuccess('Membre assigné avec succès')
+      setSuccess(existingAssignment 
+        ? 'Membre réassigné avec succès' 
+        : 'Membre assigné avec succès')
       setTimeout(() => setSuccess(''), 3000)
       await loadAssignations()
     } catch (error: any) {

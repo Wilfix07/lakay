@@ -144,7 +144,7 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Présences',
       href: '/presences',
       icon: CalendarDays,
-      roles: ['chef_zone'] as UserRole[],
+      roles: ['admin', 'manager', 'agent', 'chef_zone'] as UserRole[],
     },
     {
       title: 'Assigner Membres',

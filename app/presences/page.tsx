@@ -30,12 +30,14 @@ function MembrePresenceRow({
   onTogglePresence,
   onSaveNotes,
   saving,
+  isReadOnly = false,
 }: {
   membre: Membre
   presence?: Presence
   onTogglePresence: (membreId: string, present: boolean) => void
   onSaveNotes: (membreId: string, notes: string) => void
   saving: boolean
+  isReadOnly?: boolean
 }) {
   const [notes, setNotes] = useState(presence?.notes || '')
   const [showNotesInput, setShowNotesInput] = useState(false)
@@ -66,7 +68,7 @@ function MembrePresenceRow({
         </Badge>
       </TableCell>
       <TableCell>
-        {showNotesInput ? (
+        {showNotesInput && !isReadOnly ? (
           <div className="flex gap-2">
             <Textarea
               value={notes}
@@ -103,38 +105,42 @@ function MembrePresenceRow({
             <span className="text-sm text-muted-foreground">
               {presence?.notes || 'Aucune note'}
             </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowNotesInput(true)}
-            >
-              {presence?.notes ? 'Modifier' : 'Ajouter'}
-            </Button>
+            {!isReadOnly && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setShowNotesInput(true)}
+              >
+                {presence?.notes ? 'Modifier' : 'Ajouter'}
+              </Button>
+            )}
           </div>
         )}
       </TableCell>
       <TableCell>
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant={isPresent ? 'outline' : 'default'}
-            onClick={() => onTogglePresence(membre.membre_id, !isPresent)}
-            disabled={saving}
-            className={isPresent ? '' : 'bg-green-600 hover:bg-green-700'}
-          >
-            {isPresent ? (
-              <>
-                <XCircle className="w-4 h-4 mr-1" />
-                Marquer absent
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="w-4 h-4 mr-1" />
-                Marquer présent
-              </>
-            )}
-          </Button>
-        </div>
+        {!isReadOnly && (
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant={isPresent ? 'outline' : 'default'}
+              onClick={() => onTogglePresence(membre.membre_id, !isPresent)}
+              disabled={saving}
+              className={isPresent ? '' : 'bg-green-600 hover:bg-green-700'}
+            >
+              {isPresent ? (
+                <>
+                  <XCircle className="w-4 h-4 mr-1" />
+                  Marquer absent
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-4 h-4 mr-1" />
+                  Marquer présent
+                </>
+              )}
+            </Button>
+          </div>
+        )}
       </TableCell>
     </TableRow>
   )
@@ -158,9 +164,14 @@ function PresencesContent() {
   useEffect(() => {
     if (userProfile) {
       loadMembresAssignes()
+    }
+  }, [userProfile])
+
+  useEffect(() => {
+    if (userProfile && membres.length > 0) {
       loadPresences()
     }
-  }, [userProfile, dateAppel])
+  }, [userProfile, dateAppel, membres])
 
   async function loadUserProfile() {
     try {
@@ -179,19 +190,50 @@ function PresencesContent() {
   }
 
   async function loadMembresAssignes() {
-    if (!userProfile || userProfile.role !== 'chef_zone') return
+    if (!userProfile) return
 
     try {
-      // Charger les membres assignés au chef de zone
-      const { data: assignations, error: assignationsError } = await supabase
-        .from('chef_zone_membres')
-        .select('membre_id')
-        .eq('chef_zone_id', userProfile.id)
+      let membreIds: string[] = []
 
-      if (assignationsError) throw assignationsError
+      if (userProfile.role === 'chef_zone') {
+        // Chef de zone : charger les membres assignés au chef de zone
+        const { data: assignations, error: assignationsError } = await supabase
+          .from('chef_zone_membres')
+          .select('membre_id')
+          .eq('chef_zone_id', userProfile.id)
 
-      const membreIds = assignations?.map(a => a.membre_id) || []
-      
+        if (assignationsError) throw assignationsError
+        membreIds = assignations?.map(a => a.membre_id) || []
+      } else if (userProfile.role === 'agent' && userProfile.agent_id) {
+        // Agent : charger les membres de l'agent
+        const { data: membresData, error: membresError } = await supabase
+          .from('membres')
+          .select('membre_id')
+          .eq('agent_id', userProfile.agent_id)
+
+        if (membresError) throw membresError
+        membreIds = membresData?.map(m => m.membre_id) || []
+      } else if (userProfile.role === 'manager') {
+        // Manager : charger les membres de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          const { data: membresData, error: membresError } = await supabase
+            .from('membres')
+            .select('membre_id')
+            .in('agent_id', agentIds)
+
+          if (membresError) throw membresError
+          membreIds = membresData?.map(m => m.membre_id) || []
+        }
+      }
+
       if (membreIds.length === 0) {
         setMembres([])
         return
@@ -207,20 +249,31 @@ function PresencesContent() {
       if (membresError) throw membresError
       setMembres(membresData || [])
     } catch (error) {
-      console.error('Erreur lors du chargement des membres assignés:', error)
-      alert('Erreur lors du chargement des membres assignés')
+      console.error('Erreur lors du chargement des membres:', error)
+      alert('Erreur lors du chargement des membres')
     }
   }
 
   async function loadPresences() {
-    if (!userProfile || userProfile.role !== 'chef_zone') return
+    if (!userProfile || membres.length === 0) return
 
     try {
-      const { data: presencesData, error: presencesError } = await supabase
+      const membreIds = membres.map(m => m.membre_id)
+      
+      let query = supabase
         .from('presences')
         .select('*')
-        .eq('chef_zone_id', userProfile.id)
         .eq('date_appel', dateAppel)
+        .in('membre_id', membreIds)
+
+      // Pour les chefs de zone, filtrer aussi par leur chef_zone_id
+      if (userProfile.role === 'chef_zone') {
+        query = query.eq('chef_zone_id', userProfile.id)
+      }
+      // Pour les agents et managers, charger toutes les présences des membres qu'ils gèrent
+      // (peu importe le chef_zone_id)
+
+      const { data: presencesData, error: presencesError } = await query
 
       if (presencesError) throw presencesError
 
@@ -236,7 +289,7 @@ function PresencesContent() {
   }
 
   async function handleTogglePresence(membreId: string, present: boolean) {
-    if (!userProfile) return
+    if (!userProfile || userProfile.role !== 'chef_zone') return
 
     try {
       setSaving(true)
@@ -285,7 +338,7 @@ function PresencesContent() {
   }
 
   async function handleSaveNotes(membreId: string, notes: string) {
-    if (!userProfile) return
+    if (!userProfile || userProfile.role !== 'chef_zone') return
 
     try {
       setSaving(true)
@@ -342,13 +395,17 @@ function PresencesContent() {
     )
   }
 
-  if (!userProfile || userProfile.role !== 'chef_zone') {
+  // Vérifier que l'utilisateur a un rôle autorisé
+  if (!userProfile || !['chef_zone', 'agent', 'manager'].includes(userProfile.role)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-xl">Accès non autorisé</div>
       </div>
     )
   }
+
+  // Déterminer si l'utilisateur est en mode lecture seule
+  const isReadOnly = userProfile.role !== 'chef_zone'
 
   const presentCount = Object.values(presences).filter(p => p.present).length
   const absentCount = membres.length - presentCount
@@ -360,8 +417,15 @@ function PresencesContent() {
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Gestion des Présences</h1>
             <p className="text-muted-foreground mt-2">
-              Appels nominaux - Marquer la présence des membres assignés
+              {isReadOnly 
+                ? 'Consultation des présences des membres (lecture seule)'
+                : 'Appels nominaux - Marquer la présence des membres assignés'}
             </p>
+            {isReadOnly && (
+              <div className="mt-2 bg-blue-50 border border-blue-200 text-blue-700 px-4 py-2 rounded text-sm">
+                Mode consultation : Vous pouvez consulter les présences mais ne pouvez pas les modifier.
+              </div>
+            )}
           </div>
         </div>
 
@@ -435,7 +499,11 @@ function PresencesContent() {
               <div className="py-10 text-center">
                 <Users className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
                 <p className="text-lg text-muted-foreground">
-                  Aucun membre ne vous est actuellement assigné
+                  {userProfile?.role === 'chef_zone' 
+                    ? 'Aucun membre ne vous est actuellement assigné'
+                    : userProfile?.role === 'agent'
+                    ? 'Aucun membre assigné à votre agent'
+                    : 'Aucun membre assigné à vos agents'}
                 </p>
               </div>
             ) : (
@@ -447,7 +515,7 @@ function PresencesContent() {
                     <TableHead>Prénom</TableHead>
                     <TableHead>Présence</TableHead>
                     <TableHead>Notes</TableHead>
-                    <TableHead>Actions</TableHead>
+                    {!isReadOnly && <TableHead>Actions</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -461,6 +529,7 @@ function PresencesContent() {
                         onTogglePresence={handleTogglePresence}
                         onSaveNotes={handleSaveNotes}
                         saving={saving}
+                        isReadOnly={isReadOnly}
                       />
                     )
                   })}
