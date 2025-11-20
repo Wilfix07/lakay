@@ -910,28 +910,32 @@ function MembresPageContent() {
 
     const pretIds = (pretsActifs || []).map(p => p.pret_id)
     
-    // Charger les garanties (collaterals) seulement pour les prêts actifs
+    // Charger TOUTES les garanties (collaterals) pour ce membre
+    // Inclure les garanties individuelles et de groupe, même si les prêts ne sont plus actifs
     let garantieTotal = 0
-    if (pretIds.length > 0) {
-      const { data: collaterals } = await supabase
-        .from('collaterals')
-        .select('montant')
-        .in('pret_id', pretIds)
-        .is('group_pret_id', null)
+    
+    // Charger toutes les garanties individuelles du membre (peu importe le statut du prêt)
+    const { data: collaterals, error: collateralsError } = await supabase
+      .from('collaterals')
+      .select('montant_depose, pret_id, group_pret_id')
+      .eq('membre_id', membreId)
+      .is('group_pret_id', null)
 
-      garantieTotal = (collaterals || []).reduce((sum, c) => sum + Number(c.montant || 0), 0)
+    if (!collateralsError && collaterals) {
+      // Calculer la somme des montants déposés pour les garanties individuelles
+      garantieTotal = collaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
     }
 
-    // Ajouter les garanties pour les prêts de groupe actifs
-    if (groupPretsMap.length > 0) {
-      const groupPretIds = groupPretsMap.map(gp => gp.pret_id)
-      const { data: groupCollaterals } = await supabase
-        .from('collaterals')
-        .select('montant')
-        .in('group_pret_id', groupPretIds)
-        .eq('membre_id', membreId)
+    // Charger toutes les garanties de groupe pour ce membre (peu importe le statut du prêt)
+    const { data: groupCollaterals, error: groupCollateralsError } = await supabase
+      .from('collaterals')
+      .select('montant_depose, group_pret_id')
+      .eq('membre_id', membreId)
+      .not('group_pret_id', 'is', null)
 
-      garantieTotal += (groupCollaterals || []).reduce((sum, c) => sum + Number(c.montant || 0), 0)
+    if (!groupCollateralsError && groupCollaterals) {
+      // Ajouter la somme des montants déposés pour les garanties de groupe
+      garantieTotal += groupCollaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
     }
 
     // Charger les épargnes
@@ -1538,7 +1542,7 @@ function MembresPageContent() {
                     </div>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
                     <div className="rounded-lg border px-4 py-3">
                       <p className="text-xs uppercase text-muted-foreground">Prêts totaux</p>
                       <p className="text-lg font-semibold text-foreground">
@@ -1546,6 +1550,15 @@ function MembresPageContent() {
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {memberSummary.activeLoans} prêt(s) actif(s)
+                      </p>
+                    </div>
+                    <div className="rounded-lg border px-4 py-3">
+                      <p className="text-xs uppercase text-muted-foreground">Garantie totale</p>
+                      <p className="text-lg font-semibold text-foreground">
+                        {formatCurrency(membresDetails[selectedMember?.membre_id || '']?.garantie || 0)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Total déposé
                       </p>
                     </div>
                     <div className="rounded-lg border px-4 py-3">

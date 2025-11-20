@@ -87,6 +87,81 @@ function UtilisateursPageContent() {
     }
   }
 
+  // Fonction helper pour charger les chefs de zone du portefeuille d'un manager
+  async function loadChefsZoneForManager(agentIds: string[]): Promise<any[]> {
+    try {
+      // 1. Charger les chefs de zone attachés directement aux agents du manager (via agent_id)
+      const { data: chefsZoneWithAgent, error: error1 } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'chef_zone')
+        .in('agent_id', agentIds)
+
+      if (error1) throw error1
+
+      // 2. Charger les chefs de zone qui ont des membres assignés appartenant aux agents du manager
+      // D'abord, récupérer les membres des agents du manager
+      const { data: membres, error: membresError } = await supabase
+        .from('membres')
+        .select('membre_id')
+        .in('agent_id', agentIds)
+
+      if (membresError) throw membresError
+
+      const membreIds = membres?.map(m => m.membre_id) || []
+
+      // Si aucun membre, retourner seulement les chefs de zone avec agent_id
+      if (membreIds.length === 0) {
+        return chefsZoneWithAgent || []
+      }
+
+      // Récupérer les chefs de zone qui ont ces membres assignés
+      const { data: chefZoneMembres, error: chefZoneMembresError } = await supabase
+        .from('chef_zone_membres')
+        .select('chef_zone_id')
+        .in('membre_id', membreIds)
+
+      if (chefZoneMembresError) throw chefZoneMembresError
+
+      const chefZoneIds = [...new Set((chefZoneMembres || []).map(czm => czm.chef_zone_id))]
+
+      // Si aucun chef de zone trouvé par membre, retourner seulement ceux avec agent_id
+      if (chefZoneIds.length === 0) {
+        return chefsZoneWithAgent || []
+      }
+
+      // Charger les profils des chefs de zone qui ont des membres du portefeuille
+      const { data: chefsZoneByMembres, error: error2 } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'chef_zone')
+        .in('id', chefZoneIds)
+
+      if (error2) throw error2
+
+      // Combiner les deux listes (chefs de zone avec agent_id + chefs de zone avec membres du portefeuille)
+      const allChefsZone = [
+        ...(chefsZoneWithAgent || []),
+        ...(chefsZoneByMembres || [])
+      ]
+
+      // Enlever les doublons (même ID)
+      const uniqueChefsZone = Array.from(
+        new Map(allChefsZone.map(cz => [cz.id, cz])).values()
+      )
+
+      // Trier par date de création
+      uniqueChefsZone.sort((a, b) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      )
+
+      return uniqueChefsZone
+    } catch (error) {
+      console.error('Erreur lors du chargement des chefs de zone pour le manager:', error)
+      return []
+    }
+  }
+
   async function loadUsers() {
     try {
       setLoading(true)
@@ -95,7 +170,7 @@ function UtilisateursPageContent() {
         .select('*')
         .order('created_at', { ascending: false })
 
-      // Les managers voient leurs agents et tous les chefs de zone
+      // Les managers voient leurs agents et les chefs de zone de leur portefeuille
       if (userProfile?.role === 'manager') {
         // Récupérer d'abord les agent_id des agents du manager
         const { data: managerAgents, error: agentsError } = await supabase
@@ -107,7 +182,7 @@ function UtilisateursPageContent() {
 
         const agentIds = managerAgents?.map(a => a.agent_id) || []
         
-        // Charger les agents du manager et tous les chefs de zone séparément, puis les combiner
+        // Charger les agents du manager et les chefs de zone de son portefeuille
         const [agentsResult, chefsZoneResult] = await Promise.all([
           // Charger les agents du manager
           agentIds.length > 0
@@ -118,24 +193,22 @@ function UtilisateursPageContent() {
                 .in('agent_id', agentIds)
                 .order('created_at', { ascending: false })
             : Promise.resolve({ data: [], error: null }),
-          // Charger les chefs de zone attachés aux agents du manager
+          // Charger les chefs de zone du portefeuille du manager
           agentIds.length > 0
-            ? supabase
-                .from('user_profiles')
-                .select('*')
-                .eq('role', 'chef_zone')
-                .in('agent_id', agentIds)
-                .order('created_at', { ascending: false })
-            : Promise.resolve({ data: [], error: null })
+            ? loadChefsZoneForManager(agentIds)
+            : Promise.resolve([])
         ])
 
         if (agentsResult.error) throw agentsResult.error
-        if (chefsZoneResult.error) throw chefsZoneResult.error
 
-        // Combiner les résultats
+        // Combiner les résultats (enlever les doublons basés sur l'ID)
+        const chefsZoneMap = new Map((chefsZoneResult || []).map(cz => [cz.id, cz]))
+        const agentsMap = new Map((agentsResult.data || []).map(a => [a.id, a]))
+        
+        // Combiner en évitant les doublons
         const combinedUsers = [
-          ...(agentsResult.data || []),
-          ...(chefsZoneResult.data || [])
+          ...agentsMap.values(),
+          ...chefsZoneMap.values()
         ]
         
         // Trier par date de création décroissante
