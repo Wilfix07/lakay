@@ -235,7 +235,7 @@ function ParametresPageContent() {
         .in('setting_key', ['schedule', 'interest_rates', 'collateral_settings'])
       
       if (managerId !== null && managerId !== undefined) {
-        settingsQuery = settingsQuery.eq('manager_id', managerId)
+        settingsQuery = settingsQuery.eq('manager_id', String(managerId))
       } else {
         settingsQuery = settingsQuery.is('manager_id', null)
       }
@@ -380,7 +380,7 @@ function ParametresPageContent() {
       const { error } = await supabase.from('system_settings').upsert(
         {
           setting_key: 'schedule',
-          manager_id: managerId,
+          manager_id: managerId ? String(managerId) : null,
           setting_value: {
             totalInstallments: scheduleForm.totalInstallments,
             frequencyDays: scheduleForm.frequencyDays,
@@ -427,7 +427,7 @@ function ParametresPageContent() {
       const { error } = await supabase.from('system_settings').upsert(
         {
           setting_key: 'interest_rates',
-          manager_id: managerId,
+          manager_id: managerId ? String(managerId) : null,
           setting_value: {
             baseInterestRate: interestForm.baseInterestRate,
             penaltyRate: interestForm.penaltyRate,
@@ -473,7 +473,7 @@ function ParametresPageContent() {
       const { error } = await supabase.from('system_settings').upsert(
         {
           setting_key: 'collateral_settings',
-          manager_id: managerId,
+          manager_id: managerId ? String(managerId) : null,
           setting_value: {
             collateralRate: collateralForm.collateralRate,
             refundPolicy: collateralForm.refundPolicy,

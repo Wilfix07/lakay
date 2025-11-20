@@ -26,7 +26,7 @@ function UtilisateursPageContent() {
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null)
   const [editData, setEditData] = useState({
     email: '',
-    role: 'agent' as 'manager' | 'agent',
+    role: 'agent' as 'manager' | 'agent' | 'chef_zone',
     nom: '',
     prenom: '',
     agent_id: '',
@@ -95,7 +95,7 @@ function UtilisateursPageContent() {
         .select('*')
         .order('created_at', { ascending: false })
 
-      // Les managers ne voient que leurs agents
+      // Les managers voient leurs agents et tous les chefs de zone
       if (userProfile?.role === 'manager') {
         // Récupérer d'abord les agent_id des agents du manager
         const { data: managerAgents, error: agentsError } = await supabase
@@ -106,18 +106,47 @@ function UtilisateursPageContent() {
         if (agentsError) throw agentsError
 
         const agentIds = managerAgents?.map(a => a.agent_id) || []
-        if (agentIds.length > 0) {
-          // Filtrer les utilisateurs pour ne montrer que ceux qui ont un agent_id appartenant au manager
-          query = query.eq('role', 'agent').in('agent_id', agentIds)
-        } else {
-          // Si le manager n'a pas encore d'agents, retourner une liste vide
-          setUsers([])
-          return
-        }
+        
+        // Charger les agents du manager et tous les chefs de zone séparément, puis les combiner
+        const [agentsResult, chefsZoneResult] = await Promise.all([
+          // Charger les agents du manager
+          agentIds.length > 0
+            ? supabase
+                .from('user_profiles')
+                .select('*')
+                .eq('role', 'agent')
+                .in('agent_id', agentIds)
+                .order('created_at', { ascending: false })
+            : Promise.resolve({ data: [], error: null }),
+          // Charger tous les chefs de zone
+          supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('role', 'chef_zone')
+            .order('created_at', { ascending: false })
+        ])
+
+        if (agentsResult.error) throw agentsResult.error
+        if (chefsZoneResult.error) throw chefsZoneResult.error
+
+        // Combiner les résultats
+        const combinedUsers = [
+          ...(agentsResult.data || []),
+          ...(chefsZoneResult.data || [])
+        ]
+        
+        // Trier par date de création décroissante
+        combinedUsers.sort((a, b) => 
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        )
+        
+        setUsers(combinedUsers)
+        setLoading(false)
+        return
       }
-      // Les admins voient tous les utilisateurs sauf les admins
+      // Les admins voient tous les utilisateurs sauf les admins (managers, agents, chefs de zone)
       else if (userProfile?.role === 'admin') {
-        query = query.in('role', ['manager', 'agent'])
+        query = query.in('role', ['manager', 'agent', 'chef_zone'])
       }
 
       const { data, error } = await query
@@ -210,18 +239,25 @@ function UtilisateursPageContent() {
   }
 
   function handleStartEdit(user: UserProfile) {
-    // Vérifier les permissions : admin peut modifier tous les utilisateurs, manager peut modifier ses agents
+    // Vérifier les permissions : admin peut modifier tous les utilisateurs, manager peut modifier ses agents et ses chefs de zone
     if (userProfile?.role === 'admin' || userProfile?.role === 'manager') {
-      // Si c'est un manager, vérifier que l'utilisateur est un agent qui lui appartient
+      // Si c'est un manager, vérifier que l'utilisateur est un agent qui lui appartient ou un chef de zone
       if (userProfile?.role === 'manager') {
-        if (user.role !== 'agent') return
-        // La vérification que l'agent appartient au manager sera faite côté serveur dans l'API
+        if (user.role !== 'agent' && user.role !== 'chef_zone') {
+          setError('Vous ne pouvez modifier que vos agents et vos chefs de zone')
+          return
+        }
+        // Pour les agents, la vérification que l'agent appartient au manager sera faite côté serveur dans l'API
+        // Pour les chefs de zone, on vérifie qu'ils ont des membres assignés qui appartiennent aux agents du manager
+        if (user.role === 'chef_zone') {
+          // La vérification sera faite côté serveur, mais on permet l'édition ici
+        }
       }
       
       setEditingUser(user)
       setEditData({
         email: user.email,
-        role: (user.role as 'manager' | 'agent') ?? 'agent',
+        role: (user.role as 'manager' | 'agent' | 'chef_zone') ?? 'agent',
         nom: user.nom ?? '',
         prenom: user.prenom ?? '',
         agent_id: user.agent_id ?? '',
@@ -307,11 +343,14 @@ function UtilisateursPageContent() {
   }
 
   async function handleDeleteUser(user: UserProfile) {
-    // Vérifier les permissions : admin peut supprimer tous les utilisateurs, manager peut supprimer ses agents
+    // Vérifier les permissions : admin peut supprimer tous les utilisateurs, manager peut supprimer ses agents et ses chefs de zone
     if (userProfile?.role !== 'admin' && userProfile?.role !== 'manager') return
     
-    // Si c'est un manager, vérifier que l'utilisateur est un agent (la vérification côté serveur confirmera qu'il appartient au manager)
-    if (userProfile?.role === 'manager' && user.role !== 'agent') return
+    // Si c'est un manager, vérifier que l'utilisateur est un agent ou un chef de zone
+    if (userProfile?.role === 'manager' && user.role !== 'agent' && user.role !== 'chef_zone') {
+      setError('Vous ne pouvez supprimer que vos agents et vos chefs de zone')
+      return
+    }
     
     if (!confirm(`Êtes-vous sûr de vouloir supprimer l'utilisateur ${user.email} ?`)) {
       return
@@ -364,7 +403,12 @@ function UtilisateursPageContent() {
     ? ['agent', 'chef_zone']
     : []
 
-  const editableRoles = availableRoles
+  // Rôles éditables : admins peuvent modifier tous les rôles, managers peuvent modifier leurs agents et leurs chefs de zone
+  const editableRoles = userProfile?.role === 'admin'
+    ? ['manager', 'agent', 'chef_zone']
+    : userProfile?.role === 'manager'
+    ? ['agent', 'chef_zone'] // Managers peuvent modifier leurs agents et leurs chefs de zone
+    : []
 
   if (loading || !userProfile) {
     return (
@@ -592,7 +636,7 @@ function UtilisateursPageContent() {
                     onChange={(e) =>
                       setEditData({
                         ...editData,
-                        role: e.target.value as 'manager' | 'agent',
+                        role: e.target.value as 'manager' | 'agent' | 'chef_zone',
                         agent_id: e.target.value === 'agent' ? editData.agent_id : '',
                       })
                     }
@@ -601,7 +645,11 @@ function UtilisateursPageContent() {
                   >
                     {editableRoles.map(role => (
                       <option key={role} value={role}>
-                        {role === 'manager' ? 'Manager' : 'Agent de crédit'}
+                        {role === 'manager' 
+                          ? 'Manager' 
+                          : role === 'chef_zone'
+                          ? 'Chef de zone'
+                          : 'Agent de crédit'}
                       </option>
                     ))}
                   </select>
@@ -711,10 +759,12 @@ function UtilisateursPageContent() {
                         <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
                           user.role === 'admin' ? 'bg-purple-100 text-purple-800' :
                           user.role === 'manager' ? 'bg-blue-100 text-blue-800' :
+                          user.role === 'chef_zone' ? 'bg-orange-100 text-orange-800' :
                           'bg-green-100 text-green-800'
                         }`}>
                           {user.role === 'admin' ? 'Admin' :
                            user.role === 'manager' ? 'Manager' :
+                           user.role === 'chef_zone' ? 'Chef de zone' :
                            'Agent'}
                         </span>
                       </td>
@@ -729,17 +779,33 @@ function UtilisateursPageContent() {
                           <div className="flex gap-2">
                             <button
                               onClick={() => handleStartEdit(user)}
-                              className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
-                              disabled={userProfile?.role === 'manager' && user.role !== 'agent'}
-                              title={userProfile?.role === 'manager' && user.role !== 'agent' ? 'Vous ne pouvez modifier que vos agents' : ''}
+                              className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                              disabled={
+                                userProfile?.role === 'manager' && 
+                                user.role !== 'agent' && 
+                                user.role !== 'chef_zone'
+                              }
+                              title={
+                                userProfile?.role === 'manager' && user.role !== 'agent' && user.role !== 'chef_zone'
+                                  ? 'Vous ne pouvez modifier que vos agents et vos chefs de zone'
+                                  : ''
+                              }
                             >
                               Modifier
                             </button>
                             <button
                               onClick={() => handleDeleteUser(user)}
-                              className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
-                              disabled={userProfile?.role === 'manager' && user.role !== 'agent'}
-                              title={userProfile?.role === 'manager' && user.role !== 'agent' ? 'Vous ne pouvez supprimer que vos agents' : ''}
+                              className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                              disabled={
+                                userProfile?.role === 'manager' && 
+                                user.role !== 'agent' && 
+                                user.role !== 'chef_zone'
+                              }
+                              title={
+                                userProfile?.role === 'manager' && user.role !== 'agent' && user.role !== 'chef_zone'
+                                  ? 'Vous ne pouvez supprimer que vos agents et vos chefs de zone'
+                                  : ''
+                              }
                             >
                               Supprimer
                             </button>
