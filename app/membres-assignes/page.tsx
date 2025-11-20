@@ -206,6 +206,9 @@ function MembresAssignesContent() {
         return sum + (t.type === 'depot' ? montant : -montant)
       }, 0)
 
+      // Récupérer les prêts de groupe pour ce membre
+      const memberGroupPrets = groupPretsMap[membreId] || []
+
       // Calculer le total des prêts actifs (individuels + groupe)
       const pretActifTotal = 
         (pretsActifs || []).reduce((sum, p) => {
