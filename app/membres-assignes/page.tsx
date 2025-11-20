@@ -10,7 +10,7 @@ import { DashboardLayout } from '@/components/DashboardLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Users, Wallet, PiggyBank, CreditCard, Calendar, AlertCircle, CheckCircle2, XCircle, Clock, TrendingUp, TrendingDown, DollarSign, UserPlus } from 'lucide-react'
+import { Users, Wallet, PiggyBank, CreditCard, Calendar, AlertCircle, CheckCircle2, XCircle, Clock, TrendingUp, TrendingDown, DollarSign, UserPlus, RefreshCw } from 'lucide-react'
 import {
   Table,
   TableBody,
@@ -36,6 +36,7 @@ function MembresAssignesContent() {
   const [epargneTransactions, setEpargneTransactions] = useState<any[]>([])
   const [memberGroupInfo, setMemberGroupInfo] = useState<{ group_name: string; group_id: number } | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     loadUserProfile()
@@ -63,11 +64,15 @@ function MembresAssignesContent() {
     }
   }
 
-  async function loadMembresAssignes() {
+  async function loadMembresAssignes(showRefreshing = false) {
     if (!userProfile || userProfile.role !== 'chef_zone') return
 
     try {
-      setLoading(true)
+      if (showRefreshing) {
+        setRefreshing(true)
+      } else {
+        setLoading(true)
+      }
       
       // Charger les membres assignés au chef de zone
       const { data: assignations, error: assignationsError } = await supabase
@@ -81,7 +86,12 @@ function MembresAssignesContent() {
       
       if (membreIds.length === 0) {
         setMembres([])
-        setLoading(false)
+        setMembresDetails({})
+        if (showRefreshing) {
+          setRefreshing(false)
+        } else {
+          setLoading(false)
+        }
         return
       }
 
@@ -100,7 +110,11 @@ function MembresAssignesContent() {
       console.error('Erreur lors du chargement des membres assignés:', error)
       alert('Erreur lors du chargement des membres assignés')
     } finally {
-      setLoading(false)
+      if (showRefreshing) {
+        setRefreshing(false)
+      } else {
+        setLoading(false)
+      }
     }
   }
 
@@ -153,29 +167,32 @@ function MembresAssignesContent() {
 
       const pretIds = (pretsActifs || []).map(p => p.pret_id)
       
-      // Charger les garanties (collaterals) seulement pour les prêts actifs
+      // Charger TOUTES les garanties (collaterals) pour ce membre
+      // Inclure les garanties individuelles et de groupe, même si les prêts ne sont plus actifs
       let garantieTotal = 0
-      if (pretIds.length > 0) {
-        const { data: collaterals } = await supabase
-          .from('collaterals')
-          .select('montant')
-          .in('pret_id', pretIds)
-          .is('group_pret_id', null) // Seulement les garanties pour prêts individuels
+      
+      // Charger toutes les garanties individuelles du membre (peu importe le statut du prêt)
+      const { data: collaterals, error: collateralsError } = await supabase
+        .from('collaterals')
+        .select('montant_depose, pret_id, group_pret_id')
+        .eq('membre_id', membreId)
+        .is('group_pret_id', null)
 
-        garantieTotal = (collaterals || []).reduce((sum, c) => sum + Number(c.montant || 0), 0)
+      if (!collateralsError && collaterals) {
+        // Calculer la somme des montants déposés pour les garanties individuelles
+        garantieTotal = collaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
       }
 
-      // Ajouter les garanties pour les prêts de groupe actifs
-      const memberGroupPrets = groupPretsMap[membreId] || []
-      if (memberGroupPrets.length > 0) {
-        const groupPretIds = memberGroupPrets.map(gp => gp.pret_id)
-        const { data: groupCollaterals } = await supabase
-          .from('collaterals')
-          .select('montant')
-          .in('group_pret_id', groupPretIds)
-          .eq('membre_id', membreId)
+      // Charger toutes les garanties de groupe pour ce membre (peu importe le statut du prêt)
+      const { data: groupCollaterals, error: groupCollateralsError } = await supabase
+        .from('collaterals')
+        .select('montant_depose, group_pret_id')
+        .eq('membre_id', membreId)
+        .not('group_pret_id', 'is', null)
 
-        garantieTotal += (groupCollaterals || []).reduce((sum, c) => sum + Number(c.montant || 0), 0)
+      if (!groupCollateralsError && groupCollaterals) {
+        // Ajouter la somme des montants déposés pour les garanties de groupe
+        garantieTotal += groupCollaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
       }
 
       // Charger les épargnes (toutes les transactions sont pertinentes)
@@ -330,6 +347,15 @@ function MembresAssignesContent() {
               Liste des membres qui vous sont assignés avec leurs détails financiers
             </p>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => loadMembresAssignes(true)}
+            disabled={refreshing || loading}
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+            Actualiser
+          </Button>
         </div>
 
         {membres.length === 0 ? (

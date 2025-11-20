@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, X, Loader2, User, Users, CheckCircle2, Clock, TrendingUp, TrendingDown, DollarSign, UserPlus, Calendar, Wallet, PiggyBank, CreditCard } from 'lucide-react'
+import { Plus, X, Loader2, User, Users, CheckCircle2, Clock, TrendingUp, TrendingDown, DollarSign, UserPlus, Calendar, Wallet, PiggyBank, CreditCard, Download, FileText, Eye } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
@@ -119,6 +119,7 @@ function MembresPageContent() {
     echeancier: Remboursement[]
     collateralPretActif: number
     pretActifId: string | null
+    pretActifStatut: string | null
   }>>({})
 
   const currentLoan =
@@ -894,7 +895,7 @@ function MembresPageContent() {
     if (groupIds.length > 0) {
       const { data: groupPretsData } = await supabase
         .from('group_prets')
-        .select('pret_id, montant_pret, capital_restant, group_id')
+        .select('pret_id, montant_pret, capital_restant, group_id, statut')
         .in('group_id', groupIds)
         .eq('statut', 'actif')
 
@@ -906,7 +907,7 @@ function MembresPageContent() {
     // Charger les prêts actifs individuels
     const { data: pretsActifs } = await supabase
       .from('prets')
-      .select('pret_id, montant_pret, capital_restant')
+      .select('pret_id, montant_pret, capital_restant, statut')
       .eq('membre_id', membreId)
       .eq('statut', 'actif')
       .order('date_decaissement', { ascending: false })
@@ -1005,6 +1006,7 @@ function MembresPageContent() {
     // Calculer le collateral pour le prêt actif actuel
     let collateralPretActif = 0
     let pretActifId: string | null = null
+    let pretActifStatut: string | null = null
 
     if (pretActifCourant) {
       // Charger tous les collaterals pour ce prêt actif
@@ -1019,6 +1021,7 @@ function MembresPageContent() {
         // Somme de tous les montants déposés pour ce prêt
         collateralPretActif = collateralsPret.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
         pretActifId = pretActifCourant.pret_id
+        pretActifStatut = pretActifCourant.statut || null
       }
     } else if (groupPretsMap.length > 0) {
       // Si pas de prêt individuel actif, vérifier le prêt de groupe actif
@@ -1033,6 +1036,7 @@ function MembresPageContent() {
         // Somme de tous les montants déposés pour ce prêt de groupe
         collateralPretActif = collateralsGroupPret.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
         pretActifId = groupPretActif.pret_id
+        pretActifStatut = groupPretActif.statut || null
       }
     }
 
@@ -1044,8 +1048,230 @@ function MembresPageContent() {
         echeancier,
         collateralPretActif,
         pretActifId,
+        pretActifStatut,
       }
     })
+  }
+
+  async function downloadEcheancier() {
+    if (!selectedMembreForDetails) return
+    
+    const membreId = selectedMembreForDetails.membre_id
+    const membreNom = `${selectedMembreForDetails.prenom} ${selectedMembreForDetails.nom}`
+    const membreAdresse = selectedMembreForDetails.adresse || 'Non renseignée'
+    const echeancier = membresDetails[membreId]?.echeancier || []
+    const pretId = membresDetails[membreId]?.pretActifId || 'N/A'
+    
+    if (echeancier.length === 0) {
+      alert('Aucun remboursement dans l\'échéancier à télécharger.')
+      return
+    }
+
+    // Récupérer le nom de l'agent de crédit
+    const agent = agents.find(a => a.agent_id === selectedMembreForDetails.agent_id)
+    const agentNom = agent ? `${agent.prenom} ${agent.nom}` : 'Non renseigné'
+
+    // Récupérer les informations du groupe si c'est un membre de groupe
+    let groupeNom = ''
+    let autresMembres: string[] = []
+    
+    if (memberGroupInfo) {
+      groupeNom = memberGroupInfo.group_name
+      
+      // Charger les autres membres du groupe
+      const { data: groupMembersData } = await supabase
+        .from('membre_group_members')
+        .select('membre_id, membres(prenom, nom)')
+        .eq('group_id', memberGroupInfo.group_id)
+      
+      if (groupMembersData) {
+        autresMembres = groupMembersData
+          .filter(gm => gm.membre_id !== membreId)
+          .map(gm => {
+            const m = gm.membres as any
+            return m ? `${m.prenom} ${m.nom}` : ''
+          })
+          .filter(nom => nom !== '')
+      }
+    }
+
+    // Créer le contenu CSV
+    const headers = ['N°', 'Date prévue', 'Montant', 'Principal', 'Intérêt']
+    const rows = echeancier.map((r) => [
+      r.numero_remboursement.toString(),
+      formatDate(r.date_remboursement),
+      formatCurrency(r.montant),
+      formatCurrency(r.principal || 0),
+      formatCurrency(r.interet || 0)
+    ])
+
+    // Calculer les totaux
+    const totalMontant = echeancier.reduce((sum, r) => sum + Number(r.montant || 0), 0)
+    const totalPrincipal = echeancier.reduce((sum, r) => sum + Number(r.principal || 0), 0)
+    const totalInteret = echeancier.reduce((sum, r) => sum + Number(r.interet || 0), 0)
+
+    const csvContent = [
+      ['Échéancier du prêt', `Prêt ID: ${pretId}`],
+      ['Membre', membreNom],
+      ['Membre ID', membreId],
+      ['Adresse', membreAdresse],
+      ['Agent de crédit', agentNom],
+      memberGroupInfo ? ['Type de prêt', 'Prêt de groupe'] : ['Type de prêt', 'Prêt individuel'],
+      memberGroupInfo ? ['Nom du groupe', groupeNom] : null,
+      autresMembres.length > 0 ? ['Autres membres du groupe', autresMembres.join('; ')] : null,
+      ['Date génération', formatDate(new Date().toISOString())],
+      [],
+      headers,
+      ...rows,
+      [],
+      ['TOTAL', '', formatCurrency(totalMontant), formatCurrency(totalPrincipal), formatCurrency(totalInteret)]
+    ].filter(row => row !== null).map(row => row!.join(',')).join('\n')
+
+    // Créer le blob et télécharger
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    const url = URL.createObjectURL(blob)
+    link.setAttribute('href', url)
+    link.setAttribute('download', `echeancier_${membreId}_${pretId}_${new Date().toISOString().split('T')[0]}.csv`)
+    link.style.visibility = 'hidden'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  async function viewEcheancier() {
+    if (!selectedMembreForDetails) return
+    
+    const membreId = selectedMembreForDetails.membre_id
+    const membreNom = `${selectedMembreForDetails.prenom} ${selectedMembreForDetails.nom}`
+    const membreAdresse = selectedMembreForDetails.adresse || 'Non renseignée'
+    const echeancier = membresDetails[membreId]?.echeancier || []
+    const pretId = membresDetails[membreId]?.pretActifId || 'N/A'
+    
+    if (echeancier.length === 0) {
+      alert('Aucun remboursement dans l\'échéancier à afficher.')
+      return
+    }
+
+    // Récupérer le nom de l'agent de crédit
+    const agent = agents.find(a => a.agent_id === selectedMembreForDetails.agent_id)
+    const agentNom = agent ? `${agent.prenom} ${agent.nom}` : 'Non renseigné'
+
+    // Récupérer les informations du groupe si c'est un membre de groupe
+    let groupeNom = ''
+    let autresMembres: string[] = []
+    
+    if (memberGroupInfo) {
+      groupeNom = memberGroupInfo.group_name
+      
+      // Charger les autres membres du groupe
+      const { data: groupMembersData } = await supabase
+        .from('membre_group_members')
+        .select('membre_id, membres(prenom, nom)')
+        .eq('group_id', memberGroupInfo.group_id)
+      
+      if (groupMembersData) {
+        autresMembres = groupMembersData
+          .filter(gm => gm.membre_id !== membreId)
+          .map(gm => {
+            const m = gm.membres as any
+            return m ? `${m.prenom} ${m.nom}` : ''
+          })
+          .filter(nom => nom !== '')
+      }
+    }
+
+    // Créer le contenu HTML pour l'échéancier
+    let htmlContent = `
+      <html>
+        <head>
+          <title>Échéancier - ${membreNom}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { color: #333; }
+            .info-section { background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+            .info-row { margin: 8px 0; }
+            .info-label { font-weight: bold; display: inline-block; width: 180px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; font-weight: bold; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            .total { font-weight: bold; background-color: #e8e8e8; }
+            .group-members { margin-top: 10px; }
+            .group-members ul { margin: 5px 0; padding-left: 20px; }
+          </style>
+        </head>
+        <body>
+          <h1>Échéancier du prêt</h1>
+          <div class="info-section">
+            <div class="info-row"><span class="info-label">Prêt ID:</span> ${pretId}</div>
+            <div class="info-row"><span class="info-label">Membre:</span> ${membreNom}</div>
+            <div class="info-row"><span class="info-label">Membre ID:</span> ${membreId}</div>
+            <div class="info-row"><span class="info-label">Adresse:</span> ${membreAdresse}</div>
+            <div class="info-row"><span class="info-label">Agent de crédit:</span> ${agentNom}</div>
+            <div class="info-row"><span class="info-label">Type de prêt:</span> ${memberGroupInfo ? 'Prêt de groupe' : 'Prêt individuel'}</div>
+            ${memberGroupInfo ? `<div class="info-row"><span class="info-label">Nom du groupe:</span> ${groupeNom}</div>` : ''}
+            ${autresMembres.length > 0 ? `
+              <div class="info-row group-members">
+                <span class="info-label">Autres membres du groupe:</span>
+                <ul>
+                  ${autresMembres.map(m => `<li>${m}</li>`).join('')}
+                </ul>
+              </div>
+            ` : ''}
+            <div class="info-row"><span class="info-label">Date génération:</span> ${formatDate(new Date().toISOString())}</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>N°</th>
+                <th>Date prévue</th>
+                <th>Montant</th>
+                <th>Principal</th>
+                <th>Intérêt</th>
+              </tr>
+            </thead>
+            <tbody>
+    `
+
+    echeancier.forEach((r) => {
+      htmlContent += `
+        <tr>
+          <td>${r.numero_remboursement}</td>
+          <td>${formatDate(r.date_remboursement)}</td>
+          <td>${formatCurrency(r.montant)}</td>
+          <td>${formatCurrency(r.principal || 0)}</td>
+          <td>${formatCurrency(r.interet || 0)}</td>
+        </tr>
+      `
+    })
+
+    // Ajouter les totaux
+    const totalMontant = echeancier.reduce((sum, r) => sum + Number(r.montant || 0), 0)
+    const totalPrincipal = echeancier.reduce((sum, r) => sum + Number(r.principal || 0), 0)
+    const totalInteret = echeancier.reduce((sum, r) => sum + Number(r.interet || 0), 0)
+    
+    htmlContent += `
+            </tbody>
+            <tfoot>
+              <tr class="total">
+                <td colspan="2">TOTAL</td>
+                <td>${formatCurrency(totalMontant)}</td>
+                <td>${formatCurrency(totalPrincipal)}</td>
+                <td>${formatCurrency(totalInteret)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </body>
+      </html>
+    `
+
+    // Ouvrir dans une nouvelle fenêtre
+    const newWindow = window.open('', '_blank')
+    if (newWindow) {
+      newWindow.document.write(htmlContent)
+      newWindow.document.close()
+    }
   }
 
   async function handleTransferSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -2171,7 +2397,33 @@ function MembresPageContent() {
 
                   {/* Échéancier */}
                   <div>
-                    <h3 className="text-lg font-semibold mb-4">Échéancier</h3>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold">Échéancier</h3>
+                      {membresDetails[selectedMembreForDetails.membre_id]?.echeancier.length > 0 &&
+                       membresDetails[selectedMembreForDetails.membre_id]?.pretActifStatut &&
+                       membresDetails[selectedMembreForDetails.membre_id]?.pretActifStatut !== 'en_attente_approbation' && (
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={viewEcheancier}
+                            className="gap-2"
+                          >
+                            <Eye className="h-4 w-4" />
+                            Voir
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={downloadEcheancier}
+                            className="gap-2"
+                          >
+                            <Download className="h-4 w-4" />
+                            Télécharger
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                     {membresDetails[selectedMembreForDetails.membre_id]?.echeancier.length === 0 ? (
                       <p className="text-muted-foreground">Aucun remboursement en attente</p>
                     ) : (

@@ -388,28 +388,88 @@ function ResumePageContent() {
       }
 
       // 7. Retraits de garantie
-      let collateralsRetraitsQuery = supabase
-        .from('collaterals')
-        .select('*')
-        .eq('date_remboursement', todayDateString)
-        .not('date_remboursement', 'is', null)
-
+      // Charger les retraits de garantie pour les prêts individuels et de groupe séparément
+      let collateralsRetraits: any[] = []
+      
       if (userProfile.role === 'agent' && userProfile.agent_id) {
         const pretIds = pretsForCollaterals.map(p => p.pret_id)
+        const groupPretIds = groupPretsForCollaterals.map(p => p.pret_id)
+        
+        // Charger les retraits pour les prêts individuels
         if (pretIds.length > 0) {
-          collateralsRetraitsQuery = collateralsRetraitsQuery.in('pret_id', pretIds)
-        } else {
-          collateralsRetraitsQuery = collateralsRetraitsQuery.eq('pret_id', '')
+          const { data: retraitsIndividuels, error: error1 } = await supabase
+            .from('collaterals')
+            .select('*')
+            .eq('date_remboursement', todayDateString)
+            .not('date_remboursement', 'is', null)
+            .in('pret_id', pretIds)
+            .is('group_pret_id', null)
+          
+          if (!error1 && retraitsIndividuels) {
+            collateralsRetraits.push(...retraitsIndividuels)
+          }
+        }
+        
+        // Charger les retraits pour les prêts de groupe
+        if (groupPretIds.length > 0) {
+          const { data: retraitsGroupe, error: error2 } = await supabase
+            .from('collaterals')
+            .select('*')
+            .eq('date_remboursement', todayDateString)
+            .not('date_remboursement', 'is', null)
+            .in('group_pret_id', groupPretIds)
+          
+          if (!error2 && retraitsGroupe) {
+            collateralsRetraits.push(...retraitsGroupe)
+          }
         }
       } else if (userProfile.role === 'manager') {
         const pretIds = pretsForCollaterals.map(p => p.pret_id)
+        const groupPretIds = groupPretsForCollaterals.map(p => p.pret_id)
+        
+        // Charger les retraits pour les prêts individuels des agents du manager
         if (pretIds.length > 0) {
-          collateralsRetraitsQuery = collateralsRetraitsQuery.in('pret_id', pretIds)
+          const { data: retraitsIndividuels, error: error1 } = await supabase
+            .from('collaterals')
+            .select('*')
+            .eq('date_remboursement', todayDateString)
+            .not('date_remboursement', 'is', null)
+            .in('pret_id', pretIds)
+            .is('group_pret_id', null)
+          
+          if (!error1 && retraitsIndividuels) {
+            collateralsRetraits.push(...retraitsIndividuels)
+          }
+        }
+        
+        // Charger les retraits pour les prêts de groupe des agents du manager
+        if (groupPretIds.length > 0) {
+          const { data: retraitsGroupe, error: error2 } = await supabase
+            .from('collaterals')
+            .select('*')
+            .eq('date_remboursement', todayDateString)
+            .not('date_remboursement', 'is', null)
+            .in('group_pret_id', groupPretIds)
+          
+          if (!error2 && retraitsGroupe) {
+            collateralsRetraits.push(...retraitsGroupe)
+          }
+        }
+      } else {
+        // Admin - charger tous les retraits
+        const { data: allRetraits, error: error1 } = await supabase
+          .from('collaterals')
+          .select('*')
+          .eq('date_remboursement', todayDateString)
+          .not('date_remboursement', 'is', null)
+        
+        if (!error1 && allRetraits) {
+          collateralsRetraits = allRetraits
         }
       }
 
-      const { data: collateralsRetraits, error: collateralsRetraitsError } = await collateralsRetraitsQuery
-      if (!collateralsRetraitsError && collateralsRetraits) {
+      const collateralsRetraitsError = null
+      if (!collateralsRetraitsError && collateralsRetraits.length > 0) {
         collateralsRetraits.forEach((c: any) => {
           // Pour les retraits, on vérifie si le montant restant a diminué
           // Un retrait signifie que montant_restant < montant_requis et date_remboursement est aujourd'hui
@@ -581,7 +641,12 @@ function ResumePageContent() {
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Résumé des Transactions</h1>
             <p className="text-gray-600 mt-2">
-              Toutes les transactions du jour - {formatDate(new Date().toISOString())}
+              {userProfile.role === 'manager' 
+                ? `Transactions du jour de vos agents de crédit - ${formatDate(new Date().toISOString())}`
+                : userProfile.role === 'agent'
+                ? `Vos transactions du jour - ${formatDate(new Date().toISOString())}`
+                : `Toutes les transactions du jour - ${formatDate(new Date().toISOString())}`
+              }
             </p>
           </div>
           <button
