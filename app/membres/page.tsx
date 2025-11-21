@@ -650,6 +650,26 @@ function MembresPageContent() {
             return
           }
 
+          // Vérifier qu'aucun membre à ajouter n'a un prêt individuel actif
+          const { data: activeLoans, error: loansError } = await supabase
+            .from('prets')
+            .select('pret_id, membre_id, statut')
+            .in('membre_id', membersToAdd)
+            .eq('statut', 'actif')
+
+          if (loansError) throw loansError
+
+          if (activeLoans && activeLoans.length > 0) {
+            const membersWithActiveLoans = activeLoans.map(loan => {
+              const membre = membres.find(mem => mem.membre_id === loan.membre_id)
+              return `${membre?.prenom} ${membre?.nom} (${loan.membre_id}) - prêt actif: ${loan.pret_id}`
+            }).join('\n')
+            
+            alert(`Les membres suivants ont un prêt individuel actif et ne peuvent pas intégrer un groupe :\n\n${membersWithActiveLoans}\n\nUn membre doit terminer de payer son prêt individuel avant de pouvoir intégrer un groupe.`)
+            setGroupSubmitting(false)
+            return
+          }
+
           const groupMembers = membersToAdd.map(membre_id => ({
             group_id: editingGroup.id,
             membre_id,
@@ -709,6 +729,26 @@ function MembresPageContent() {
           }).join('\n')
           
           alert(`Les membres suivants sont déjà dans un autre groupe :\n\n${membersInGroups}\n\nUn membre ne peut être que dans un seul groupe à la fois.`)
+          setGroupSubmitting(false)
+          return
+        }
+
+        // Vérifier qu'aucun membre sélectionné n'a un prêt individuel actif
+        const { data: activeLoans, error: loansError } = await supabase
+          .from('prets')
+          .select('pret_id, membre_id, statut')
+          .in('membre_id', groupFormData.selectedMembers)
+          .eq('statut', 'actif')
+
+        if (loansError) throw loansError
+
+        if (activeLoans && activeLoans.length > 0) {
+          const membersWithActiveLoans = activeLoans.map(loan => {
+            const membre = membres.find(mem => mem.membre_id === loan.membre_id)
+            return `${membre?.prenom} ${membre?.nom} (${loan.membre_id}) - prêt actif: ${loan.pret_id}`
+          }).join('\n')
+          
+          alert(`Les membres suivants ont un prêt individuel actif et ne peuvent pas intégrer un groupe :\n\n${membersWithActiveLoans}\n\nUn membre doit terminer de payer son prêt individuel avant de pouvoir intégrer un groupe.`)
           setGroupSubmitting(false)
           return
         }

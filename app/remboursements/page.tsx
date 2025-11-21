@@ -596,6 +596,22 @@ function RemboursementsPageContent() {
         if (capitalError) throw capitalError
       }
 
+      // Vérifier si tous les remboursements sont payés pour mettre à jour le statut du prêt
+      const { data: allRemboursements, error: checkError } = await supabase
+        .from('remboursements')
+        .select('statut')
+        .eq('pret_id', remboursement.pret_id)
+
+      if (!checkError && allRemboursements) {
+        const allPaid = allRemboursements.every(r => r.statut === 'paye')
+        if (allPaid && allRemboursements.length > 0) {
+          await supabase
+            .from('prets')
+            .update({ statut: 'termine' })
+            .eq('pret_id', remboursement.pret_id)
+        }
+      }
+
       alert('Remboursement modifié avec succès')
       loadRemboursements()
       loadPrets()
@@ -712,6 +728,40 @@ function RemboursementsPageContent() {
           .eq('id', remb.id)
 
         if (error) throw error
+      }
+
+      // Vérifier si tous les remboursements sont payés pour mettre à jour le statut du prêt
+      if (editingPretType === 'individual') {
+        const { data: allRemboursements, error: checkError } = await supabase
+          .from('remboursements')
+          .select('statut')
+          .eq('pret_id', editingPretId)
+
+        if (!checkError && allRemboursements) {
+          const allPaid = allRemboursements.every(r => r.statut === 'paye')
+          if (allPaid && allRemboursements.length > 0) {
+            await supabase
+              .from('prets')
+              .update({ statut: 'termine' })
+              .eq('pret_id', editingPretId)
+          }
+        }
+      } else {
+        // Pour les prêts de groupe
+        const { data: allGroupRemboursements, error: checkError } = await supabase
+          .from('group_remboursements')
+          .select('statut')
+          .eq('pret_id', editingPretId)
+
+        if (!checkError && allGroupRemboursements) {
+          const allPaid = allGroupRemboursements.every(r => r.statut === 'paye')
+          if (allPaid && allGroupRemboursements.length > 0) {
+            await supabase
+              .from('group_prets')
+              .update({ statut: 'termine' })
+              .eq('pret_id', editingPretId)
+          }
+        }
       }
 
       alert('Échéances modifiées avec succès')
