@@ -181,7 +181,10 @@ function CollateralsPageContent() {
       const [{ data: pretsData, error: pretsError }, { data: groupPretsData, error: groupPretsError }, { data: membresData, error: membresError }, { data: collateralsData, error: collateralsError }] =
         await Promise.all([pretsQuery, groupPretsQuery, membresQuery, collateralsQuery])
 
-      if (pretsError) throw pretsError
+      if (pretsError) {
+        console.error('Erreur lors du chargement des prêts:', pretsError)
+        throw pretsError
+      }
       // Si la table group_prets n'existe pas (404), ignorer l'erreur et retourner un tableau vide
       if (groupPretsError) {
         // Si c'est une erreur 404 (table n'existe pas), ignorer silencieusement
@@ -201,15 +204,36 @@ function CollateralsPageContent() {
       } else {
         setGroupPrets(groupPretsData || [])
       }
-      if (membresError) throw membresError
-      if (collateralsError) throw collateralsError
+      if (membresError) {
+        console.error('Erreur lors du chargement des membres:', membresError)
+        throw membresError
+      }
+      if (collateralsError) {
+        console.error('Erreur lors du chargement des garanties:', collateralsError)
+        throw collateralsError
+      }
 
       setPrets(pretsData || [])
       setMembres(membresData || [])
       setCollaterals(collateralsData || [])
     } catch (err: any) {
       console.error('Erreur lors du chargement des données:', err)
-      setError(err.message || 'Erreur lors du chargement des données.')
+      // Extraire le message d'erreur de différentes façons selon le type d'erreur
+      let errorMessage = 'Erreur lors du chargement des données.'
+      if (err) {
+        if (err.message) {
+          errorMessage = err.message
+        } else if (err.error?.message) {
+          errorMessage = err.error.message
+        } else if (typeof err === 'string') {
+          errorMessage = err
+        } else if (err.code) {
+          errorMessage = `Erreur ${err.code}: ${err.message || err.hint || 'Erreur inconnue'}`
+        } else {
+          errorMessage = JSON.stringify(err) !== '{}' ? JSON.stringify(err) : 'Erreur lors du chargement des données.'
+        }
+      }
+      setError(errorMessage)
     } finally {
       setLoading(false)
     }
@@ -374,7 +398,22 @@ function CollateralsPageContent() {
       await loadData()
     } catch (err: any) {
       console.error('Erreur lors de l\'enregistrement du dépôt:', err)
-      setError(err.message || 'Erreur lors de l\'enregistrement du dépôt.')
+      // Extraire le message d'erreur de différentes façons selon le type d'erreur
+      let errorMessage = 'Erreur lors de l\'enregistrement du dépôt.'
+      if (err) {
+        if (err.message) {
+          errorMessage = err.message
+        } else if (err.error?.message) {
+          errorMessage = err.error.message
+        } else if (typeof err === 'string') {
+          errorMessage = err
+        } else if (err.code) {
+          errorMessage = `Erreur ${err.code}: ${err.message || err.hint || 'Erreur inconnue'}`
+        } else {
+          errorMessage = JSON.stringify(err) !== '{}' ? JSON.stringify(err) : 'Erreur lors de l\'enregistrement du dépôt.'
+        }
+      }
+      setError(errorMessage)
     } finally {
       setSaving(false)
     }
@@ -495,7 +534,22 @@ function CollateralsPageContent() {
       await loadData()
     } catch (err: any) {
       console.error('Erreur lors du retrait:', err)
-      setError(err.message || 'Erreur lors du retrait de la garantie.')
+      // Extraire le message d'erreur de différentes façons selon le type d'erreur
+      let errorMessage = 'Erreur lors du retrait de la garantie.'
+      if (err) {
+        if (err.message) {
+          errorMessage = err.message
+        } else if (err.error?.message) {
+          errorMessage = err.error.message
+        } else if (typeof err === 'string') {
+          errorMessage = err
+        } else if (err.code) {
+          errorMessage = `Erreur ${err.code}: ${err.message || err.hint || 'Erreur inconnue'}`
+        } else {
+          errorMessage = JSON.stringify(err) !== '{}' ? JSON.stringify(err) : 'Erreur lors du retrait de la garantie.'
+        }
+      }
+      setError(errorMessage)
     } finally {
       setSaving(false)
     }

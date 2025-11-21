@@ -141,7 +141,7 @@ function MembresAssignesContent() {
     const groupIds = [...new Set((groupMembersData || []).map(gm => gm.group_id))]
 
       // Charger les prêts de groupe actifs pour ces groupes
-      let groupPretsMap: Record<string, any[]> = {}
+      let groupPretsMap: Record<string, Partial<GroupPret>[]> = {}
       if (groupIds.length > 0) {
         const { data: groupPretsData } = await supabase
           .from('group_prets')
