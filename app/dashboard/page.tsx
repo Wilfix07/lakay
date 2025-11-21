@@ -63,6 +63,7 @@ export default function DashboardPage() {
     impayesPrincipal: 0,
     todayRemboursementsCount: 0,
     todayRemboursementsAmount: 0,
+    membresAvecCreditActif: 0,
   })
   const [agentCollections, setAgentCollections] = useState<
     { agent_id: string; total_collected: number; displayName: string }[]
@@ -403,6 +404,7 @@ export default function DashboardPage() {
             impayesPrincipal: 0,
             todayRemboursementsCount: 0,
             todayRemboursementsAmount: 0,
+            membresAvecCreditActif: 0,
           })
           setAgentCollections([])
           setInterestSummary({ total: 0, commissionTotal: 0, monthly: [] })
@@ -417,7 +419,7 @@ export default function DashboardPage() {
         // Construire les requêtes avec filtres appropriés
         let agentsQuery = supabase.from('agents').select('agent_id, nom, prenom')
         let membresQuery = supabase.from('membres').select('id', { count: 'exact', head: true })
-        let pretsQuery = supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant')
+        let pretsQuery = supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant, membre_id')
         let remboursementsQuery = supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet')
         let groupPretsQuery = supabase.from('group_prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant, agent_id')
         let groupRemboursementsQuery = supabase.from('group_remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet')
@@ -695,6 +697,37 @@ export default function DashboardPage() {
           return { agent_id: agentId, total_collected: total, displayName }
         })
 
+        // Calculer le nombre de membres avec un crédit actif
+        // Membres avec prêts individuels actifs
+        const membresAvecPretIndividuel = new Set(
+          activePrets.map((pret) => pret.membre_id).filter(Boolean)
+        )
+        
+        // Membres avec prêts de groupe actifs
+        const membresAvecPretGroupe = new Set<string>()
+        if (activeGroupPrets.length > 0) {
+          const groupIdsAvecPretActif = activeGroupPrets.map((pret: GroupPret) => pret.group_id)
+          const { data: groupMembersData } = await supabase
+            .from('membre_group_members')
+            .select('membre_id')
+            .in('group_id', groupIdsAvecPretActif)
+          
+          if (groupMembersData) {
+            groupMembersData.forEach((gm: any) => {
+              if (gm.membre_id) {
+                membresAvecPretGroupe.add(gm.membre_id)
+              }
+            })
+          }
+        }
+        
+        // Combiner les deux sets pour obtenir le total unique
+        const tousMembresAvecCreditActif = new Set([
+          ...membresAvecPretIndividuel,
+          ...membresAvecPretGroupe,
+        ])
+        const membresAvecCreditActif = tousMembresAvecCreditActif.size
+
         // Détecter les changements pour toutes les cartes
         const newStats = {
           agents: agentsData.length || 0,
@@ -708,6 +741,7 @@ export default function DashboardPage() {
           impayesPrincipal,
           todayRemboursementsCount,
           todayRemboursementsAmount,
+          membresAvecCreditActif,
         }
 
         // Détecter quelles cartes ont changé
@@ -815,6 +849,7 @@ export default function DashboardPage() {
             impayesPrincipal: 0,
             todayRemboursementsCount: 0,
             todayRemboursementsAmount: 0,
+            membresAvecCreditActif: 0,
           })
           setAgentCollections([])
           setInterestSummary({ total: 0, commissionTotal: 0, monthly: [] })
@@ -1011,6 +1046,37 @@ export default function DashboardPage() {
         const impayesRate =
           totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
+        // Calculer le nombre de membres avec un crédit actif (section Chef de Zone)
+        // Membres avec prêts individuels actifs
+        const membresAvecPretIndividuelChefZone = new Set(
+          activePrets.map((pret) => pret.membre_id).filter(Boolean)
+        )
+        
+        // Membres avec prêts de groupe actifs
+        const membresAvecPretGroupeChefZone = new Set<string>()
+        if (activeGroupPrets.length > 0) {
+          const groupIdsAvecPretActifChefZone = activeGroupPrets.map((pret: GroupPret) => pret.group_id)
+          const { data: groupMembersDataChefZone } = await supabase
+            .from('membre_group_members')
+            .select('membre_id')
+            .in('group_id', groupIdsAvecPretActifChefZone)
+          
+          if (groupMembersDataChefZone) {
+            groupMembersDataChefZone.forEach((gm: any) => {
+              if (gm.membre_id) {
+                membresAvecPretGroupeChefZone.add(gm.membre_id)
+              }
+            })
+          }
+        }
+        
+        // Combiner les deux sets pour obtenir le total unique
+        const tousMembresAvecCreditActifChefZone = new Set([
+          ...membresAvecPretIndividuelChefZone,
+          ...membresAvecPretGroupeChefZone,
+        ])
+        const membresAvecCreditActifChefZone = tousMembresAvecCreditActifChefZone.size
+
         // Détecter les changements pour toutes les cartes (section Chef de Zone)
         const newStatsChefZone = {
           agents: 0,
@@ -1024,6 +1090,7 @@ export default function DashboardPage() {
           impayesPrincipal,
           todayRemboursementsCount,
           todayRemboursementsAmount,
+          membresAvecCreditActif: membresAvecCreditActifChefZone,
         }
 
         const changedChefZone = new Set<string>()
@@ -1086,7 +1153,7 @@ export default function DashboardPage() {
         const [interestRates, membresRes, pretsRes, remboursementsRes, groupPretsRes, groupRemboursementsRes, expensesRes, epargnesRes] = await Promise.all([
           getInterestRates(),
           supabase.from('membres').select('id', { count: 'exact', head: true }).eq('agent_id', userProfile.agent_id),
-          supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant').eq('agent_id', userProfile.agent_id),
+          supabase.from('prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant, membre_id').eq('agent_id', userProfile.agent_id),
           supabase.from('remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet').eq('agent_id', userProfile.agent_id),
           safeQuery(supabase.from('group_prets').select('id, pret_id, montant_pret, nombre_remboursements, statut, capital_restant').eq('agent_id', userProfile.agent_id)),
           safeQuery(supabase.from('group_remboursements').select('id, statut, agent_id, montant, pret_id, date_remboursement, date_paiement, principal, interet').eq('agent_id', userProfile.agent_id)),
@@ -1237,6 +1304,37 @@ export default function DashboardPage() {
         const impayesRate =
           totalRemboursements > 0 ? (impayesCount / totalRemboursements) * 100 : 0
 
+        // Calculer le nombre de membres avec un crédit actif (section Agent)
+        // Membres avec prêts individuels actifs
+        const membresAvecPretIndividuelAgent = new Set(
+          activePrets.map((pret) => pret.membre_id).filter(Boolean)
+        )
+        
+        // Membres avec prêts de groupe actifs
+        const membresAvecPretGroupeAgent = new Set<string>()
+        if (activeGroupPrets.length > 0) {
+          const groupIdsAvecPretActifAgent = activeGroupPrets.map((pret: GroupPret) => pret.group_id)
+          const { data: groupMembersDataAgent } = await supabase
+            .from('membre_group_members')
+            .select('membre_id')
+            .in('group_id', groupIdsAvecPretActifAgent)
+          
+          if (groupMembersDataAgent) {
+            groupMembersDataAgent.forEach((gm: any) => {
+              if (gm.membre_id) {
+                membresAvecPretGroupeAgent.add(gm.membre_id)
+              }
+            })
+          }
+        }
+        
+        // Combiner les deux sets pour obtenir le total unique
+        const tousMembresAvecCreditActifAgent = new Set([
+          ...membresAvecPretIndividuelAgent,
+          ...membresAvecPretGroupeAgent,
+        ])
+        const membresAvecCreditActifAgent = tousMembresAvecCreditActifAgent.size
+
         // Détecter les changements pour toutes les cartes (section Agent)
         const newStatsAgent = {
           agents: 0,
@@ -1250,6 +1348,7 @@ export default function DashboardPage() {
           impayesPrincipal,
           todayRemboursementsCount,
           todayRemboursementsAmount,
+          membresAvecCreditActif: membresAvecCreditActifAgent,
         }
 
         // Détecter quelles cartes ont changé
@@ -1440,7 +1539,9 @@ export default function DashboardPage() {
       title: 'Membres',
       value: stats.membres,
       icon: Users,
-      description: userProfile.role === 'chef_zone' ? 'Membres assignés' : 'Total membres',
+      description: userProfile.role === 'chef_zone' 
+        ? `Membres assignés • ${stats.membresAvecCreditActif} avec crédit actif`
+        : `Total membres • ${stats.membresAvecCreditActif} avec crédit actif`,
       gradient: 'bg-gradient-to-r from-fuchsia-500 to-purple-700',
       href: userProfile.role === 'chef_zone' ? '/membres-assignes' : '/membres',
     },

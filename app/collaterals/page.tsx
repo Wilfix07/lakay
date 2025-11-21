@@ -34,6 +34,7 @@ import {
 } from 'lucide-react'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { calculateLoanPlan, type FrequenceRemboursement } from '@/lib/loanUtils'
+import { calculateCollateralAmount } from '@/lib/systemSettings'
 import Link from 'next/link'
 
 function CollateralsPageContent() {
@@ -56,7 +57,11 @@ function CollateralsPageContent() {
     montant_depose: '',
     date_depot: new Date().toISOString().split('T')[0],
     notes: '',
+    useEpargne: false, // Utiliser l'épargne du membre
+    montant_epargne: '', // Montant à utiliser depuis l'épargne
   })
+  const [memberEpargneBalance, setMemberEpargneBalance] = useState<number>(0)
+  const [loadingEpargne, setLoadingEpargne] = useState(false)
   const [withdrawalFormData, setWithdrawalFormData] = useState({
     montant_retire: '',
     date_retrait: new Date().toISOString().split('T')[0],
@@ -354,9 +359,55 @@ function CollateralsPageContent() {
 
       const existingCollateral = existingCollateralData
 
+      // Vérifier si on utilise l'épargne
+      let montantDeposeFinal = montantDepose
+      let montantEpargneUtilise = 0
+      
+      if (formData.useEpargne && formData.montant_epargne) {
+        montantEpargneUtilise = parseFloat(formData.montant_epargne)
+        if (isNaN(montantEpargneUtilise) || montantEpargneUtilise <= 0) {
+          throw new Error('Le montant à utiliser depuis l\'épargne doit être supérieur à 0')
+        }
+        
+        if (montantEpargneUtilise > memberEpargneBalance) {
+          throw new Error(`Le montant demandé (${formatCurrency(montantEpargneUtilise)}) dépasse le solde d'épargne disponible (${formatCurrency(memberEpargneBalance)})`)
+        }
+
+        // Le montant déposé peut être partiellement ou totalement couvert par l'épargne
+        // Si le montant d'épargne est supérieur au montant à déposer, on utilise seulement le montant nécessaire
+        montantEpargneUtilise = Math.min(montantEpargneUtilise, montantDepose)
+      }
+
       const nouveauMontantDepose = existingCollateral.montant_depose + montantDepose
       const nouveauMontantRestant = Math.max(existingCollateral.montant_requis - nouveauMontantDepose, 0)
       const nouveauStatut = nouveauMontantRestant === 0 ? 'complet' : 'partiel'
+
+      // Créer la transaction de retrait d'épargne si nécessaire
+      if (montantEpargneUtilise > 0) {
+        // Récupérer l'agent_id du prêt
+        const isGroupLoan = !!existingCollateral.group_pret_id
+        const pret = isGroupLoan 
+          ? getGroupPret(existingCollateral.group_pret_id || '')
+          : getPret(existingCollateral.pret_id || '')
+        
+        if (!pret) {
+          throw new Error('Prêt non trouvé pour créer la transaction d\'épargne')
+        }
+
+        // Créer la transaction de retrait d'épargne
+        const { error: epargneError } = await supabase
+          .from('epargne_transactions')
+          .insert({
+            membre_id: existingCollateral.membre_id,
+            agent_id: pret.agent_id,
+            type: 'retrait',
+            montant: montantEpargneUtilise,
+            date_operation: formData.date_depot,
+            notes: `Retrait automatique pour paiement de garantie du prêt ${isGroupLoan ? existingCollateral.group_pret_id : existingCollateral.pret_id}. ${formData.notes ? `Notes: ${formData.notes}` : ''}`,
+          })
+
+        if (epargneError) throw epargneError
+      }
 
       const updateData: any = {
         montant_depose: nouveauMontantDepose,
@@ -391,7 +442,19 @@ function CollateralsPageContent() {
         message = 'Dépôt de garantie enregistré avec succès !'
       }
       
-      setSuccess(message)
+      // Construire le message de succès avec information sur l'épargne utilisée
+      let successMessage = message
+      if (montantEpargneUtilise > 0) {
+        const montantEspeces = montantDepose - montantEpargneUtilise
+        successMessage += `\n💰 ${formatCurrency(montantEpargneUtilise)} débité depuis l'épargne du membre.`
+        if (montantEspeces > 0) {
+          successMessage += `\n💵 ${formatCurrency(montantEspeces)} en espèces.`
+        } else {
+          successMessage += `\n✅ Garantie entièrement payée depuis l'épargne.`
+        }
+      }
+      
+      setSuccess(successMessage)
       setShowForm(false)
       setFormData({
         collateral_id: '',
@@ -400,7 +463,10 @@ function CollateralsPageContent() {
         montant_depose: '',
         date_depot: new Date().toISOString().split('T')[0],
         notes: '',
+        useEpargne: false,
+        montant_epargne: '',
       })
+      setMemberEpargneBalance(0)
       await loadData()
     } catch (err: any) {
       console.error('Erreur lors de l\'enregistrement du dépôt:', err)
@@ -596,9 +662,152 @@ function CollateralsPageContent() {
     }
   }
 
+  /**
+   * Crée les garanties manquantes pour un prêt de groupe
+   */
+  async function createMissingGroupCollaterals(groupPretId: string) {
+    setSaving(true)
+    setError(null)
+    setSuccess(null)
+
+    try {
+      // Récupérer le prêt de groupe
+      const groupPret = getGroupPret(groupPretId)
+      if (!groupPret) {
+        throw new Error('Prêt de groupe non trouvé')
+      }
+
+      // Vérifier si des garanties existent déjà pour ce prêt de groupe
+      const { data: existingCollaterals, error: checkError } = await supabase
+        .from('collaterals')
+        .select('membre_id')
+        .eq('group_pret_id', groupPretId)
+
+      if (checkError) throw checkError
+
+      const existingMembreIds = new Set(existingCollaterals?.map(c => c.membre_id) || [])
+
+      // Récupérer les membres du groupe
+      const { data: groupMembers, error: groupMembersError } = await supabase
+        .from('membre_group_members')
+        .select('membre_id, group_id')
+        .eq('group_id', groupPret.group_id)
+
+      if (groupMembersError) throw groupMembersError
+
+      if (!groupMembers || groupMembers.length === 0) {
+        throw new Error('Aucun membre trouvé pour ce groupe')
+      }
+
+      // Récupérer les montants individuels des membres depuis group_remboursements
+      // ou calculer basé sur le montant total divisé par le nombre de membres
+      const { data: groupRemboursements, error: rembError } = await supabase
+        .from('group_remboursements')
+        .select('membre_id, montant')
+        .eq('pret_id', groupPretId)
+        .limit(1)
+
+      // Calculer les garanties manquantes
+      const newCollaterals: Partial<Collateral>[] = []
+      
+      for (const groupMember of groupMembers) {
+        // Si une garantie existe déjà pour ce membre, passer au suivant
+        if (existingMembreIds.has(groupMember.membre_id)) {
+          continue
+        }
+
+        // Calculer le montant de prêt pour ce membre
+        // Si on a des remboursements, utiliser le montant du remboursement * nombre de remboursements
+        // Sinon, diviser le montant total par le nombre de membres
+        let memberLoanAmount = groupPret.montant_pret / groupMembers.length
+        
+        if (groupRemboursements && groupRemboursements.length > 0) {
+          // Trouver le remboursement pour ce membre
+          const memberRemb = groupRemboursements.find(r => r.membre_id === groupMember.membre_id)
+          if (memberRemb) {
+            // Estimer le montant du prêt basé sur le montant du remboursement
+            memberLoanAmount = Number(memberRemb.montant) * groupPret.nombre_remboursements
+          }
+        }
+
+        // Calculer la garantie requise
+        const montantGarantieRequis = await calculateCollateralAmount(memberLoanAmount)
+
+        newCollaterals.push({
+          pret_id: null,
+          group_pret_id: groupPretId,
+          membre_id: groupMember.membre_id,
+          montant_requis: montantGarantieRequis,
+          montant_depose: 0,
+          montant_restant: montantGarantieRequis,
+          statut: 'partiel',
+          notes: `Garantie créée manuellement pour le membre ${groupMember.membre_id} dans le prêt de groupe ${groupPretId}`,
+        })
+      }
+
+      if (newCollaterals.length === 0) {
+        setSuccess('Toutes les garanties existent déjà pour ce prêt de groupe.')
+        return
+      }
+
+      // Insérer les nouvelles garanties
+      const { error: insertError, data: insertedData } = await supabase
+        .from('collaterals')
+        .insert(newCollaterals)
+        .select()
+
+      if (insertError) throw insertError
+
+      setSuccess(`✅ ${newCollaterals.length} garantie(s) créée(s) avec succès pour le prêt de groupe ${groupPretId}. Vous pouvez maintenant enregistrer les dépôts.`)
+      await loadData()
+    } catch (err: any) {
+      console.error('Erreur lors de la création des garanties:', err)
+      let errorMessage = 'Erreur lors de la création des garanties.'
+      if (err?.message) {
+        errorMessage = err.message
+      } else if (err?.error?.message) {
+        errorMessage = err.error.message
+      }
+      setError(errorMessage)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const getMembre = (membreId: string) => membres.find((m) => m.membre_id === membreId)
   const getPret = (pretId: string) => prets.find((p) => p.pret_id === pretId)
   const getGroupPret = (groupPretId: string) => groupPrets.find((p) => p.pret_id === groupPretId)
+
+  /**
+   * Charge le solde d'épargne d'un membre
+   */
+  async function loadMemberEpargneBalance(membreId: string) {
+    if (!membreId) {
+      setMemberEpargneBalance(0)
+      return
+    }
+
+    setLoadingEpargne(true)
+    try {
+      const { data: transactions, error } = await supabase
+        .from('epargne_transactions')
+        .select('type, montant')
+        .eq('membre_id', membreId)
+
+      if (error) throw error
+
+      const balance = (transactions || []).reduce((sum, t) => {
+        return sum + (t.type === 'depot' ? Number(t.montant || 0) : -Number(t.montant || 0))
+      }, 0)
+
+      setMemberEpargneBalance(balance)
+    } catch (error) {
+      console.error('Erreur lors du chargement du solde d\'épargne:', error)
+      setMemberEpargneBalance(0)
+    } finally {
+      setLoadingEpargne(false)
+    }
+  }
 
   const availablePretsForDeposit = useMemo(() => {
     // Seules les garanties partielles peuvent recevoir des dépôts additionnels
@@ -870,7 +1079,7 @@ function CollateralsPageContent() {
                       id="collateral_id"
                       required
                       value={formData.collateral_id}
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const selectedCollateral = availablePretsForDeposit.find(
                           c => c.id.toString() === e.target.value
                         )
@@ -879,9 +1088,15 @@ function CollateralsPageContent() {
                           collateral_id: e.target.value,
                           pret_id: selectedCollateral?.pret_id || '',
                           group_pret_id: selectedCollateral?.group_pret_id || '',
+                          useEpargne: false,
+                          montant_epargne: '',
                         })
                         if (selectedCollateral) {
                           setError(null)
+                          // Charger le solde d'épargne du membre
+                          await loadMemberEpargneBalance(selectedCollateral.membre_id)
+                        } else {
+                          setMemberEpargneBalance(0)
                         }
                       }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
@@ -970,6 +1185,80 @@ function CollateralsPageContent() {
                     })()}
                   </div>
 
+                  {/* Option pour utiliser l'épargne */}
+                  {formData.collateral_id && memberEpargneBalance > 0 && (
+                    <div className="space-y-3 p-4 bg-blue-50 rounded-lg border border-blue-200 md:col-span-2">
+                      <div className="flex items-center space-x-2">
+                        <input
+                          type="checkbox"
+                          id="useEpargne"
+                          checked={formData.useEpargne}
+                          onChange={(e) => {
+                            setFormData({ 
+                              ...formData, 
+                              useEpargne: e.target.checked,
+                              montant_epargne: e.target.checked ? Math.min(parseFloat(formData.montant_depose) || 0, memberEpargneBalance).toString() : ''
+                            })
+                            setError(null)
+                          }}
+                          className="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary"
+                        />
+                        <Label htmlFor="useEpargne" className="font-semibold text-blue-900 cursor-pointer">
+                          💰 Utiliser l'épargne du membre pour payer la garantie
+                        </Label>
+                      </div>
+                      <div className="text-sm text-blue-800">
+                        Solde d'épargne disponible: <span className="font-semibold">{formatCurrency(memberEpargneBalance)}</span>
+                      </div>
+                      {formData.useEpargne && (
+                        <div className="space-y-2">
+                          <Label htmlFor="montant_epargne" className="text-blue-900">
+                            Montant à utiliser depuis l'épargne (HTG)
+                          </Label>
+                          <Input
+                            id="montant_epargne"
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            max={Math.min(parseFloat(formData.montant_depose) || 0, memberEpargneBalance)}
+                            value={formData.montant_epargne}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              const montant = parseFloat(value)
+                              const montantDepose = parseFloat(formData.montant_depose) || 0
+                              
+                              if (!isNaN(montant) && montant > memberEpargneBalance) {
+                                setError(`Le montant ne peut pas dépasser le solde d'épargne (${formatCurrency(memberEpargneBalance)})`)
+                              } else if (!isNaN(montant) && montant > montantDepose) {
+                                setError(`Le montant ne peut pas dépasser le montant à déposer (${formatCurrency(montantDepose)})`)
+                              } else {
+                                setError(null)
+                              }
+                              
+                              setFormData({ ...formData, montant_epargne: value })
+                            }}
+                            placeholder="Ex: 500.00"
+                            className="bg-white"
+                          />
+                          <div className="text-xs text-blue-700">
+                            Maximum: {formatCurrency(Math.min(parseFloat(formData.montant_depose) || 0, memberEpargneBalance))}
+                            {(() => {
+                              const montantEpargne = parseFloat(formData.montant_epargne) || 0
+                              const montantDepose = parseFloat(formData.montant_depose) || 0
+                              const montantEspeces = montantDepose - montantEpargne
+                              if (montantEpargne > 0 && montantEspeces > 0) {
+                                return ` • ${formatCurrency(montantEspeces)} restera en espèces`
+                              } else if (montantEpargne > 0 && montantEspeces <= 0) {
+                                return ` • Garantie entièrement payée depuis l'épargne`
+                              }
+                              return null
+                            })()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="space-y-2">
                     <Label htmlFor="date_depot">Date du dépôt</Label>
                     <Input
@@ -1020,7 +1309,10 @@ function CollateralsPageContent() {
                         montant_depose: '',
                         date_depot: new Date().toISOString().split('T')[0],
                         notes: '',
+                        useEpargne: false,
+                        montant_epargne: '',
                       })
+                      setMemberEpargneBalance(0)
                     }}
                   >
                     Annuler
@@ -1167,6 +1459,60 @@ function CollateralsPageContent() {
             </CardContent>
           </Card>
         )}
+
+        {/* Prêts de groupe sans garanties */}
+        {(() => {
+          // Trouver les prêts de groupe qui n'ont pas de garanties
+          const groupPretsWithoutCollaterals = groupPrets.filter(groupPret => {
+            const hasCollaterals = collaterals.some(c => c.group_pret_id === groupPret.pret_id)
+            return !hasCollaterals && (groupPret.statut === 'en_attente_garantie' || groupPret.statut === 'en_attente_approbation')
+          })
+
+          if (groupPretsWithoutCollaterals.length === 0) return null
+
+          return (
+            <Card className="border-amber-200 bg-amber-50/50">
+              <CardHeader>
+                <CardTitle className="text-amber-800">⚠️ Prêts de groupe sans garanties</CardTitle>
+                <CardDescription className="text-amber-700">
+                  Les prêts de groupe suivants n'ont pas de garanties créées. Créez-les pour pouvoir enregistrer les dépôts.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {groupPretsWithoutCollaterals.map(groupPret => (
+                    <div key={groupPret.pret_id} className="flex items-center justify-between p-3 bg-white rounded-lg border border-amber-200">
+                      <div>
+                        <div className="font-semibold text-foreground">👥 {groupPret.pret_id}</div>
+                        <div className="text-sm text-muted-foreground">
+                          Montant: {formatCurrency(groupPret.montant_pret)} • Statut: {groupPret.statut}
+                        </div>
+                      </div>
+                      <Button
+                        onClick={() => createMissingGroupCollaterals(groupPret.pret_id)}
+                        disabled={saving}
+                        variant="outline"
+                        className="bg-amber-100 hover:bg-amber-200 text-amber-800 border-amber-300"
+                      >
+                        {saving ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Création...
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="w-4 h-4 mr-2" />
+                            Créer les garanties
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })()}
 
         {/* Table */}
         <Card>
@@ -1357,7 +1703,7 @@ function CollateralsPageContent() {
                               </Button>
                             ) : collateral.statut === 'partiel' ? (
                               <Button
-                                onClick={() => {
+                                onClick={async () => {
                                   setFormData({
                                     collateral_id: collateral.id.toString(),
                                     pret_id: collateral.pret_id || '',
@@ -1365,7 +1711,11 @@ function CollateralsPageContent() {
                                     montant_depose: '',
                                     date_depot: new Date().toISOString().split('T')[0],
                                     notes: '',
+                                    useEpargne: false,
+                                    montant_epargne: '',
                                   })
+                                  // Charger le solde d'épargne du membre
+                                  await loadMemberEpargneBalance(collateral.membre_id)
                                   setShowForm(true)
                                   setShowWithdrawalForm(false)
                                 }}
