@@ -8,6 +8,7 @@ import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { useRouter } from 'next/navigation'
+import { getInterestRates } from '@/lib/systemSettings'
 
 function RemboursementsPageContent() {
   const router = useRouter()
@@ -16,9 +17,10 @@ function RemboursementsPageContent() {
   const [prets, setPrets] = useState<Pret[]>([])
   const [groupPrets, setGroupPrets] = useState<GroupPret[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
+  const [groups, setGroups] = useState<Array<{ id: number; group_name: string; agent_id: string; description?: string | null; created_at: string; member_count?: number }>>([])
   const [loading, setLoading] = useState(true)
-  const [filterPret, setFilterPret] = useState('')
-  const [filterStatut, setFilterStatut] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [showPaymentForm, setShowPaymentForm] = useState(false)
   const [paymentPretId, setPaymentPretId] = useState('')
@@ -35,6 +37,8 @@ function RemboursementsPageContent() {
   })
   const [paymentInterestDue, setPaymentInterestDue] = useState(0)
   const [paymentPrincipalDue, setPaymentPrincipalDue] = useState(0)
+  const [paymentLateFeeTotal, setPaymentLateFeeTotal] = useState(0)
+  const [paymentLateFeeDays, setPaymentLateFeeDays] = useState(0)
   const [memberPaidSummary, setMemberPaidSummary] = useState<Record<string, number>>({})
   const [paymentLoading, setPaymentLoading] = useState(false)
   const [paymentError, setPaymentError] = useState('')
@@ -62,6 +66,7 @@ function RemboursementsPageContent() {
     if (userProfile) {
       loadPrets()
       loadMembres()
+      loadGroups()
       loadRemboursements()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -72,7 +77,7 @@ function RemboursementsPageContent() {
       loadRemboursements()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterPret, filterStatut, userProfile])
+  }, [userProfile])
 
   async function loadUserProfile() {
     const profile = await getUserProfile()
@@ -154,6 +159,49 @@ function RemboursementsPageContent() {
       }
     } catch (error) {
       console.error('Erreur lors du chargement des prêts:', error)
+    }
+  }
+
+  async function loadGroups() {
+    try {
+      let query = supabase
+        .from('membre_groups')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      // Les agents ne voient que leurs propres groupes
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        query = query.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit seulement les groupes de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+        const agentIds = (managerAgents || []).map((a) => a.agent_id)
+        if (agentIds.length > 0) {
+          query = query.in('agent_id', agentIds)
+        } else {
+          setGroups([])
+          return
+        }
+      }
+
+      const { data, error } = await query
+      if (error) {
+        // Si la table n'existe pas, ignorer l'erreur
+        if (error.code === 'PGRST116' || error.code === '42P01') {
+          setGroups([])
+          return
+        }
+        throw error
+      }
+      setGroups(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement des groupes:', error)
+      setGroups([])
     }
   }
 
@@ -400,14 +448,6 @@ function RemboursementsPageContent() {
       }
       // Admin voit tous les remboursements (pas de filtre)
 
-      if (filterPret) {
-        query = query.eq('pret_id', filterPret)
-      }
-
-      if (filterStatut) {
-        query = query.eq('statut', filterStatut)
-      }
-
       const { data, error } = await query
       if (error) throw error
       setRemboursements(data || [])
@@ -438,13 +478,6 @@ function RemboursementsPageContent() {
         }
       }
 
-      if (filterPret) {
-        groupQuery = groupQuery.eq('pret_id', filterPret)
-      }
-
-      if (filterStatut) {
-        groupQuery = groupQuery.eq('statut', filterStatut)
-      }
 
       const { data: groupData, error: groupError } = await groupQuery
       if (groupError) {
@@ -667,6 +700,7 @@ function RemboursementsPageContent() {
   function resetPaymentForm() {
     setPaymentPretId('')
     setPaymentRemboursements([])
+    setPaymentGroupRemboursements([])
     setPartialLockInfo({ active: false })
     setPaymentForm({
       remboursementId: '',
@@ -678,6 +712,8 @@ function RemboursementsPageContent() {
     setPaymentSuccess('')
     setPaymentInterestDue(0)
     setPaymentPrincipalDue(0)
+    setPaymentLateFeeTotal(0)
+    setPaymentLateFeeDays(0)
   }
 
   function getPretById(pretId: string) {
@@ -697,6 +733,21 @@ function RemboursementsPageContent() {
     const membre = membres.find((m) => m.membre_id === membreId)
     if (!membre) return membreId
     return `${membre.prenom ?? ''} ${membre.nom ?? ''}`.trim() || membreId
+  }
+
+  // Fonction helper pour calculer les jours de retard
+  function calculateDaysOverdue(dateRemboursement: string): number {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const dateRemb = new Date(dateRemboursement)
+    dateRemb.setHours(0, 0, 0, 0)
+    
+    if (dateRemb >= today) return 0
+    
+    const diffTime = today.getTime() - dateRemb.getTime()
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
+    
+    return Math.max(0, diffDays)
   }
 
 function computeScheduledAmounts(remboursement: Remboursement) {
@@ -810,6 +861,8 @@ function computeScheduledAmounts(remboursement: Remboursement) {
     setPaymentSuccess('')
     setPaymentInterestDue(0)
     setPaymentPrincipalDue(0)
+    setPaymentLateFeeTotal(0)
+    setPaymentLateFeeDays(0)
     
     // Pour les prêts de groupe, charger les membres et attendre la sélection
     if (pretType === 'group') {
@@ -834,13 +887,15 @@ function computeScheduledAmounts(remboursement: Remboursement) {
     setPaymentSuccess('')
     setPaymentInterestDue(0)
     setPaymentPrincipalDue(0)
+    setPaymentLateFeeTotal(0)
+    setPaymentLateFeeDays(0)
     
     if (paymentPretId && value) {
       loadPaymentRemboursements(paymentPretId, 'group', value)
     }
   }
 
-  function handlePaymentRemboursementChange(value: string) {
+  async function handlePaymentRemboursementChange(value: string) {
     if (paymentPretType === 'group') {
       // Traiter les remboursements de groupe
       const remboursement = paymentGroupRemboursements.find((r) => r.id.toString() === value)
@@ -853,17 +908,27 @@ function computeScheduledAmounts(remboursement: Remboursement) {
         }))
         setPaymentInterestDue(0)
         setPaymentPrincipalDue(0)
+        setPaymentLateFeeTotal(0)
+        setPaymentLateFeeDays(0)
         return
       }
       const amounts = computeScheduledAmountsGroup(remboursement)
       const remainingInterest = Math.max(amounts.remainingInterest, 0)
       const remainingPrincipal = Math.max(amounts.remainingPrincipal, 0)
+      
+      // Calculer les jours de retard et le montant total
+      const joursRetard = calculateDaysOverdue(remboursement.date_remboursement)
+      const rates = await getInterestRates()
+      const lateFeeTotal = joursRetard > 0 ? joursRetard * rates.lateFeePerDay : 0
+      
       setPaymentInterestDue(remainingInterest)
       setPaymentPrincipalDue(remainingPrincipal)
+      setPaymentLateFeeTotal(lateFeeTotal)
+      setPaymentLateFeeDays(joursRetard)
       setPaymentForm((prev) => ({
         ...prev,
         remboursementId: value,
-        montant: (remainingInterest + remainingPrincipal).toFixed(2),
+        montant: (remainingInterest + remainingPrincipal + lateFeeTotal).toFixed(2),
         principal: remainingPrincipal.toFixed(2),
       }))
     } else {
@@ -878,17 +943,27 @@ function computeScheduledAmounts(remboursement: Remboursement) {
         }))
         setPaymentInterestDue(0)
         setPaymentPrincipalDue(0)
+        setPaymentLateFeeTotal(0)
+        setPaymentLateFeeDays(0)
         return
       }
       const amounts = computeScheduledAmounts(remboursement)
       const remainingInterest = Math.max(amounts.remainingInterest, 0)
       const remainingPrincipal = Math.max(amounts.remainingPrincipal, 0)
+      
+      // Calculer les jours de retard et le montant total
+      const joursRetard = calculateDaysOverdue(remboursement.date_remboursement)
+      const rates = await getInterestRates()
+      const lateFeeTotal = joursRetard > 0 ? joursRetard * rates.lateFeePerDay : 0
+      
       setPaymentInterestDue(remainingInterest)
       setPaymentPrincipalDue(remainingPrincipal)
+      setPaymentLateFeeTotal(lateFeeTotal)
+      setPaymentLateFeeDays(joursRetard)
       setPaymentForm((prev) => ({
         ...prev,
         remboursementId: value,
-        montant: (remainingInterest + remainingPrincipal).toFixed(2),
+        montant: (remainingInterest + remainingPrincipal + lateFeeTotal).toFixed(2),
         principal: remainingPrincipal.toFixed(2),
       }))
     }
@@ -982,8 +1057,13 @@ function computeScheduledAmounts(remboursement: Remboursement) {
       setPaymentError('Montant invalide')
       return
     }
-    const interestPortion = Math.min(montant, Math.max(paymentInterestDue, 0))
-    const principalPortion = Math.max(montant - interestPortion, 0)
+    
+    // Le montant doit couvrir d'abord les frais de retard, puis l'intérêt, puis le principal
+    const lateFeePortion = Math.min(montant, Math.max(paymentLateFeeTotal, 0))
+    const remainingAfterLateFee = montant - lateFeePortion
+    const interestPortion = Math.min(remainingAfterLateFee, Math.max(paymentInterestDue, 0))
+    const principalPortion = Math.max(remainingAfterLateFee - interestPortion, 0)
+    
     if (!paymentForm.datePaiement) {
       setPaymentError('Date de paiement requise')
       return
@@ -994,7 +1074,7 @@ function computeScheduledAmounts(remboursement: Remboursement) {
       const interet = Math.max(interestPortion, 0)
       const principal = Math.max(principalPortion, 0)
       const expectedTotal =
-        Math.max(paymentInterestDue, 0) + Math.max(paymentPrincipalDue, 0)
+        Math.max(paymentInterestDue, 0) + Math.max(paymentPrincipalDue, 0) + Math.max(paymentLateFeeTotal, 0)
       const newStatus = montant >= expectedTotal - 0.01 ? 'paye' : 'paye_partiel'
 
       if (paymentPretType === 'group') {
@@ -1015,7 +1095,7 @@ function computeScheduledAmounts(remboursement: Remboursement) {
             : 0
         const cumulativeMontant = Math.min(
           previousPaidTotal + montant,
-          amountsBeforePayment.scheduledTotal,
+          amountsBeforePayment.scheduledTotal + paymentLateFeeTotal,
         )
 
         const { error } = await supabase
@@ -1079,7 +1159,7 @@ function computeScheduledAmounts(remboursement: Remboursement) {
             : 0
         const cumulativeMontant = Math.min(
           previousPaidTotal + montant,
-          amountsBeforePayment.scheduledTotal,
+          amountsBeforePayment.scheduledTotal + paymentLateFeeTotal,
         )
 
         const { error } = await supabase
@@ -1138,6 +1218,8 @@ function computeScheduledAmounts(remboursement: Remboursement) {
       }
       setPaymentInterestDue(0)
       setPaymentPrincipalDue(0)
+      setPaymentLateFeeTotal(0)
+      setPaymentLateFeeDays(0)
       setPaymentForm((prev) => ({
         ...prev,
         remboursementId: '',
@@ -1195,11 +1277,61 @@ function computeScheduledAmounts(remboursement: Remboursement) {
     )
   }
 
+  // Fonction helper pour obtenir le nom d'un membre
+  function getMembreName(membreId: string | null | undefined): string {
+    if (!membreId) return '-'
+    const membre = membres.find((m) => m.membre_id === membreId)
+    if (!membre) return membreId
+    return `${membre.prenom} ${membre.nom}`.trim() || membreId
+  }
+
+  // Fonction helper pour obtenir le nom d'un groupe
+  function getGroupName(groupId: number | null | undefined): string {
+    if (!groupId) return '-'
+    const group = groups.find((g) => g.id === groupId)
+    if (!group) return `Groupe ${groupId}`
+    return group.group_name || `Groupe ${groupId}`
+  }
+
   // Combiner tous les remboursements (individuels et de groupe) pour les statistiques et l'affichage
-  const allRemboursements = [
+  let allRemboursements = [
     ...remboursements.map(r => ({ ...r, type: 'individual' as const })),
     ...groupRemboursements.map(r => ({ ...r, type: 'group' as const }))
   ]
+
+  // Appliquer le filtre par nom de membre/groupe/No pret
+  if (activeSearch) {
+    const searchTerm = activeSearch.toLowerCase().trim()
+    allRemboursements = allRemboursements.filter((r) => {
+      // Filtrer par numéro de prêt
+      if (r.pret_id.toLowerCase().includes(searchTerm)) return true
+      
+      // Pour les remboursements individuels, filtrer par nom de membre
+      if (r.type === 'individual') {
+        const pret = prets.find((p) => p.pret_id === r.pret_id)
+        if (pret?.membre_id) {
+          const membreName = getMembreName(pret.membre_id).toLowerCase()
+          if (membreName.includes(searchTerm)) return true
+        }
+      }
+      
+      // Pour les remboursements de groupe, filtrer par nom de groupe
+      if (r.type === 'group') {
+        const groupPret = groupPrets.find((gp) => gp.pret_id === r.pret_id)
+        if (groupPret?.group_id) {
+          const groupName = getGroupName(groupPret.group_id).toLowerCase()
+          if (groupName.includes(searchTerm)) return true
+        }
+        // Aussi filtrer par nom du membre dans le remboursement de groupe
+        if ((r as GroupRemboursement).membre_id) {
+          const membreName = getMembreName((r as GroupRemboursement).membre_id).toLowerCase()
+          if (membreName.includes(searchTerm)) return true
+        }
+      }
+      
+      return false
+    })
+  }
 
   const stats = {
     total: allRemboursements.length,
@@ -1242,7 +1374,7 @@ function computeScheduledAmounts(remboursement: Remboursement) {
             <p className="text-gray-600 mt-2">Enregistrer les remboursements quotidiens</p>
           </div>
           <div className="flex flex-wrap gap-3">
-            {(userProfile.role === 'admin' || userProfile.role === 'agent') && (
+            {(userProfile.role === 'admin' || userProfile.role === 'agent' || userProfile.role === 'manager') && (
               <button
                 onClick={() => {
                   const next = !showPaymentForm
@@ -1474,11 +1606,14 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                               </span>
                               <span className="block">
                                 Déjà payé : {formatCurrency(alreadyPaid)} • Solde restant :{' '}
-                                {formatCurrency(paymentInterestDue + paymentPrincipalDue)}
+                                {formatCurrency(paymentInterestDue + paymentPrincipalDue + paymentLateFeeTotal)}
                               </span>
                               <span className="block">
                                 Intérêt restant : {formatCurrency(paymentInterestDue)} • Principal restant
                                 : {formatCurrency(paymentPrincipalDue)}
+                                {paymentLateFeeDays > 0 && (
+                                  <> • Frais de retard ({paymentLateFeeDays} jour{paymentLateFeeDays > 1 ? 's' : ''}) : {formatCurrency(paymentLateFeeTotal)}</>
+                                )}
                               </span>
                             </p>
                           )
@@ -1492,11 +1627,14 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                             </span>
                             <span className="block">
                               Déjà payé : {formatCurrency(selectedAlreadyPaid)} • Solde restant :{' '}
-                              {formatCurrency(paymentInterestDue + paymentPrincipalDue)}
+                              {formatCurrency(paymentInterestDue + paymentPrincipalDue + paymentLateFeeTotal)}
                             </span>
                             <span className="block">
                               Intérêt restant : {formatCurrency(paymentInterestDue)} • Principal restant
                               : {formatCurrency(paymentPrincipalDue)}
+                              {paymentLateFeeDays > 0 && (
+                                <> • Frais de retard ({paymentLateFeeDays} jour{paymentLateFeeDays > 1 ? 's' : ''}) : {formatCurrency(paymentLateFeeTotal)}</>
+                              )}
                               {getPretById(paymentPretId)?.membre_id &&
                               memberPaidSummary[getPretById(paymentPretId)?.membre_id ?? '']
                                 ? ` • Principal déjà remboursé (tout prêt) : ${formatCurrency(
@@ -1524,9 +1662,10 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                     onChange={(e) => {
                       const value = e.target.value
                       const numeric = parseFloat(value)
+                      // Le principal est calculé après avoir couvert les frais de retard et l'intérêt
                       const computedPrincipal =
                         !Number.isNaN(numeric) && value !== ''
-                          ? Math.max(numeric - Math.max(paymentInterestDue, 0), 0)
+                          ? Math.max(numeric - Math.max(paymentLateFeeTotal, 0) - Math.max(paymentInterestDue, 0), 0)
                           : 0
                       setPaymentForm((prev) => ({
                         ...prev,
@@ -1605,6 +1744,22 @@ function computeScheduledAmounts(remboursement: Remboursement) {
                     </p>
                   )}
                 </div>
+                {paymentLateFeeDays > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Frais de retard ({paymentLateFeeDays} jour{paymentLateFeeDays > 1 ? 's' : ''})
+                    </label>
+                    <input
+                      type="text"
+                      value={formatCurrency(paymentLateFeeTotal)}
+                      readOnly
+                      className="w-full px-3 py-2 border border-red-200 rounded-lg bg-red-50 text-red-700 font-semibold"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Montant total des jours de retard : {paymentLateFeeDays} jour{paymentLateFeeDays > 1 ? 's' : ''} × {formatCurrency(paymentLateFeeTotal / paymentLateFeeDays)} = {formatCurrency(paymentLateFeeTotal)}
+                    </p>
+                  </div>
+                )}
               </div>
               <div className="flex gap-4">
                 <button
@@ -1652,55 +1807,29 @@ function computeScheduledAmounts(remboursement: Remboursement) {
           </div>
         </div>
 
-        {/* Filtres */}
+        {/* Recherche */}
         <div className="bg-white rounded-lg shadow-md p-4 mb-8">
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Filtrer par prêt
-              </label>
-              <select
-                value={filterPret}
-                onChange={(e) => setFilterPret(e.target.value)}
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <input
+                type="text"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter') {
+                    setActiveSearch(searchInput)
+                  }
+                }}
+                placeholder="Rechercher par nom de membre, nom de groupe ou numéro de prêt..."
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                <option value="">Tous les prêts</option>
-                {prets.length > 0 && (
-                  <optgroup label="Prêts individuels">
-                    {prets.map((pret) => (
-                      <option key={pret.id} value={pret.pret_id}>
-                        {pret.pret_id} - {pret.membre_id}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {groupPrets.length > 0 && (
-                  <optgroup label="Prêts de groupe">
-                    {groupPrets.map((pret) => (
-                      <option key={pret.id} value={pret.pret_id}>
-                        {pret.pret_id} - Groupe {pret.group_id}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
+              />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Filtrer par statut
-              </label>
-              <select
-                value={filterStatut}
-                onChange={(e) => setFilterStatut(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                <option value="">Tous les statuts</option>
-                <option value="en_attente">En attente</option>
-                <option value="paye">Payé</option>
-                <option value="paye_partiel">Payé partiel</option>
-                <option value="en_retard">En retard</option>
-              </select>
-            </div>
+            <button
+              onClick={() => setActiveSearch(searchInput)}
+              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
+            >
+              Rechercher
+            </button>
           </div>
         </div>
 

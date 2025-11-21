@@ -62,12 +62,10 @@ function CollateralsPageContent() {
     date_retrait: new Date().toISOString().split('T')[0],
     notes: '',
   })
-  const [filters, setFilters] = useState({
-    membreNom: '',
-    numeroPret: '',
-    typePret: '', // '' = tous, 'individuel' = prêt individuel, 'groupe' = prêt de groupe
-    statut: '', // '' = tous, 'partiel', 'complet', 'rembourse'
-  })
+  const [searchInput, setSearchInput] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
+  const [chefsZone, setChefsZone] = useState<UserProfile[]>([])
+  const [memberChefZoneMap, setMemberChefZoneMap] = useState<Map<string, string>>(new Map())
 
   useEffect(() => {
     loadUserProfile()
@@ -76,6 +74,8 @@ function CollateralsPageContent() {
   useEffect(() => {
     if (userProfile) {
       loadData()
+      loadChefsZone()
+      loadChefZoneAssignations()
     }
   }, [userProfile])
 
@@ -501,6 +501,41 @@ function CollateralsPageContent() {
     }
   }
 
+  async function loadChefsZone() {
+    try {
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'chef_zone')
+
+      if (error) throw error
+      setChefsZone(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement des chefs de zone:', error)
+      setChefsZone([])
+    }
+  }
+
+  async function loadChefZoneAssignations() {
+    try {
+      const { data: assignations, error: assignationsError } = await supabase
+        .from('chef_zone_membres')
+        .select('membre_id, chef_zone_id')
+
+      if (assignationsError) throw assignationsError
+
+      // Créer une map membre_id -> chef_zone_id
+      const map = new Map<string, string>()
+      assignations?.forEach((assignation) => {
+        map.set(assignation.membre_id, assignation.chef_zone_id)
+      })
+
+      setMemberChefZoneMap(map)
+    } catch (error) {
+      console.error('Erreur lors du chargement des assignations chef de zone:', error)
+    }
+  }
+
   const getMembre = (membreId: string) => membres.find((m) => m.membre_id === membreId)
   const getPret = (pretId: string) => prets.find((p) => p.pret_id === pretId)
   const getGroupPret = (groupPretId: string) => groupPrets.find((p) => p.pret_id === groupPretId)
@@ -511,43 +546,60 @@ function CollateralsPageContent() {
   }, [collaterals])
 
   const filteredCollaterals = useMemo(() => {
+    if (!activeSearch) {
+      return collaterals
+    }
+
+    const searchTerm = activeSearch.toLowerCase().trim()
+
     return collaterals.filter((collateral) => {
-      // Filtre par nom du membre
-      if (filters.membreNom) {
-        const membre = membres.find((m) => m.membre_id === collateral.membre_id)
-        const membreNomComplet = membre ? `${membre.prenom} ${membre.nom}`.toLowerCase() : ''
-        const membreNomRecherche = filters.membreNom.toLowerCase()
-        if (!membreNomComplet.includes(membreNomRecherche)) {
-          return false
+      // Recherche par nom du membre
+      const membre = getMembre(collateral.membre_id)
+      if (membre) {
+        const membreNomComplet = `${membre.prenom || ''} ${membre.nom || ''}`.toLowerCase().trim()
+        if (membreNomComplet.includes(searchTerm)) {
+          return true
         }
       }
 
-      // Filtre par numéro de prêt
-      if (filters.numeroPret) {
-        const pretId = collateral.group_pret_id || collateral.pret_id || ''
-        if (!pretId.toLowerCase().includes(filters.numeroPret.toLowerCase())) {
-          return false
+      // Recherche par numéro de prêt
+      const pretId = collateral.group_pret_id || collateral.pret_id || ''
+      if (pretId.toLowerCase().includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par type de prêt (individuel ou groupe)
+      const isGroupLoan = !!collateral.group_pret_id
+      const typeText = isGroupLoan ? 'groupe' : 'individuel'
+      if (typeText.includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par ID chef de zone
+      const membreChefZoneId = memberChefZoneMap.get(collateral.membre_id)
+      if (membreChefZoneId && membreChefZoneId.toLowerCase().includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par ID agent
+      const pret = isGroupLoan ? getGroupPret(collateral.group_pret_id || '') : getPret(collateral.pret_id || '')
+      if (pret?.agent_id && pret.agent_id.toLowerCase().includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par date de dépôt
+      if (collateral.date_depot) {
+        const dateDepot = new Date(collateral.date_depot)
+        const dateISO = dateDepot.toISOString().split('T')[0]
+        const dateFormatted = formatDate(collateral.date_depot).toLowerCase()
+        if (dateISO.includes(searchTerm) || dateFormatted.includes(searchTerm)) {
+          return true
         }
       }
 
-      // Filtre par type de prêt (individuel ou groupe)
-      if (filters.typePret) {
-        if (filters.typePret === 'individuel' && collateral.group_pret_id) {
-          return false
-        }
-        if (filters.typePret === 'groupe' && !collateral.group_pret_id) {
-          return false
-        }
-      }
-
-      // Filtre par statut
-      if (filters.statut && collateral.statut !== filters.statut) {
-        return false
-      }
-
-      return true
+      return false
     })
-  }, [collaterals, filters, membres])
+  }, [collaterals, activeSearch, membres, memberChefZoneMap, prets, groupPrets])
 
   const summary = useMemo(() => {
     const totalRequis = filteredCollaterals.reduce((sum, c) => sum + c.montant_requis, 0)
@@ -1068,16 +1120,19 @@ function CollateralsPageContent() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {/* Filtres */}
+            {/* Recherche */}
             <div className="mb-6 p-4 bg-muted/50 rounded-lg border">
               <div className="flex items-center gap-2 mb-4">
                 <Filter className="w-4 h-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Filtres</h3>
-                {(filters.membreNom || filters.numeroPret || filters.typePret || filters.statut) && (
+                <h3 className="text-sm font-semibold">Recherche</h3>
+                {activeSearch && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setFilters({ membreNom: '', numeroPret: '', typePret: '', statut: '' })}
+                    onClick={() => {
+                      setSearchInput('')
+                      setActiveSearch('')
+                    }}
                     className="ml-auto h-7 text-xs"
                   >
                     <X className="w-3 h-3 mr-1" />
@@ -1085,54 +1140,27 @@ function CollateralsPageContent() {
                   </Button>
                 )}
               </div>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <div className="space-y-2">
-                  <Label htmlFor="filter-membre-nom">Nom du membre</Label>
+              <div className="flex gap-2">
+                <div className="flex-1">
                   <Input
-                    id="filter-membre-nom"
-                    placeholder="Rechercher par nom..."
-                    value={filters.membreNom}
-                    onChange={(e) => setFilters({ ...filters, membreNom: e.target.value })}
+                    placeholder="Rechercher par nom du membre, numéro de prêt, type de prêt, ID chef zone, ID agent ou date dépôt..."
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        setActiveSearch(searchInput)
+                      }
+                    }}
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-numero-pret">Numéro de prêt</Label>
-                  <Input
-                    id="filter-numero-pret"
-                    placeholder="Rechercher par numéro..."
-                    value={filters.numeroPret}
-                    onChange={(e) => setFilters({ ...filters, numeroPret: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-type-pret">Type de prêt</Label>
-                  <select
-                    id="filter-type-pret"
-                    value={filters.typePret}
-                    onChange={(e) => setFilters({ ...filters, typePret: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
-                  >
-                    <option value="">Tous les types</option>
-                    <option value="individuel">Prêt individuel</option>
-                    <option value="groupe">Prêt de groupe</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-statut">Statut</Label>
-                  <select
-                    id="filter-statut"
-                    value={filters.statut}
-                    onChange={(e) => setFilters({ ...filters, statut: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
-                  >
-                    <option value="">Tous les statuts</option>
-                    <option value="partiel">Partiel</option>
-                    <option value="complet">Complet</option>
-                    <option value="rembourse">Remboursé</option>
-                  </select>
-                </div>
+                <Button
+                  onClick={() => setActiveSearch(searchInput)}
+                  className="px-6"
+                >
+                  Rechercher
+                </Button>
               </div>
-              {(filters.membreNom || filters.numeroPret || filters.typePret || filters.statut) && (
+              {activeSearch && (
                 <div className="mt-3 text-sm text-muted-foreground">
                   {filteredCollaterals.length} garantie(s) trouvée(s) sur {collaterals.length}
                 </div>

@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS = {
     baseInterestRate: 0.15, // 15%
     penaltyRate: 0.02, // 2%
     commissionRate: 0.30, // 30%
+    lateFeePerDay: 0, // Montant par jour de retard (HTG)
   },
 }
 
@@ -204,13 +205,20 @@ export async function getInterestRates(managerId?: string | null) {
         baseInterestRate: Number(data.setting_value.baseInterestRate ?? DEFAULT_SETTINGS.interestRates.baseInterestRate) / 100,
         penaltyRate: Number(data.setting_value.penaltyRate ?? DEFAULT_SETTINGS.interestRates.penaltyRate) / 100,
         commissionRate: Number(data.setting_value.commissionRate ?? DEFAULT_SETTINGS.interestRates.commissionRate) / 100,
+        lateFeePerDay: Number(data.setting_value.lateFeePerDay ?? DEFAULT_SETTINGS.interestRates.lateFeePerDay),
       }
     }
 
-    return DEFAULT_SETTINGS.interestRates
+    return {
+      ...DEFAULT_SETTINGS.interestRates,
+      lateFeePerDay: DEFAULT_SETTINGS.interestRates.lateFeePerDay,
+    }
   } catch (error) {
     console.error('Erreur lors de la récupération des taux d\'intérêt:', error)
-    return DEFAULT_SETTINGS.interestRates
+    return {
+      ...DEFAULT_SETTINGS.interestRates,
+      lateFeePerDay: DEFAULT_SETTINGS.interestRates.lateFeePerDay,
+    }
   }
 }
 

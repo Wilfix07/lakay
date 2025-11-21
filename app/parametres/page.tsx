@@ -43,6 +43,7 @@ type InterestSettings = {
   baseInterestRate: number
   penaltyRate: number
   commissionRate: number
+  lateFeePerDay: number
 }
 
 const DEFAULT_SCHEDULE: ScheduleSettings = {
@@ -56,6 +57,7 @@ const DEFAULT_INTEREST: InterestSettings = {
   baseInterestRate: 15,
   penaltyRate: 2,
   commissionRate: 30,
+  lateFeePerDay: 0,
 }
 
 function ParametresPageContent() {
@@ -303,6 +305,7 @@ function ParametresPageContent() {
           ),
           penaltyRate: Number(value.penaltyRate ?? DEFAULT_INTEREST.penaltyRate),
           commissionRate: Number(value.commissionRate ?? DEFAULT_INTEREST.commissionRate),
+          lateFeePerDay: Number(value.lateFeePerDay ?? DEFAULT_INTEREST.lateFeePerDay),
         })
       } else {
         setInterestForm(DEFAULT_INTEREST)
@@ -411,8 +414,8 @@ function ParametresPageContent() {
     if (!userProfile) return
     setInterestMessage(null)
 
-    if (interestForm.baseInterestRate < 0 || interestForm.penaltyRate < 0) {
-      setInterestMessage('Veuillez saisir des taux positifs.')
+    if (interestForm.baseInterestRate < 0 || interestForm.penaltyRate < 0 || interestForm.lateFeePerDay < 0) {
+      setInterestMessage('Veuillez saisir des valeurs positives.')
       return
     }
 
@@ -432,6 +435,7 @@ function ParametresPageContent() {
             baseInterestRate: interestForm.baseInterestRate,
             penaltyRate: interestForm.penaltyRate,
             commissionRate: interestForm.commissionRate,
+            lateFeePerDay: interestForm.lateFeePerDay,
           },
           description: "Taux d'intérêts appliqués aux prêts",
           updated_by: userProfile.id,
@@ -1330,6 +1334,26 @@ function ParametresPageContent() {
                     />
                     <p className="text-xs text-muted-foreground">
                       Actuel : {interestForm.commissionRate}% du net mensuel
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Montant par jour de retard (HTG)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={interestForm.lateFeePerDay}
+                      onChange={(e) =>
+                        setInterestForm((prev) => ({
+                          ...prev,
+                          lateFeePerDay: Number(e.target.value),
+                        }))
+                      }
+                      required
+                      className={loading ? 'bg-muted' : ''}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Montant facturé pour chaque jour de retard lors d'un remboursement
                     </p>
                   </div>
                   <div className="md:col-span-3 flex items-center gap-3">

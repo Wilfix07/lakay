@@ -49,12 +49,8 @@ function RemboursementsJourContent() {
   const [refreshing, setRefreshing] = useState(false)
   const [remboursements, setRemboursements] = useState<DailyRemboursementRow[]>([])
   const [realtimeConnected, setRealtimeConnected] = useState(false)
-  const [filters, setFilters] = useState({
-    numeroPret: '',
-    statut: '', // '' = tous, 'paye', 'en_attente', etc.
-    membre: '',
-    chefZone: '', // '' = tous, sinon chef_zone_id
-  })
+  const [searchInput, setSearchInput] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
   const [chefsZone, setChefsZone] = useState<UserProfile[]>([])
   const [memberChefZoneMap, setMemberChefZoneMap] = useState<Map<string, string>>(new Map()) // membre_id -> chef_zone_id
 
@@ -379,43 +375,46 @@ function RemboursementsJourContent() {
   }
 
   const filteredRemboursements = useMemo(() => {
+    if (!activeSearch) {
+      return remboursements
+    }
+
+    const searchTerm = activeSearch.toLowerCase().trim()
+
     return remboursements.filter((item) => {
-      // Filtre par numéro de prêt
-      if (filters.numeroPret) {
-        const pretId = (item.pretId || '').toLowerCase()
-        const recherche = filters.numeroPret.toLowerCase()
-        if (!pretId.includes(recherche)) {
-          return false
-        }
+      // Recherche par numéro de prêt
+      const pretId = (item.pretId || '').toLowerCase()
+      if (pretId.includes(searchTerm)) {
+        return true
       }
 
-      // Filtre par statut
-      if (filters.statut && item.statut !== filters.statut) {
-        return false
+      // Recherche par statut "En retard"
+      if (item.statut === 'en_retard' && ('en retard'.includes(searchTerm) || 'retard'.includes(searchTerm))) {
+        return true
       }
 
-      // Filtre par membre (nom ou ID)
-      if (filters.membre) {
-        const membreName = (item.membreName || '').toLowerCase()
-        const membreId = (item.membreId || '').toLowerCase()
-        const recherche = filters.membre.toLowerCase()
-        if (!membreName.includes(recherche) && !membreId.includes(recherche)) {
-          return false
-        }
+      // Recherche par membre (nom ou ID)
+      const membreName = (item.membreName || '').toLowerCase()
+      const membreId = (item.membreId || '').toLowerCase()
+      if (membreName.includes(searchTerm) || membreId.includes(searchTerm)) {
+        return true
       }
 
-      // Filtre par chef de zone
-      if (filters.chefZone) {
-        const membreChefZoneId = memberChefZoneMap.get(item.membreId)
-        // Si le membre n'est pas assigné à un chef de zone et qu'on filtre par un chef de zone spécifique, exclure
-        if (!membreChefZoneId || membreChefZoneId !== filters.chefZone) {
-          return false
-        }
+      // Recherche par ID chef de zone
+      const membreChefZoneId = memberChefZoneMap.get(item.membreId)
+      if (membreChefZoneId && membreChefZoneId.toLowerCase().includes(searchTerm)) {
+        return true
       }
 
-      return true
+      // Recherche par ID agent
+      const agentId = (item.agentId || '').toLowerCase()
+      if (agentId.includes(searchTerm)) {
+        return true
+      }
+
+      return false
     })
-  }, [remboursements, filters, memberChefZoneMap])
+  }, [remboursements, activeSearch, memberChefZoneMap])
 
   const summary = useMemo(() => {
     const totalMontant = filteredRemboursements.reduce((sum, item) => sum + item.montant, 0)
@@ -564,16 +563,19 @@ function RemboursementsJourContent() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {/* Filtres */}
+            {/* Recherche */}
             <div className="mb-6 p-4 bg-muted/50 rounded-lg border">
               <div className="flex items-center gap-2 mb-4">
                 <Filter className="w-4 h-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Filtres</h3>
-                {(filters.numeroPret || filters.statut || filters.membre || filters.chefZone) && (
+                <h3 className="text-sm font-semibold">Recherche</h3>
+                {activeSearch && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setFilters({ numeroPret: '', statut: '', membre: '', chefZone: '' })}
+                    onClick={() => {
+                      setSearchInput('')
+                      setActiveSearch('')
+                    }}
                     className="ml-auto h-7 text-xs"
                   >
                     <X className="w-3 h-3 mr-1" />
@@ -581,58 +583,27 @@ function RemboursementsJourContent() {
                   </Button>
                 )}
               </div>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <div className="space-y-2">
-                  <Label htmlFor="filter-numero-pret">Numéro de prêt</Label>
+              <div className="flex gap-2">
+                <div className="flex-1">
                   <Input
-                    id="filter-numero-pret"
-                    placeholder="Rechercher par numéro..."
-                    value={filters.numeroPret}
-                    onChange={(e) => setFilters({ ...filters, numeroPret: e.target.value })}
+                    placeholder="Rechercher par numéro de prêt, statut (En retard), membre, ID chef zone ou ID agent..."
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        setActiveSearch(searchInput)
+                      }
+                    }}
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-statut">Statut</Label>
-                  <select
-                    id="filter-statut"
-                    value={filters.statut}
-                    onChange={(e) => setFilters({ ...filters, statut: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
-                  >
-                    <option value="">Tous les statuts</option>
-                    <option value="paye">Payé</option>
-                    <option value="en_attente">En attente</option>
-                    <option value="en_retard">En retard</option>
-                    <option value="paye_partiel">Payé partiel</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-membre">Membre</Label>
-                  <Input
-                    id="filter-membre"
-                    placeholder="Rechercher par nom ou ID..."
-                    value={filters.membre}
-                    onChange={(e) => setFilters({ ...filters, membre: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-chef-zone">Chef de zone</Label>
-                  <select
-                    id="filter-chef-zone"
-                    value={filters.chefZone}
-                    onChange={(e) => setFilters({ ...filters, chefZone: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
-                  >
-                    <option value="">Tous les chefs de zone</option>
-                    {chefsZone.map((chefZone) => (
-                      <option key={chefZone.id} value={chefZone.id}>
-                        {chefZone.prenom} {chefZone.nom} {chefZone.agent_id ? `(${chefZone.agent_id})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <Button
+                  onClick={() => setActiveSearch(searchInput)}
+                  className="px-6"
+                >
+                  Rechercher
+                </Button>
               </div>
-              {(filters.numeroPret || filters.statut || filters.membre || filters.chefZone) && (
+              {activeSearch && (
                 <div className="mt-3 text-sm text-muted-foreground">
                   {filteredRemboursements.length} remboursement(s) trouvé(s) sur {remboursements.length}
                 </div>

@@ -124,15 +124,12 @@ function MembresPageContent() {
     dateDecaissement?: string
     dateFin?: string
     duree?: number
+    dateApprobation?: string
+    dureeMois?: number
+    cycleCredit?: number // Nombre de crédits déjà pris par ce client
   }>>({})
-  const [filters, setFilters] = useState({
-    nomMembre: '',
-    type: '', // '' = tous, 'individuel' = individuel, 'groupe' = groupe
-    telephone: '',
-    idMembre: '',
-    dateCreation: '',
-    chefZone: '', // '' = tous, sinon chef_zone_id
-  })
+  const [searchInput, setSearchInput] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
   const [chefsZone, setChefsZone] = useState<UserProfile[]>([])
   const [memberChefZoneMap, setMemberChefZoneMap] = useState<Map<string, string>>(new Map()) // membre_id -> chef_zone_id
 
@@ -155,65 +152,61 @@ function MembresPageContent() {
   }
 
   const filteredMembres = useMemo(() => {
+    if (!activeSearch) {
+      return membres
+    }
+
+    const searchTerm = activeSearch.toLowerCase().trim()
+    
     return membres.filter((membre) => {
-      // Filtre par nom du membre (nom + prénom)
-      if (filters.nomMembre) {
-        const nomComplet = `${membre.prenom || ''} ${membre.nom || ''}`.toLowerCase().trim()
-        const recherche = filters.nomMembre.toLowerCase()
-        if (!nomComplet.includes(recherche)) {
-          return false
+      // Recherche par nom du membre (nom + prénom)
+      const nomComplet = `${membre.prenom || ''} ${membre.nom || ''}`.toLowerCase().trim()
+      if (nomComplet.includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par type (individuel ou groupe)
+      const isInGroup = membersInGroups.has(membre.membre_id)
+      const typeText = isInGroup ? 'groupe' : 'individuel'
+      if (typeText.includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par téléphone
+      const telephone = (membre.telephone || '').toLowerCase()
+      if (telephone.includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par ID membre
+      const membreId = (membre.membre_id || '').toLowerCase()
+      if (membreId.includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par date de création (format YYYY-MM-DD ou DD/MM/YYYY)
+      const dateCreation = new Date(membre.created_at)
+      const dateISO = dateCreation.toISOString().split('T')[0]
+      const dateFormatted = formatDate(membre.created_at).toLowerCase()
+      if (dateISO.includes(searchTerm) || dateFormatted.includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par chef de zone
+      const membreChefZoneId = memberChefZoneMap.get(membre.membre_id)
+      if (membreChefZoneId) {
+        const chefZone = chefsZone.find((cz) => cz.id === membreChefZoneId)
+        if (chefZone) {
+          const chefZoneName = `${chefZone.prenom || ''} ${chefZone.nom || ''}`.toLowerCase().trim()
+          if (chefZoneName.includes(searchTerm)) {
+            return true
+          }
         }
       }
 
-      // Filtre par type (individuel ou groupe)
-      if (filters.type) {
-        const isInGroup = membersInGroups.has(membre.membre_id)
-        if (filters.type === 'individuel' && isInGroup) {
-          return false
-        }
-        if (filters.type === 'groupe' && !isInGroup) {
-          return false
-        }
-      }
-
-      // Filtre par téléphone
-      if (filters.telephone) {
-        const telephone = (membre.telephone || '').toLowerCase()
-        const recherche = filters.telephone.toLowerCase()
-        if (!telephone.includes(recherche)) {
-          return false
-        }
-      }
-
-      // Filtre par ID membre
-      if (filters.idMembre) {
-        const membreId = (membre.membre_id || '').toLowerCase()
-        const recherche = filters.idMembre.toLowerCase()
-        if (!membreId.includes(recherche)) {
-          return false
-        }
-      }
-
-      // Filtre par date de création
-      if (filters.dateCreation) {
-        const dateCreation = new Date(membre.created_at).toISOString().split('T')[0]
-        if (dateCreation !== filters.dateCreation) {
-          return false
-        }
-      }
-
-      // Filtre par chef de zone
-      if (filters.chefZone) {
-        const membreChefZoneId = memberChefZoneMap.get(membre.membre_id)
-        // Si le membre n'est pas assigné à un chef de zone et qu'on filtre par un chef de zone spécifique, exclure
-        if (!membreChefZoneId || membreChefZoneId !== filters.chefZone) {
-          return false
-        }
-      }
-
-      return true
+      return false
     })
-  }, [membres, filters, membersInGroups, memberChefZoneMap])
+  }, [membres, activeSearch, membersInGroups, memberChefZoneMap, chefsZone])
 
   const memberSummary = useMemo(() => {
     if (!selectedMember) {
@@ -1149,12 +1142,12 @@ function MembresPageContent() {
 
     const groupIds = [...new Set((groupMembersData || []).map(gm => gm.group_id))]
 
-    // Charger les prêts de groupe actifs pour ces groupes
+      // Charger les prêts de groupe actifs pour ces groupes
     let groupPretsMap: any[] = []
     if (groupIds.length > 0) {
       const { data: groupPretsData } = await supabase
         .from('group_prets')
-        .select('pret_id, montant_pret, capital_restant, group_id, statut, date_decaissement, nombre_remboursements, frequence_remboursement')
+        .select('pret_id, montant_pret, capital_restant, group_id, statut, date_decaissement, nombre_remboursements, frequence_remboursement, updated_at')
         .in('group_id', groupIds)
         .eq('statut', 'actif')
 
@@ -1166,7 +1159,7 @@ function MembresPageContent() {
     // Charger les prêts actifs individuels
     const { data: pretsActifs } = await supabase
       .from('prets')
-      .select('pret_id, montant_pret, capital_restant, statut, date_decaissement, nombre_remboursements, frequence_remboursement')
+      .select('pret_id, montant_pret, capital_restant, statut, date_decaissement, nombre_remboursements, frequence_remboursement, updated_at')
       .eq('membre_id', membreId)
       .eq('statut', 'actif')
       .order('date_decaissement', { ascending: false })
@@ -1269,6 +1262,9 @@ function MembresPageContent() {
     let dateDecaissement: string | undefined = undefined
     let dateFin: string | undefined = undefined
     let duree: number | undefined = undefined
+    let dateApprobation: string | undefined = undefined
+    let dureeMois: number | undefined = undefined
+    let cycleCredit: number | undefined = undefined
 
     if (pretActifCourant) {
       // Charger tous les collaterals pour ce prêt actif
@@ -1285,6 +1281,37 @@ function MembresPageContent() {
         pretActifId = pretActifCourant.pret_id
         pretActifStatut = pretActifCourant.statut || null
         dateDecaissement = pretActifCourant.date_decaissement
+        
+        // La date d'approbation est la date de mise à jour quand le statut est 'actif'
+        // On utilise updated_at comme approximation de la date d'approbation
+        if (pretActifCourant.updated_at && pretActifCourant.statut === 'actif') {
+          // Pour les prêts actifs, updated_at représente généralement la date d'approbation
+          // (mise à jour lors du passage de 'en_attente_approbation' à 'actif')
+          dateApprobation = pretActifCourant.updated_at
+        }
+        
+        // Compter le nombre total de crédits (prêts individuels + prêts de groupe) que ce membre a déjà eus
+        // Compter les prêts individuels (actifs ou terminés)
+        const { data: pretsIndividuels } = await supabase
+          .from('prets')
+          .select('pret_id')
+          .eq('membre_id', membreId)
+          .in('statut', ['actif', 'termine'])
+        
+        // Compter les prêts de groupe où ce membre fait partie (actifs ou terminés)
+        let pretsGroupeCount = 0
+        if (groupIds.length > 0) {
+          const { data: pretsGroupe } = await supabase
+            .from('group_prets')
+            .select('pret_id')
+            .in('group_id', groupIds)
+            .in('statut', ['actif', 'termine'])
+          
+          pretsGroupeCount = pretsGroupe?.length || 0
+        }
+        
+        // Le cycle de crédit est le nombre total de prêts (individuels + groupe) que ce membre a déjà eus
+        cycleCredit = (pretsIndividuels?.length || 0) + pretsGroupeCount
       }
     } else if (groupPretsMap.length > 0) {
       // Si pas de prêt individuel actif, vérifier le prêt de groupe actif
@@ -1301,6 +1328,36 @@ function MembresPageContent() {
         pretActifId = groupPretActif.pret_id
         pretActifStatut = groupPretActif.statut || null
         dateDecaissement = groupPretActif.date_decaissement
+        
+        // La date d'approbation est la date de mise à jour quand le statut est 'actif'
+        // On utilise updated_at comme approximation de la date d'approbation
+        if (groupPretActif.updated_at && groupPretActif.statut === 'actif') {
+          // Pour les prêts actifs, updated_at représente généralement la date d'approbation
+          dateApprobation = groupPretActif.updated_at
+        }
+        
+        // Compter le nombre total de crédits (prêts individuels + prêts de groupe) que ce membre a déjà eus
+        // Compter les prêts individuels (actifs ou terminés)
+        const { data: pretsIndividuels } = await supabase
+          .from('prets')
+          .select('pret_id')
+          .eq('membre_id', membreId)
+          .in('statut', ['actif', 'termine'])
+        
+        // Compter les prêts de groupe où ce membre fait partie (actifs ou terminés)
+        let pretsGroupeCount = 0
+        if (groupIds.length > 0) {
+          const { data: pretsGroupe } = await supabase
+            .from('group_prets')
+            .select('pret_id')
+            .in('group_id', groupIds)
+            .in('statut', ['actif', 'termine'])
+          
+          pretsGroupeCount = pretsGroupe?.length || 0
+        }
+        
+        // Le cycle de crédit est le nombre total de prêts (individuels + groupe) que ce membre a déjà eus
+        cycleCredit = (pretsIndividuels?.length || 0) + pretsGroupeCount
       }
     }
 
@@ -1314,6 +1371,9 @@ function MembresPageContent() {
       const dateDecaissementObj = new Date(dateDecaissement)
       const dateFinObj = new Date(dateFin)
       duree = Math.ceil((dateFinObj.getTime() - dateDecaissementObj.getTime()) / (1000 * 60 * 60 * 24))
+      
+      // Calculer la durée en mois (approximation : 30 jours par mois)
+      dureeMois = Math.round((duree / 30) * 10) / 10
     }
 
     setMembresDetails({
@@ -1328,6 +1388,9 @@ function MembresPageContent() {
         dateDecaissement,
         dateFin,
         duree,
+        dateApprobation,
+        dureeMois,
+        cycleCredit,
       }
     })
   }
@@ -1398,6 +1461,12 @@ function MembresPageContent() {
       memberGroupInfo ? ['Type de prêt', 'Prêt de groupe'] : ['Type de prêt', 'Prêt individuel'],
       memberGroupInfo ? ['Nom du groupe', groupeNom] : null,
       autresMembres.length > 0 ? ['Autres membres du groupe', autresMembres.join('; ')] : null,
+      membresDetails[membreId]?.dateApprobation ? ['Date d\'approbation', formatDate(membresDetails[membreId]?.dateApprobation || '')] : null,
+      membresDetails[membreId]?.dateDecaissement ? ['Date de décaissement', formatDate(membresDetails[membreId]?.dateDecaissement || '')] : null,
+      membresDetails[membreId]?.dateFin ? ['Date de fin', formatDate(membresDetails[membreId]?.dateFin || '')] : null,
+      membresDetails[membreId]?.duree !== undefined ? ['Durée du prêt', `${membresDetails[membreId]?.duree} jour(s)`] : null,
+      membresDetails[membreId]?.dureeMois !== undefined ? ['Durée du prêt (mois)', `${membresDetails[membreId]?.dureeMois} mois`] : null,
+      membresDetails[membreId]?.cycleCredit !== undefined ? ['Cycle de crédit', `${membresDetails[membreId]?.cycleCredit} crédit(s)`] : null,
       ['Date génération', formatDate(new Date().toISOString())],
       [],
       headers,
@@ -1498,6 +1567,12 @@ function MembresPageContent() {
                 </ul>
               </div>
             ` : ''}
+            ${membresDetails[membreId]?.dateApprobation ? `<div class="info-row"><span class="info-label">Date d'approbation:</span> ${formatDate(membresDetails[membreId]?.dateApprobation || '')}</div>` : ''}
+            ${membresDetails[membreId]?.dateDecaissement ? `<div class="info-row"><span class="info-label">Date de décaissement:</span> ${formatDate(membresDetails[membreId]?.dateDecaissement || '')}</div>` : ''}
+            ${membresDetails[membreId]?.dateFin ? `<div class="info-row"><span class="info-label">Date de fin:</span> ${formatDate(membresDetails[membreId]?.dateFin || '')}</div>` : ''}
+            ${membresDetails[membreId]?.duree !== undefined ? `<div class="info-row"><span class="info-label">Durée du prêt:</span> ${membresDetails[membreId]?.duree} jour(s)</div>` : ''}
+            ${membresDetails[membreId]?.dureeMois !== undefined ? `<div class="info-row"><span class="info-label">Durée du prêt (mois):</span> ${membresDetails[membreId]?.dureeMois} mois</div>` : ''}
+            ${membresDetails[membreId]?.cycleCredit !== undefined ? `<div class="info-row"><span class="info-label">Cycle de crédit:</span> ${membresDetails[membreId]?.cycleCredit} crédit(s)</div>` : ''}
             <div class="info-row"><span class="info-label">Date génération:</span> ${formatDate(new Date().toISOString())}</div>
           </div>
           <table>
@@ -2002,12 +2077,15 @@ function MembresPageContent() {
             <div className="mb-6 p-4 bg-muted/50 rounded-lg border">
               <div className="flex items-center gap-2 mb-4">
                 <Filter className="w-4 h-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Filtres</h3>
-                {(filters.nomMembre || filters.type || filters.telephone || filters.idMembre || filters.dateCreation || filters.chefZone) && (
+                <h3 className="text-sm font-semibold">Recherche</h3>
+                {activeSearch && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setFilters({ nomMembre: '', type: '', telephone: '', idMembre: '', dateCreation: '', chefZone: '' })}
+                    onClick={() => {
+                      setSearchInput('')
+                      setActiveSearch('')
+                    }}
                     className="ml-auto h-7 text-xs"
                   >
                     <X className="w-3 h-3 mr-1" />
@@ -2015,74 +2093,27 @@ function MembresPageContent() {
                   </Button>
                 )}
               </div>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
-                <div className="space-y-2">
-                  <Label htmlFor="filter-nom-membre">Nom du membre</Label>
+              <div className="flex gap-2">
+                <div className="flex-1">
                   <Input
-                    id="filter-nom-membre"
-                    placeholder="Rechercher par nom..."
-                    value={filters.nomMembre}
-                    onChange={(e) => setFilters({ ...filters, nomMembre: e.target.value })}
+                    placeholder="Rechercher par nom, type, téléphone, ID membre, date de création ou chef de zone..."
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        setActiveSearch(searchInput)
+                      }
+                    }}
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-type">Type</Label>
-                  <select
-                    id="filter-type"
-                    value={filters.type}
-                    onChange={(e) => setFilters({ ...filters, type: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
-                  >
-                    <option value="">Tous les types</option>
-                    <option value="individuel">Individuel</option>
-                    <option value="groupe">Groupe</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-telephone">Téléphone</Label>
-                  <Input
-                    id="filter-telephone"
-                    placeholder="Rechercher par téléphone..."
-                    value={filters.telephone}
-                    onChange={(e) => setFilters({ ...filters, telephone: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-id-membre">ID Membre</Label>
-                  <Input
-                    id="filter-id-membre"
-                    placeholder="Rechercher par ID..."
-                    value={filters.idMembre}
-                    onChange={(e) => setFilters({ ...filters, idMembre: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-date-creation">Date création</Label>
-                  <Input
-                    id="filter-date-creation"
-                    type="date"
-                    value={filters.dateCreation}
-                    onChange={(e) => setFilters({ ...filters, dateCreation: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="filter-chef-zone">Chef de zone</Label>
-                  <select
-                    id="filter-chef-zone"
-                    value={filters.chefZone}
-                    onChange={(e) => setFilters({ ...filters, chefZone: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
-                  >
-                    <option value="">Tous les chefs de zone</option>
-                    {chefsZone.map((chefZone) => (
-                      <option key={chefZone.id} value={chefZone.id}>
-                        {chefZone.prenom} {chefZone.nom} {chefZone.agent_id ? `(${chefZone.agent_id})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <Button
+                  onClick={() => setActiveSearch(searchInput)}
+                  className="px-6"
+                >
+                  Rechercher
+                </Button>
               </div>
-              {(filters.nomMembre || filters.type || filters.telephone || filters.idMembre || filters.dateCreation || filters.chefZone) && (
+              {activeSearch && (
                 <div className="mt-3 text-sm text-muted-foreground">
                   {filteredMembres.length} membre(s) trouvé(s) sur {membres.length}
                 </div>
@@ -2839,26 +2870,23 @@ function MembresPageContent() {
                             <Eye className="h-4 w-4" />
                             Voir
                           </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={downloadEcheancier}
-                            className="gap-2"
-                          >
-                            <Download className="h-4 w-4" />
-                            Télécharger
-                          </Button>
                         </div>
                       )}
                     </div>
                     {/* Informations du prêt */}
                     {membresDetails[selectedMembreForDetails.membre_id]?.dateDecaissement && (
                       <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                        <div className="grid grid-cols-3 gap-4 text-sm">
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 text-sm">
                           <div>
                             <span className="text-muted-foreground">Date de décaissement:</span>
                             <p className="font-medium">{formatDate(membresDetails[selectedMembreForDetails.membre_id]?.dateDecaissement || '')}</p>
                           </div>
+                          {membresDetails[selectedMembreForDetails.membre_id]?.dateApprobation && (
+                            <div>
+                              <span className="text-muted-foreground">Date d'approbation:</span>
+                              <p className="font-medium">{formatDate(membresDetails[selectedMembreForDetails.membre_id]?.dateApprobation || '')}</p>
+                            </div>
+                          )}
                           {membresDetails[selectedMembreForDetails.membre_id]?.dateFin && (
                             <div>
                               <span className="text-muted-foreground">Date de fin:</span>
@@ -2869,6 +2897,18 @@ function MembresPageContent() {
                             <div>
                               <span className="text-muted-foreground">Durée du prêt:</span>
                               <p className="font-medium">{membresDetails[selectedMembreForDetails.membre_id]?.duree} jour(s)</p>
+                            </div>
+                          )}
+                          {membresDetails[selectedMembreForDetails.membre_id]?.dureeMois !== undefined && (
+                            <div>
+                              <span className="text-muted-foreground">Durée du prêt (mois):</span>
+                              <p className="font-medium">{membresDetails[selectedMembreForDetails.membre_id]?.dureeMois} mois</p>
+                            </div>
+                          )}
+                          {membresDetails[selectedMembreForDetails.membre_id]?.cycleCredit !== undefined && (
+                            <div>
+                              <span className="text-muted-foreground">Cycle de crédit:</span>
+                              <p className="font-medium">{membresDetails[selectedMembreForDetails.membre_id]?.cycleCredit} crédit(s)</p>
                             </div>
                           )}
                         </div>

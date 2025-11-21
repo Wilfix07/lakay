@@ -36,12 +36,8 @@ function ApprobationsPageContent() {
   const [approvingGroup, setApprovingGroup] = useState<string | null>(null)
   const [selectedPret, setSelectedPret] = useState<Pret | null>(null)
   const [showDetails, setShowDetails] = useState(false)
-  const [filters, setFilters] = useState({
-    numeroPret: '',
-    agent: '',
-    membreGroupe: '',
-    type: '', // '' = tous, 'individuel' = individuel, 'groupe' = groupe
-  })
+  const [searchInput, setSearchInput] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
 
   useEffect(() => {
     loadUserProfile()
@@ -201,86 +197,92 @@ function ApprobationsPageContent() {
   }
 
   const filteredPrets = useMemo(() => {
+    if (!activeSearch) {
+      return prets
+    }
+
+    const searchTerm = activeSearch.toLowerCase().trim()
+
     return prets.filter((pret) => {
-      // Filtre par numéro de prêt
-      if (filters.numeroPret) {
-        const pretId = (pret.pret_id || '').toLowerCase()
-        const recherche = filters.numeroPret.toLowerCase()
-        if (!pretId.includes(recherche)) {
-          return false
+      // Recherche par numéro de prêt
+      const pretId = (pret.pret_id || '').toLowerCase()
+      if (pretId.includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par agent (ID agent, nom agent)
+      const agent = getAgent(pret.agent_id)
+      if (agent) {
+        const agentId = (agent.agent_id || '').toLowerCase()
+        const agentName = `${agent.prenom || ''} ${agent.nom || ''}`.toLowerCase().trim()
+        if (agentId.includes(searchTerm) || agentName.includes(searchTerm)) {
+          return true
         }
       }
 
-      // Filtre par agent
-      if (filters.agent) {
-        const agent = getAgent(pret.agent_id)
-        const agentName = agent ? `${agent.prenom} ${agent.nom} ${agent.agent_id}`.toLowerCase() : ''
-        const agentId = (pret.agent_id || '').toLowerCase()
-        const recherche = filters.agent.toLowerCase()
-        if (!agentName.includes(recherche) && !agentId.includes(recherche)) {
-          return false
+      // Recherche par membre (ID membre, nom membre)
+      const membre = getMembre(pret.membre_id)
+      if (membre) {
+        const membreId = (membre.membre_id || '').toLowerCase()
+        const membreName = `${membre.prenom || ''} ${membre.nom || ''}`.toLowerCase().trim()
+        if (membreId.includes(searchTerm) || membreName.includes(searchTerm)) {
+          return true
         }
       }
 
-      // Filtre par membre
-      if (filters.membreGroupe) {
-        const membre = getMembre(pret.membre_id)
-        const membreName = membre ? `${membre.prenom} ${membre.nom}`.toLowerCase() : ''
-        const membreId = (pret.membre_id || '').toLowerCase()
-        const recherche = filters.membreGroupe.toLowerCase()
-        if (!membreName.includes(recherche) && !membreId.includes(recherche)) {
-          return false
-        }
+      // Recherche par date de demande (created_at)
+      const dateDemande = new Date(pret.created_at)
+      const dateISO = dateDemande.toISOString().split('T')[0]
+      const dateFormatted = formatDate(pret.created_at).toLowerCase()
+      if (dateISO.includes(searchTerm) || dateFormatted.includes(searchTerm)) {
+        return true
       }
 
-      // Filtre par type (individuel)
-      if (filters.type && filters.type !== 'individuel') {
-        return false
-      }
-
-      return true
+      return false
     })
-  }, [prets, filters, agents, membres])
+  }, [prets, activeSearch, agents, membres])
 
   const filteredGroupPrets = useMemo(() => {
+    if (!activeSearch) {
+      return groupPrets
+    }
+
+    const searchTerm = activeSearch.toLowerCase().trim()
+
     return groupPrets.filter((groupPret) => {
-      // Filtre par numéro de prêt
-      if (filters.numeroPret) {
-        const pretId = (groupPret.pret_id || '').toLowerCase()
-        const recherche = filters.numeroPret.toLowerCase()
-        if (!pretId.includes(recherche)) {
-          return false
+      // Recherche par numéro de prêt
+      const pretId = (groupPret.pret_id || '').toLowerCase()
+      if (pretId.includes(searchTerm)) {
+        return true
+      }
+
+      // Recherche par agent (ID agent, nom agent)
+      const agent = getAgent(groupPret.agent_id)
+      if (agent) {
+        const agentId = (agent.agent_id || '').toLowerCase()
+        const agentName = `${agent.prenom || ''} ${agent.nom || ''}`.toLowerCase().trim()
+        if (agentId.includes(searchTerm) || agentName.includes(searchTerm)) {
+          return true
         }
       }
 
-      // Filtre par agent
-      if (filters.agent) {
-        const agent = getAgent(groupPret.agent_id)
-        const agentName = agent ? `${agent.prenom} ${agent.nom} ${agent.agent_id}`.toLowerCase() : ''
-        const agentId = (groupPret.agent_id || '').toLowerCase()
-        const recherche = filters.agent.toLowerCase()
-        if (!agentName.includes(recherche) && !agentId.includes(recherche)) {
-          return false
-        }
+      // Recherche par groupe (nom du groupe)
+      const groupName = getGroupName(groupPret.group_id).toLowerCase()
+      if (groupName.includes(searchTerm)) {
+        return true
       }
 
-      // Filtre par groupe
-      if (filters.membreGroupe) {
-        const groupName = getGroupName(groupPret.group_id).toLowerCase()
-        const recherche = filters.membreGroupe.toLowerCase()
-        if (!groupName.includes(recherche)) {
-          return false
-        }
+      // Recherche par date de demande (created_at)
+      const dateDemande = new Date(groupPret.created_at)
+      const dateISO = dateDemande.toISOString().split('T')[0]
+      const dateFormatted = formatDate(groupPret.created_at).toLowerCase()
+      if (dateISO.includes(searchTerm) || dateFormatted.includes(searchTerm)) {
+        return true
       }
 
-      // Filtre par type (groupe)
-      if (filters.type && filters.type !== 'groupe') {
-        return false
-      }
-
-      return true
+      return false
     })
-  }, [groupPrets, filters, agents, groups])
+  }, [groupPrets, activeSearch, agents, groups])
 
   async function handleApprove(pret: Pret) {
     // Vérifier que la garantie existe et est complète
@@ -568,16 +570,19 @@ function ApprobationsPageContent() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {/* Filtres */}
+              {/* Recherche */}
               <div className="mb-6 p-4 bg-muted/50 rounded-lg border">
                 <div className="flex items-center gap-2 mb-4">
                   <Filter className="w-4 h-4 text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">Filtres</h3>
-                  {(filters.numeroPret || filters.agent || filters.membreGroupe || filters.type) && (
+                  <h3 className="text-sm font-semibold">Recherche</h3>
+                  {activeSearch && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setFilters({ numeroPret: '', agent: '', membreGroupe: '', type: '' })}
+                      onClick={() => {
+                        setSearchInput('')
+                        setActiveSearch('')
+                      }}
                       className="ml-auto h-7 text-xs"
                     >
                       <X className="w-3 h-3 mr-1" />
@@ -585,49 +590,27 @@ function ApprobationsPageContent() {
                     </Button>
                   )}
                 </div>
-                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="filter-numero-pret">Numéro de prêt</Label>
+                <div className="flex gap-2">
+                  <div className="flex-1">
                     <Input
-                      id="filter-numero-pret"
-                      placeholder="Rechercher par numéro..."
-                      value={filters.numeroPret}
-                      onChange={(e) => setFilters({ ...filters, numeroPret: e.target.value })}
+                      placeholder="Rechercher par ID agent, numéro de prêt, ID membre, nom membre ou date demande..."
+                      value={searchInput}
+                      onChange={(e) => setSearchInput(e.target.value)}
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter') {
+                          setActiveSearch(searchInput)
+                        }
+                      }}
                     />
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="filter-agent">Agent</Label>
-                    <Input
-                      id="filter-agent"
-                      placeholder="Rechercher par nom ou ID..."
-                      value={filters.agent}
-                      onChange={(e) => setFilters({ ...filters, agent: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="filter-membre-groupe">Membre/Groupe</Label>
-                    <Input
-                      id="filter-membre-groupe"
-                      placeholder="Rechercher par nom ou ID..."
-                      value={filters.membreGroupe}
-                      onChange={(e) => setFilters({ ...filters, membreGroupe: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="filter-type">Type</Label>
-                    <select
-                      id="filter-type"
-                      value={filters.type}
-                      onChange={(e) => setFilters({ ...filters, type: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
-                    >
-                      <option value="">Tous les types</option>
-                      <option value="individuel">Individuel</option>
-                      <option value="groupe">Groupe</option>
-                    </select>
-                  </div>
+                  <Button
+                    onClick={() => setActiveSearch(searchInput)}
+                    className="px-6"
+                  >
+                    Rechercher
+                  </Button>
                 </div>
-                {(filters.numeroPret || filters.agent || filters.membreGroupe || filters.type) && (
+                {activeSearch && (
                   <div className="mt-3 text-sm text-muted-foreground">
                     {filteredPrets.length + filteredGroupPrets.length} prêt(s) trouvé(s) sur {prets.length + groupPrets.length}
                   </div>

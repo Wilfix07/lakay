@@ -82,7 +82,7 @@ export const PERMISSIONS = {
     canCreateAgents: true,
     canCreateMembers: false,
     canCreatePrets: false,
-    canProcessRemboursements: false,
+    canProcessRemboursements: true, // Manager peut enregistrer des remboursements et dépôts
     canViewAll: true,
     canCreateUsers: true, // Manager peut créer des utilisateurs (seulement des agents)
   },
