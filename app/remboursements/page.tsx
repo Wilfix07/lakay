@@ -9,6 +9,10 @@ import { getUserProfile, signOut } from '@/lib/auth'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { useRouter } from 'next/navigation'
 import { getInterestRates } from '@/lib/systemSettings'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 function RemboursementsPageContent() {
   const router = useRouter()
@@ -47,6 +51,20 @@ function RemboursementsPageContent() {
     active: boolean
     message?: string
   }>({ active: false })
+  // États pour la modification des échéances
+  const [showEditScheduleModal, setShowEditScheduleModal] = useState(false)
+  const [editingPretId, setEditingPretId] = useState<string>('')
+  const [editingPretType, setEditingPretType] = useState<'individual' | 'group'>('individual')
+  const [editingRemboursements, setEditingRemboursements] = useState<Array<{
+    id: number
+    numero_remboursement: number
+    montant: number
+    principal?: number
+    interet?: number
+    date_remboursement: string
+    statut: string
+  }>>([])
+  const [savingSchedule, setSavingSchedule] = useState(false)
 
   async function handleSignOut() {
     try {
@@ -620,6 +638,91 @@ function RemboursementsPageContent() {
     } catch (error: any) {
       console.error('Erreur lors de la suppression:', error)
       alert('Erreur lors de la suppression: ' + (error.message || 'Erreur inconnue'))
+    }
+  }
+
+  // Fonction pour ouvrir le modal de modification des échéances
+  async function handleEditSchedule(pretId: string, pretType: 'individual' | 'group' = 'individual') {
+    setEditingPretId(pretId)
+    setEditingPretType(pretType)
+    setSavingSchedule(false)
+
+    try {
+      if (pretType === 'individual') {
+        const { data, error } = await supabase
+          .from('remboursements')
+          .select('*')
+          .eq('pret_id', pretId)
+          .order('numero_remboursement', { ascending: true })
+
+        if (error) throw error
+        setEditingRemboursements(data || [])
+      } else {
+        // Pour les prêts de groupe, on charge tous les remboursements du groupe
+        const { data, error } = await supabase
+          .from('group_remboursements')
+          .select('*')
+          .eq('pret_id', pretId)
+          .order('numero_remboursement', { ascending: true })
+
+        if (error) throw error
+        setEditingRemboursements(data || [])
+      }
+
+      setShowEditScheduleModal(true)
+    } catch (error: any) {
+      console.error('Erreur lors du chargement des échéances:', error)
+      alert('Erreur lors du chargement des échéances: ' + (error.message || 'Erreur inconnue'))
+    }
+  }
+
+  // Fonction pour mettre à jour une échéance dans l'état local
+  function updateEditingRemboursement(index: number, field: string, value: string | number) {
+    setEditingRemboursements((prev) => {
+      const updated = [...prev]
+      updated[index] = { ...updated[index], [field]: value }
+      // Recalculer l'intérêt si le montant ou le principal change
+      if (field === 'montant' || field === 'principal') {
+        const montant = typeof value === 'number' && field === 'montant' ? value : updated[index].montant
+        const principal = typeof value === 'number' && field === 'principal' ? value : updated[index].principal || 0
+        updated[index].interet = Math.max(montant - principal, 0)
+      }
+      return updated
+    })
+  }
+
+  // Fonction pour sauvegarder les modifications des échéances
+  async function handleSaveSchedule() {
+    if (!editingPretId || editingRemboursements.length === 0) return
+
+    setSavingSchedule(true)
+    try {
+      const tableName = editingPretType === 'individual' ? 'remboursements' : 'group_remboursements'
+
+      // Mettre à jour chaque remboursement
+      for (const remb of editingRemboursements) {
+        const { error } = await supabase
+          .from(tableName)
+          .update({
+            date_remboursement: remb.date_remboursement,
+            montant: remb.montant,
+            principal: remb.principal ?? null,
+            interet: remb.interet ?? null,
+          })
+          .eq('id', remb.id)
+
+        if (error) throw error
+      }
+
+      alert('Échéances modifiées avec succès')
+      setShowEditScheduleModal(false)
+      loadRemboursements()
+      loadPrets()
+    } catch (error: any) {
+      console.error('Erreur lors de la sauvegarde:', error)
+      alert('Erreur lors de la sauvegarde: ' + (error.message || 'Erreur inconnue'))
+    } finally {
+      setSavingSchedule(false)
     }
   }
 
@@ -1375,10 +1478,11 @@ function computeScheduledAmounts(remboursement: Remboursement) {
           </div>
           <div className="flex flex-wrap gap-3">
             {(userProfile.role === 'admin' || userProfile.role === 'agent' || userProfile.role === 'manager') && (
-              <button
-                onClick={() => {
-                  const next = !showPaymentForm
-                  setShowPaymentForm(next)
+              <div className="flex gap-4">
+                <button
+                  onClick={() => {
+                    const next = !showPaymentForm
+                    setShowPaymentForm(next)
                   if (!next) {
                     resetPaymentForm()
                   }
@@ -1387,9 +1491,72 @@ function computeScheduledAmounts(remboursement: Remboursement) {
               >
                 {showPaymentForm ? 'Fermer le formulaire' : 'Enregistrer un paiement'}
               </button>
+              </div>
             )}
           </div>
         </div>
+
+        {/* Section pour modifier les échéances des prêts actifs (Manager uniquement) */}
+        {(userProfile.role === 'admin' || userProfile.role === 'manager') && (
+          <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 className="text-xl font-semibold mb-4">Modifier les échéances des prêts en cours</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Prêts individuels actifs */}
+              {prets.filter(p => p.statut === 'actif').length > 0 && (
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Prêts individuels</h3>
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {prets.filter(p => p.statut === 'actif').map((pret) => (
+                      <div key={pret.pret_id} className="flex items-center justify-between p-3 border rounded hover:bg-gray-50">
+                        <div>
+                          <span className="font-medium">{pret.pret_id}</span>
+                          <span className="text-sm text-gray-500 ml-2">
+                            {formatCurrency(pret.montant_pret)}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => handleEditSchedule(pret.pret_id, 'individual')}
+                          className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                        >
+                          Modifier échéances
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Prêts de groupe actifs */}
+              {groupPrets.filter(p => p.statut === 'actif').length > 0 && (
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Prêts de groupe</h3>
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {groupPrets.filter(p => p.statut === 'actif').map((pret) => (
+                      <div key={pret.pret_id} className="flex items-center justify-between p-3 border rounded hover:bg-gray-50">
+                        <div>
+                          <span className="font-medium">{pret.pret_id}</span>
+                          <span className="text-xs text-blue-600 ml-2">(Groupe)</span>
+                          <span className="text-sm text-gray-500 ml-2">
+                            {formatCurrency(pret.montant_pret)}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => handleEditSchedule(pret.pret_id, 'group')}
+                          className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                        >
+                          Modifier échéances
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {prets.filter(p => p.statut === 'actif').length === 0 && 
+               groupPrets.filter(p => p.statut === 'actif').length === 0 && (
+                <p className="text-sm text-gray-500 col-span-2">Aucun prêt actif</p>
+              )}
+            </div>
+          </div>
+        )}
 
         {showPaymentForm && (
           <div className="bg-white rounded-lg shadow-md p-6 mb-8">
@@ -1974,6 +2141,104 @@ function computeScheduledAmounts(remboursement: Remboursement) {
             </table>
           </div>
         </div>
+
+        {/* Modal de modification des échéances */}
+        <Dialog open={showEditScheduleModal} onOpenChange={setShowEditScheduleModal}>
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>
+                Modifier les échéances - Prêt {editingPretId}
+                {editingPretType === 'group' && <span className="text-sm text-blue-600 ml-2">(Groupe)</span>}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="mt-4">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">N°</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date échéance</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Montant</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Principal</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Intérêt</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Statut</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {editingRemboursements.map((remb, index) => (
+                      <tr key={remb.id}>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                          {remb.numero_remboursement}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <Input
+                            type="date"
+                            value={remb.date_remboursement}
+                            onChange={(e) => updateEditingRemboursement(index, 'date_remboursement', e.target.value)}
+                            className="w-full"
+                            disabled={remb.statut === 'paye' || savingSchedule}
+                          />
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={remb.montant}
+                            onChange={(e) => updateEditingRemboursement(index, 'montant', parseFloat(e.target.value) || 0)}
+                            className="w-full"
+                            disabled={remb.statut === 'paye' || savingSchedule}
+                          />
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={remb.principal ?? ''}
+                            onChange={(e) => updateEditingRemboursement(index, 'principal', parseFloat(e.target.value) || 0)}
+                            className="w-full"
+                            disabled={remb.statut === 'paye' || savingSchedule}
+                          />
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {formatCurrency(remb.interet ?? 0)}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className={`px-2 py-1 text-xs rounded-full ${
+                            remb.statut === 'paye' ? 'bg-green-100 text-green-800' :
+                            remb.statut === 'en_retard' ? 'bg-red-100 text-red-800' :
+                            remb.statut === 'paye_partiel' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {remb.statut === 'paye' ? 'Payé' :
+                             remb.statut === 'en_retard' ? 'En retard' :
+                             remb.statut === 'paye_partiel' ? 'Payé partiel' :
+                             'En attente'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                onClick={() => setShowEditScheduleModal(false)}
+                variant="outline"
+                disabled={savingSchedule}
+              >
+                Annuler
+              </Button>
+              <Button
+                onClick={handleSaveSchedule}
+                disabled={savingSchedule}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                {savingSchedule ? 'Sauvegarde...' : 'Sauvegarder les modifications'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </DashboardLayout>
   )

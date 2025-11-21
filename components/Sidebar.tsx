@@ -18,6 +18,7 @@ import {
   Wallet,
   CheckCircle2,
   FileText,
+  History as HistoryIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -145,6 +146,12 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       href: '/presences',
       icon: CalendarDays,
       roles: ['admin', 'manager', 'agent', 'chef_zone'] as UserRole[],
+    },
+    {
+      title: 'Historique des Prêts',
+      href: '/historique-prets',
+      icon: HistoryIcon,
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
     {
       title: 'Assigner Membres',

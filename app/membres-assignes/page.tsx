@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase, type Membre, type Pret, type Collateral, type Remboursement, type UserProfile, type ChefZoneMembre, type GroupPret, type EpargneTransaction } from '@/lib/supabase'
+import { supabase, type Membre, type Pret, type Collateral, type Remboursement, type UserProfile, type ChefZoneMembre, type GroupPret, type EpargneTransaction, type Agent } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile } from '@/lib/auth'
@@ -33,6 +33,10 @@ function MembresAssignesContent() {
     dateDecaissement?: string
     dateFin?: string
     duree?: number
+    dateApprobation?: string
+    dureeMois?: number
+    cycleCredit?: number
+    pretActifId?: string | null
   }>>({})
   const [selectedMembre, setSelectedMembre] = useState<Membre | null>(null)
   const [showDetails, setShowDetails] = useState(false)
@@ -40,6 +44,7 @@ function MembresAssignesContent() {
   const [memberGroupInfo, setMemberGroupInfo] = useState<{ group_name: string; group_id: number } | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [agents, setAgents] = useState<Agent[]>([])
 
   useEffect(() => {
     loadUserProfile()
@@ -48,8 +53,23 @@ function MembresAssignesContent() {
   useEffect(() => {
     if (userProfile) {
       loadMembresAssignes()
+      loadAgents()
     }
   }, [userProfile])
+
+  async function loadAgents() {
+    try {
+      const { data, error } = await supabase
+        .from('agents')
+        .select('*')
+        .order('agent_id', { ascending: true })
+
+      if (error) throw error
+      setAgents(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement des agents:', error)
+    }
+  }
 
   async function loadUserProfile() {
     try {
@@ -130,6 +150,10 @@ function MembresAssignesContent() {
       dateDecaissement?: string
       dateFin?: string
       duree?: number
+      dateApprobation?: string
+      dureeMois?: number
+      cycleCredit?: number
+      pretActifId?: string | null
     }> = {}
 
     // Charger les groupes qui contiennent les membres assignés
@@ -269,12 +293,40 @@ function MembresAssignesContent() {
       let dateDecaissement: string | undefined = undefined
       let dateFin: string | undefined = undefined
       let duree: number | undefined = undefined
+      let dateApprobation: string | undefined = undefined
+      let dureeMois: number | undefined = undefined
+      let cycleCredit: number | undefined = undefined
+      let pretActifId: string | null = null
 
       // Obtenir la date de décaissement du prêt actif
       if (pretActifCourant) {
         dateDecaissement = pretActifCourant.date_decaissement
+        pretActifId = pretActifCourant.pret_id
+        
+        // Charger les informations complètes du prêt pour obtenir updated_at
+        const { data: pretComplet } = await supabase
+          .from('prets')
+          .select('updated_at, statut')
+          .eq('pret_id', pretActifCourant.pret_id)
+          .single()
+        
+        if (pretComplet && pretComplet.statut === 'actif' && pretComplet.updated_at) {
+          dateApprobation = pretComplet.updated_at
+        }
       } else if (groupPretActif) {
         dateDecaissement = groupPretActif.date_decaissement
+        pretActifId = groupPretActif.pret_id || null
+        
+        // Charger les informations complètes du prêt de groupe pour obtenir updated_at
+        const { data: groupPretComplet } = await supabase
+          .from('group_prets')
+          .select('updated_at, statut')
+          .eq('pret_id', groupPretActif.pret_id)
+          .single()
+        
+        if (groupPretComplet && groupPretComplet.statut === 'actif' && groupPretComplet.updated_at) {
+          dateApprobation = groupPretComplet.updated_at
+        }
       }
 
       // Calculer la date de fin et la durée à partir de l'échéancier
@@ -287,7 +339,33 @@ function MembresAssignesContent() {
         const dateDecaissementObj = new Date(dateDecaissement)
         const dateFinObj = new Date(dateFin)
         duree = Math.ceil((dateFinObj.getTime() - dateDecaissementObj.getTime()) / (1000 * 60 * 60 * 24))
+        
+        // Calculer la durée en mois (approximation : 30 jours par mois)
+        dureeMois = Math.round((duree / 30) * 10) / 10
       }
+
+      // Compter le nombre total de crédits (prêts individuels + prêts de groupe) que ce membre a déjà eus
+      // Compter les prêts individuels (actifs ou terminés)
+      const { data: pretsIndividuels } = await supabase
+        .from('prets')
+        .select('pret_id')
+        .eq('membre_id', membreId)
+        .in('statut', ['actif', 'termine'])
+      
+      // Compter les prêts de groupe où ce membre fait partie (actifs ou terminés)
+      let pretsGroupeCount = 0
+      if (groupIds.length > 0) {
+        const { data: pretsGroupe } = await supabase
+          .from('group_prets')
+          .select('pret_id')
+          .in('group_id', groupIds)
+          .in('statut', ['actif', 'termine'])
+        
+        pretsGroupeCount = pretsGroupe?.length || 0
+      }
+      
+      // Le cycle de crédit est le nombre total de prêts (individuels + groupe) que ce membre a déjà eus
+      cycleCredit = (pretsIndividuels?.length || 0) + pretsGroupeCount
 
       details[membreId] = {
         garantie: garantieTotal,
@@ -297,6 +375,10 @@ function MembresAssignesContent() {
         dateDecaissement,
         dateFin,
         duree,
+        dateApprobation,
+        dureeMois,
+        cycleCredit,
+        pretActifId,
       }
     }
 
@@ -315,6 +397,147 @@ function MembresAssignesContent() {
     const diffTime = today.getTime() - dateRemb.getTime()
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
     return diffDays
+  }
+
+  async function viewEcheancier() {
+    if (!selectedMembre) return
+    
+    const membreId = selectedMembre.membre_id
+    const membreNom = `${selectedMembre.prenom} ${selectedMembre.nom}`
+    const membreAdresse = selectedMembre.adresse || 'Non renseignée'
+    const echeancier = membresDetails[membreId]?.echeancier || []
+    const pretId = membresDetails[membreId]?.pretActifId || 'N/A'
+    
+    if (echeancier.length === 0) {
+      alert('Aucun remboursement dans l\'échéancier à afficher.')
+      return
+    }
+
+    // Récupérer le nom de l'agent de crédit
+    const agent = agents.find(a => a.agent_id === selectedMembre.agent_id)
+    const agentNom = agent ? `${agent.prenom} ${agent.nom}` : 'Non renseigné'
+
+    // Récupérer les informations du groupe si c'est un membre de groupe
+    let groupeNom = ''
+    let autresMembres: string[] = []
+    
+    if (memberGroupInfo) {
+      groupeNom = memberGroupInfo.group_name
+      
+      // Charger les autres membres du groupe
+      const { data: groupMembersData } = await supabase
+        .from('membre_group_members')
+        .select('membre_id, membres(prenom, nom)')
+        .eq('group_id', memberGroupInfo.group_id)
+      
+      if (groupMembersData) {
+        autresMembres = groupMembersData
+          .filter(gm => gm.membre_id !== membreId)
+          .map(gm => {
+            const m = gm.membres as any
+            return m ? `${m.prenom} ${m.nom}` : ''
+          })
+          .filter(nom => nom !== '')
+      }
+    }
+
+    // Créer le contenu HTML pour l'échéancier
+    let htmlContent = `
+      <html>
+        <head>
+          <title>Échéancier - ${membreNom}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { color: #333; }
+            .info-section { background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+            .info-row { margin: 8px 0; }
+            .info-label { font-weight: bold; display: inline-block; width: 180px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; font-weight: bold; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            .total { font-weight: bold; background-color: #e8e8e8; }
+            .group-members { margin-top: 10px; }
+            .group-members ul { margin: 5px 0; padding-left: 20px; }
+          </style>
+        </head>
+        <body>
+          <h1>Échéancier du prêt</h1>
+          <div class="info-section">
+            <div class="info-row"><span class="info-label">Prêt ID:</span> ${pretId}</div>
+            <div class="info-row"><span class="info-label">Membre:</span> ${membreNom}</div>
+            <div class="info-row"><span class="info-label">Membre ID:</span> ${membreId}</div>
+            <div class="info-row"><span class="info-label">Adresse:</span> ${membreAdresse}</div>
+            <div class="info-row"><span class="info-label">Agent de crédit:</span> ${agentNom}</div>
+            <div class="info-row"><span class="info-label">Type de prêt:</span> ${memberGroupInfo ? 'Prêt de groupe' : 'Prêt individuel'}</div>
+            ${memberGroupInfo ? `<div class="info-row"><span class="info-label">Nom du groupe:</span> ${groupeNom}</div>` : ''}
+            ${autresMembres.length > 0 ? `
+              <div class="info-row group-members">
+                <span class="info-label">Autres membres du groupe:</span>
+                <ul>
+                  ${autresMembres.map(m => `<li>${m}</li>`).join('')}
+                </ul>
+              </div>
+            ` : ''}
+            ${membresDetails[membreId]?.dateApprobation ? `<div class="info-row"><span class="info-label">Date d'approbation:</span> ${formatDate(membresDetails[membreId]?.dateApprobation || '')}</div>` : ''}
+            ${membresDetails[membreId]?.dateDecaissement ? `<div class="info-row"><span class="info-label">Date de décaissement:</span> ${formatDate(membresDetails[membreId]?.dateDecaissement || '')}</div>` : ''}
+            ${membresDetails[membreId]?.dateFin ? `<div class="info-row"><span class="info-label">Date de fin:</span> ${formatDate(membresDetails[membreId]?.dateFin || '')}</div>` : ''}
+            ${membresDetails[membreId]?.duree !== undefined ? `<div class="info-row"><span class="info-label">Durée du prêt:</span> ${membresDetails[membreId]?.duree} jour(s)</div>` : ''}
+            ${membresDetails[membreId]?.dureeMois !== undefined ? `<div class="info-row"><span class="info-label">Durée du prêt (mois):</span> ${membresDetails[membreId]?.dureeMois} mois</div>` : ''}
+            ${membresDetails[membreId]?.cycleCredit !== undefined ? `<div class="info-row"><span class="info-label">Cycle de crédit:</span> ${membresDetails[membreId]?.cycleCredit} crédit(s)</div>` : ''}
+            <div class="info-row"><span class="info-label">Date génération:</span> ${formatDate(new Date().toISOString())}</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>N°</th>
+                <th>Date prévue</th>
+                <th>Montant</th>
+                <th>Principal</th>
+                <th>Intérêt</th>
+              </tr>
+            </thead>
+            <tbody>
+    `
+
+    echeancier.forEach((r) => {
+      htmlContent += `
+        <tr>
+          <td>${r.numero_remboursement}</td>
+          <td>${formatDate(r.date_remboursement)}</td>
+          <td>${formatCurrency(r.montant)}</td>
+          <td>${formatCurrency(r.principal || 0)}</td>
+          <td>${formatCurrency(r.interet || 0)}</td>
+        </tr>
+      `
+    })
+
+    // Calculer les totaux
+    const totalMontant = echeancier.reduce((sum, r) => sum + Number(r.montant || 0), 0)
+    const totalPrincipal = echeancier.reduce((sum, r) => sum + Number(r.principal || 0), 0)
+    const totalInteret = echeancier.reduce((sum, r) => sum + Number(r.interet || 0), 0)
+
+    htmlContent += `
+            </tbody>
+            <tfoot>
+              <tr class="total">
+                <td colspan="2">TOTAL</td>
+                <td>${formatCurrency(totalMontant)}</td>
+                <td>${formatCurrency(totalPrincipal)}</td>
+                <td>${formatCurrency(totalInteret)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </body>
+      </html>
+    `
+
+    // Ouvrir dans une nouvelle fenêtre
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.write(htmlContent)
+      printWindow.document.close()
+    }
   }
 
   async function handleViewDetails(membre: Membre) {
@@ -667,11 +890,32 @@ function MembresAssignesContent() {
 
                     {/* Échéancier */}
                     <div>
-                      <h3 className="text-lg font-semibold mb-4">Échéancier</h3>
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-semibold">Échéancier du prêt</h3>
+                        {membresDetails[selectedMembre.membre_id]?.echeancier.length > 0 && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={viewEcheancier}
+                            className="flex items-center gap-2"
+                          >
+                            <Calendar className="w-4 h-4" />
+                            Voir
+                          </Button>
+                        )}
+                      </div>
                       {/* Informations du prêt */}
                       {membresDetails[selectedMembre.membre_id]?.dateDecaissement && (
                         <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                          <div className="grid grid-cols-3 gap-4 text-sm">
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                            <div>
+                              <span className="text-muted-foreground">Date d'approbation:</span>
+                              <p className="font-medium">
+                                {membresDetails[selectedMembre.membre_id]?.dateApprobation 
+                                  ? formatDate(membresDetails[selectedMembre.membre_id]?.dateApprobation || '')
+                                  : '-'}
+                              </p>
+                            </div>
                             <div>
                               <span className="text-muted-foreground">Date de décaissement:</span>
                               <p className="font-medium">{formatDate(membresDetails[selectedMembre.membre_id]?.dateDecaissement || '')}</p>
@@ -682,10 +926,16 @@ function MembresAssignesContent() {
                                 <p className="font-medium">{formatDate(membresDetails[selectedMembre.membre_id]?.dateFin || '')}</p>
                               </div>
                             )}
-                            {membresDetails[selectedMembre.membre_id]?.duree !== undefined && (
+                            {membresDetails[selectedMembre.membre_id]?.dureeMois !== undefined && (
                               <div>
                                 <span className="text-muted-foreground">Durée du prêt:</span>
-                                <p className="font-medium">{membresDetails[selectedMembre.membre_id]?.duree} jour(s)</p>
+                                <p className="font-medium">{membresDetails[selectedMembre.membre_id]?.dureeMois} mois</p>
+                              </div>
+                            )}
+                            {membresDetails[selectedMembre.membre_id]?.cycleCredit !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">Cycle de crédit:</span>
+                                <p className="font-medium">{membresDetails[selectedMembre.membre_id]?.cycleCredit}</p>
                               </div>
                             )}
                           </div>

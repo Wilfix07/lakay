@@ -833,7 +833,7 @@ function PretsPageContent() {
       )
 
       if (plan.schedule.length !== nombreRemboursements) {
-        alert('Impossible de générer l’échéancier. Vérifiez les paramètres.')
+        alert('Impossible de générer l\'échéancier. Vérifiez les paramètres.')
         return
       }
 
@@ -1192,6 +1192,12 @@ function PretsPageContent() {
       return
     }
     
+    // Empêcher la modification des prêts rejetés (annulés)
+    if (pret.statut === 'annule') {
+      alert('Ce prêt a été rejeté et ne peut pas être modifié.')
+      return
+    }
+    
     if (!confirm('Voulez-vous modifier ce décaissement ? Les remboursements associés seront également mis à jour.')) {
       return
     }
@@ -1241,6 +1247,12 @@ function PretsPageContent() {
   async function handleUpdatePret(e: React.FormEvent) {
     e.preventDefault()
     if (!editingPret) return
+
+    // Ne pas générer de calendrier pour les prêts rejetés
+    if (editingPret.statut === 'annule') {
+      alert('Ce prêt a été rejeté et ne peut pas être modifié.')
+      return
+    }
 
     try {
       const montantPret = parseFloat(formData.montant_pret)
@@ -1308,6 +1320,12 @@ function PretsPageContent() {
         }
       }
 
+      // Ne pas générer de calendrier si le prêt est rejeté
+      if ((editingPret.statut as string) === 'annule') {
+        alert('Ce prêt a été rejeté. Impossible de générer un calendrier.')
+        return
+      }
+
       const plan = calculateLoanPlan(
         montantPret,
         frequency,
@@ -1316,7 +1334,7 @@ function PretsPageContent() {
       )
 
       if (plan.schedule.length !== nombreRemboursements) {
-        alert('Impossible de générer l’échéancier. Vérifiez les paramètres.')
+        alert('Impossible de générer l\'échéancier. Vérifiez les paramètres.')
         return
       }
 

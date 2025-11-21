@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase, type Membre, type Presence, type UserProfile, type ChefZoneMembre } from '@/lib/supabase'
 import { formatDate } from '@/lib/utils'
@@ -156,6 +156,42 @@ function PresencesContent() {
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState('')
   const [error, setError] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
+
+  // Filtrer les membres selon la recherche
+  const filteredMembres = useMemo(() => {
+    if (!activeSearch.trim()) {
+      return membres
+    }
+
+    const searchTerm = activeSearch.toLowerCase().trim()
+    
+    return membres.filter((membre) => {
+      const presence = presences[membre.membre_id]
+      const isPresent = presence?.present || false
+      const presenceText = isPresent ? 'present' : 'absent'
+      
+      return (
+        membre.membre_id.toLowerCase().includes(searchTerm) ||
+        (membre.nom || '').toLowerCase().includes(searchTerm) ||
+        (membre.prenom || '').toLowerCase().includes(searchTerm) ||
+        presenceText.includes(searchTerm) ||
+        'présent'.includes(searchTerm) ||
+        'absent'.includes(searchTerm)
+      )
+    })
+  }, [membres, presences, activeSearch])
+
+  const handleSearch = () => {
+    setActiveSearch(searchInput)
+  }
+
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleSearch()
+    }
+  }
 
   useEffect(() => {
     loadUserProfile()
@@ -493,6 +529,25 @@ function PresencesContent() {
                 </div>
               </div>
             </div>
+            <div className="mt-4 flex items-center gap-2">
+              <div className="flex-1">
+                <Input
+                  placeholder="Rechercher par nom/prénom/ID membre/présent/absent..."
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  className="w-full"
+                />
+              </div>
+              <Button onClick={handleSearch} variant="default">
+                Recherche
+              </Button>
+            </div>
+            {activeSearch && (
+              <CardDescription className="mt-2">
+                {filteredMembres.length} membre(s) trouvé(s) sur {membres.length}
+              </CardDescription>
+            )}
           </CardHeader>
           <CardContent>
             {membres.length === 0 ? (
@@ -519,7 +574,7 @@ function PresencesContent() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {membres.map((membre) => {
+                  {filteredMembres.map((membre) => {
                     const presence = presences[membre.membre_id]
                     return (
                       <MembrePresenceRow

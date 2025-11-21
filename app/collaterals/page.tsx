@@ -264,6 +264,12 @@ function CollateralsPageContent() {
         return
       }
 
+      // Ne pas générer de calendrier pour les prêts rejetés
+      if (pret.statut === 'annule') {
+        console.log(`Le prêt ${pretId} a été rejeté. Impossible de générer un calendrier.`)
+        return
+      }
+
       // Calculer le plan de remboursement
       const frequency: FrequenceRemboursement = 
         pret.frequence_remboursement === 'mensuel' ? 'mensuel' : 'journalier'

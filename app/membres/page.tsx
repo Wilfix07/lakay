@@ -634,6 +634,22 @@ function MembresPageContent() {
 
         // Ajouter les nouveaux membres
         if (membersToAdd.length > 0) {
+          // Vérifier à nouveau que les membres ne sont pas dans un autre groupe
+          const { data: doubleCheck, error: doubleCheckError } = await supabase
+            .from('membre_group_members')
+            .select('membre_id, group_id')
+            .in('membre_id', membersToAdd)
+            .neq('group_id', editingGroup.id)
+
+          if (doubleCheckError) throw doubleCheckError
+
+          if (doubleCheck && doubleCheck.length > 0) {
+            const membre = membres.find(m => m.membre_id === doubleCheck[0].membre_id)
+            alert(`Le membre ${membre?.prenom} ${membre?.nom} (${doubleCheck[0].membre_id}) est déjà dans un autre groupe. Un membre ne peut être que dans un seul groupe à la fois.`)
+            setGroupSubmitting(false)
+            return
+          }
+
           const groupMembers = membersToAdd.map(membre_id => ({
             group_id: editingGroup.id,
             membre_id,
@@ -643,7 +659,16 @@ function MembresPageContent() {
             .from('membre_group_members')
             .insert(groupMembers)
 
-          if (addError) throw addError
+          if (addError) {
+            // Si c'est une erreur de clé dupliquée (contrainte unique)
+            if (addError.code === '23505') {
+              alert('Un ou plusieurs membres sont déjà dans un autre groupe. Un membre ne peut être que dans un seul groupe à la fois.')
+            } else {
+              throw addError
+            }
+            setGroupSubmitting(false)
+            return
+          }
         }
 
         // Supprimer les membres retirés
@@ -693,8 +718,8 @@ function MembresPageContent() {
           .from('membre_groups')
           .insert([{
             group_name: groupFormData.group_name.trim(),
-            agent_id: userProfile.agent_id,
             description: groupFormData.description.trim() || null,
+            agent_id: userProfile.agent_id,
           }])
           .select()
           .single()
@@ -707,11 +732,20 @@ function MembresPageContent() {
           membre_id,
         }))
 
-        const { error: membersError } = await supabase
+        const { error: addError } = await supabase
           .from('membre_group_members')
           .insert(groupMembers)
 
-        if (membersError) throw membersError
+        if (addError) {
+          // Si c'est une erreur de clé dupliquée (contrainte unique)
+          if (addError.code === '23505') {
+            alert('Un ou plusieurs membres sont déjà dans un autre groupe. Un membre ne peut être que dans un seul groupe à la fois.')
+          } else {
+            throw addError
+          }
+          setGroupSubmitting(false)
+          return
+        }
       }
 
       alert(editingGroup ? 'Groupe modifié avec succès!' : 'Groupe créé avec succès!')

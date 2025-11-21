@@ -285,6 +285,12 @@ function ApprobationsPageContent() {
   }, [groupPrets, activeSearch, agents, groups])
 
   async function handleApprove(pret: Pret) {
+    // Ne pas générer de calendrier pour les prêts rejetés
+    if (pret.statut === 'annule') {
+      alert('Ce prêt a été rejeté et ne peut pas être approuvé.')
+      return
+    }
+
     // Vérifier que la garantie existe et est complète
     const collateral = getCollateral(pret.pret_id)
     
@@ -392,6 +398,12 @@ function ApprobationsPageContent() {
   }
 
   async function handleApproveGroupPret(groupPret: GroupPret) {
+    // Ne pas générer de calendrier pour les prêts rejetés
+    if (groupPret.statut === 'annule') {
+      alert('Ce prêt a été rejeté et ne peut pas être approuvé.')
+      return
+    }
+
     // Vérifier que toutes les garanties sont complètes
     const allComplete = areAllGroupCollateralsComplete(groupPret.pret_id)
     
