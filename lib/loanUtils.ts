@@ -1,7 +1,7 @@
 import { addDays, addMonths, getDay } from 'date-fns'
 import { getInterestRates } from './systemSettings'
 
-export type FrequenceRemboursement = 'journalier' | 'mensuel'
+export type FrequenceRemboursement = 'journalier' | 'hebdomadaire' | 'mensuel'
 
 export interface LoanScheduleEntry {
   numero: number
@@ -16,6 +16,9 @@ export interface LoanPlan {
   totalRemboursement: number
   interetTotal: number
   datePremierRemboursement: Date
+  dateDecaissement: Date
+  dateFin: Date
+  duree: number // Durée en jours
   schedule: LoanScheduleEntry[]
 }
 
@@ -47,6 +50,10 @@ export function getInitialPaymentDate(
     // Premier paiement 1 mois après le décaissement
     return adjustToBusinessDay(addMonths(dateDecaissement, 1))
   }
+  if (frequency === 'hebdomadaire') {
+    // Premier paiement 7 jours après le décaissement
+    return adjustToBusinessDay(addDays(dateDecaissement, 7))
+  }
   // Pour journalier: premier paiement 2 jours ouvrables après décaissement
   return adjustToBusinessDay(addDays(dateDecaissement, 2))
 }
@@ -60,6 +67,9 @@ export function getNextPaymentDate(
 ): Date {
   if (frequency === 'mensuel') {
     return adjustToBusinessDay(addMonths(current, 1))
+  }
+  if (frequency === 'hebdomadaire') {
+    return adjustToBusinessDay(addDays(current, 7))
   }
   // Pour journalier: chaque jour ouvrable
   return adjustToBusinessDay(addDays(current, 1))
@@ -93,6 +103,9 @@ export async function calculateLoanPlan(
       totalRemboursement: 0,
       interetTotal: 0,
       datePremierRemboursement: baseDate,
+      dateDecaissement: new Date(dateDecaissement),
+      dateFin: baseDate,
+      duree: 0,
       schedule,
     }
   }
@@ -132,11 +145,20 @@ export async function calculateLoanPlan(
   const interetTotal =
     Math.round(schedule.reduce((sum, entry) => sum + entry.interet, 0) * 100) / 100
 
+  // Calculer la date de fin (dernière échéance)
+  const dateFin = schedule.length > 0 ? schedule[schedule.length - 1].date : paymentDate
+  
+  // Calculer la durée en jours entre le décaissement et la fin
+  const duree = Math.ceil((dateFin.getTime() - dateDecaissement.getTime()) / (1000 * 60 * 60 * 24))
+
   return {
     montantEcheance,
     totalRemboursement,
     interetTotal,
     datePremierRemboursement: schedule[0]?.date ?? paymentDate,
+    dateDecaissement: new Date(dateDecaissement),
+    dateFin,
+    duree,
     schedule,
   }
 }

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { supabase, type Pret, type Membre, type Agent, type UserProfile, type GroupPret, type Collateral } from '@/lib/supabase'
+import { supabase, type Pret, type Membre, type Agent, type UserProfile, type GroupPret, type Collateral, type LoanAmountBracket } from '@/lib/supabase'
 import { formatCurrency, formatDate, getMonthName } from '@/lib/utils'
 import { addDays, addMonths, getDay } from 'date-fns'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -20,23 +20,7 @@ import {
 } from '@/lib/systemSettings'
 import { useDynamicData } from '@/lib/contexts/DynamicDataContext'
 
-type FrequenceRemboursement = 'journalier' | 'hebdomadaire' | 'mensuel'
-
-interface LoanScheduleEntry {
-  numero: number
-  montant: number
-  principal: number
-  interet: number
-  date: Date
-}
-
-interface LoanPlan {
-  montantEcheance: number
-  totalRemboursement: number
-  interetTotal: number
-  datePremierRemboursement: Date
-  schedule: LoanScheduleEntry[]
-}
+import { type FrequenceRemboursement, type LoanPlan, type LoanScheduleEntry } from '@/lib/loanUtils'
 
 function PretsPageContent() {
   const router = useRouter()
@@ -53,7 +37,7 @@ function PretsPageContent() {
   const [systemInterestRate, setSystemInterestRate] = useState(0.15)
   const [systemDefaultInstallments, setSystemDefaultInstallments] = useState(23)
   const [collateralRatePercent, setCollateralRatePercent] = useState(10)
-  const [loanBrackets, setLoanBrackets] = useState<any[]>([])
+  const [loanBrackets, setLoanBrackets] = useState<Array<Partial<LoanAmountBracket> & { id: number; min_amount: number; max_amount: number | null; default_interest_rate: number | null; is_active: boolean }>>([])
   const [amountValidationMessage, setAmountValidationMessage] = useState<string | null>(null)
   const [formData, setFormData] = useState({
     membre_id: '',
@@ -65,7 +49,7 @@ function PretsPageContent() {
     nombre_remboursements: '23',
   })
   const [loanType, setLoanType] = useState<'membre' | 'groupe'>('membre')
-  const [groups, setGroups] = useState<any[]>([])
+  const [groups, setGroups] = useState<Array<{ id: number; group_name: string; agent_id: string; description?: string | null; created_at: string; member_count?: number }>>([])
   // Permettre aux agents de saisir manuellement les dates d'échéance
   const [manualScheduleEnabled, setManualScheduleEnabled] = useState<boolean>(false)
   const [manualInstallmentDates, setManualInstallmentDates] = useState<string[]>([])
@@ -161,6 +145,9 @@ function PretsPageContent() {
         totalRemboursement: 0,
         interetTotal: 0,
         datePremierRemboursement: baseDate,
+        dateDecaissement: new Date(dateDecaissement),
+        dateFin: baseDate,
+        duree: 0,
         schedule,
       }
     }
@@ -197,11 +184,20 @@ function PretsPageContent() {
     const interetTotal =
       Math.round(schedule.reduce((sum, entry) => sum + entry.interet, 0) * 100) / 100
 
+    // Calculer la date de fin (dernière échéance)
+    const dateFin = schedule.length > 0 ? schedule[schedule.length - 1].date : paymentDate
+    
+    // Calculer la durée en jours entre le décaissement et la fin
+    const duree = Math.ceil((dateFin.getTime() - dateDecaissement.getTime()) / (1000 * 60 * 60 * 24))
+
     return {
       montantEcheance,
       totalRemboursement,
       interetTotal,
       datePremierRemboursement: schedule[0]?.date ?? paymentDate,
+      dateDecaissement: new Date(dateDecaissement),
+      dateFin,
+      duree,
       schedule,
     }
   }

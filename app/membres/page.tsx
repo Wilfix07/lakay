@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement, type GroupPret } from '@/lib/supabase'
+import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement, type GroupPret, type EpargneTransaction } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
@@ -92,6 +92,7 @@ function MembresPageContent() {
   })
   const [groups, setGroups] = useState<MembreGroup[]>([])
   const [showGroupForm, setShowGroupForm] = useState(false)
+  const [editingGroup, setEditingGroup] = useState<MembreGroup | null>(null)
   const [groupFormData, setGroupFormData] = useState({
     group_name: '',
     description: '',
@@ -109,7 +110,7 @@ function MembresPageContent() {
   const [memberGroupNames, setMemberGroupNames] = useState<Map<string, string>>(new Map())
   const [showDetailsModal, setShowDetailsModal] = useState(false)
   const [selectedMembreForDetails, setSelectedMembreForDetails] = useState<Membre | null>(null)
-  const [epargneTransactions, setEpargneTransactions] = useState<any[]>([])
+  const [epargneTransactions, setEpargneTransactions] = useState<EpargneTransaction[]>([])
   const [memberGroupInfo, setMemberGroupInfo] = useState<{ group_name: string; group_id: number } | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [membresDetails, setMembresDetails] = useState<Record<string, {
@@ -120,6 +121,9 @@ function MembresPageContent() {
     collateralPretActif: number
     pretActifId: string | null
     pretActifStatut: string | null
+    dateDecaissement?: string
+    dateFin?: string
+    duree?: number
   }>>({})
 
   const currentLoan =
@@ -433,63 +437,160 @@ function MembresPageContent() {
 
     setGroupSubmitting(true)
     try {
-      // Vérifier que les membres sélectionnés ne sont pas déjà dans un autre groupe
-      const { data: existingMemberships, error: checkError } = await supabase
-        .from('membre_group_members')
-        .select('membre_id, group_id')
-        .in('membre_id', groupFormData.selectedMembers)
+      // Si on est en mode édition
+      if (editingGroup) {
+        // Obtenir d'abord les membres actuels du groupe depuis la base de données
+        const { data: currentMembers, error: currentError } = await supabase
+          .from('membre_group_members')
+          .select('membre_id')
+          .eq('group_id', editingGroup.id)
 
-      if (checkError) throw checkError
+        if (currentError) throw currentError
 
-      if (existingMemberships && existingMemberships.length > 0) {
-        // Récupérer les noms des groupes
-        const groupIds = [...new Set(existingMemberships.map((m: any) => m.group_id))]
-        const { data: groupsData, error: groupsError } = await supabase
-          .from('membre_groups')
-          .select('id, group_name')
-          .in('id', groupIds)
-
-        if (groupsError) throw groupsError
-
-        const groupMap = new Map((groupsData || []).map(g => [g.id, g.group_name]))
-        const membersInGroups = existingMemberships.map((m: any) => {
-          const membre = membres.find(mem => mem.membre_id === m.membre_id)
-          const groupName = groupMap.get(m.group_id) || 'Groupe inconnu'
-          return `${membre?.prenom} ${membre?.nom} (${m.membre_id}) - déjà dans le groupe "${groupName}"`
-        }).join('\n')
+        const currentMemberIds = currentMembers?.map(m => m.membre_id) || []
         
-        alert(`Les membres suivants sont déjà dans un autre groupe :\n\n${membersInGroups}\n\nUn membre ne peut être que dans un seul groupe à la fois.`)
-        setGroupSubmitting(false)
-        return
+        // Vérifier que les nouveaux membres sélectionnés ne sont pas déjà dans un autre groupe
+        // (sauf le groupe actuel)
+        const newMembers = groupFormData.selectedMembers.filter(
+          id => !currentMemberIds.includes(id)
+        )
+
+        if (newMembers.length > 0) {
+          const { data: existingMemberships, error: checkError } = await supabase
+            .from('membre_group_members')
+            .select('membre_id, group_id')
+            .in('membre_id', newMembers)
+            .neq('group_id', editingGroup.id)
+
+          if (checkError) throw checkError
+
+          if (existingMemberships && existingMemberships.length > 0) {
+            // Récupérer les noms des groupes
+            const groupIds = [...new Set(existingMemberships.map((m: any) => m.group_id))]
+            const { data: groupsData, error: groupsError } = await supabase
+              .from('membre_groups')
+              .select('id, group_name')
+              .in('id', groupIds)
+
+            if (groupsError) throw groupsError
+
+            const groupMap = new Map((groupsData || []).map(g => [g.id, g.group_name]))
+            const membersInGroups = existingMemberships.map((m: any) => {
+              const membre = membres.find(mem => mem.membre_id === m.membre_id)
+              const groupName = groupMap.get(m.group_id) || 'Groupe inconnu'
+              return `${membre?.prenom} ${membre?.nom} (${m.membre_id}) - déjà dans le groupe "${groupName}"`
+            }).join('\n')
+            
+            alert(`Les membres suivants sont déjà dans un autre groupe :\n\n${membersInGroups}\n\nUn membre ne peut être que dans un seul groupe à la fois.`)
+            setGroupSubmitting(false)
+            return
+          }
+        }
+
+        // Mettre à jour le groupe
+        const { error: groupError } = await supabase
+          .from('membre_groups')
+          .update({
+            group_name: groupFormData.group_name.trim(),
+            description: groupFormData.description.trim() || null,
+          })
+          .eq('id', editingGroup.id)
+
+        if (groupError) throw groupError
+
+        // Utiliser les membres actuels déjà chargés
+        const selectedMemberIds = groupFormData.selectedMembers
+
+        // Membres à ajouter
+        const membersToAdd = selectedMemberIds.filter(id => !currentMemberIds.includes(id))
+        // Membres à supprimer
+        const membersToRemove = currentMemberIds.filter(id => !selectedMemberIds.includes(id))
+
+        // Ajouter les nouveaux membres
+        if (membersToAdd.length > 0) {
+          const groupMembers = membersToAdd.map(membre_id => ({
+            group_id: editingGroup.id,
+            membre_id,
+          }))
+
+          const { error: addError } = await supabase
+            .from('membre_group_members')
+            .insert(groupMembers)
+
+          if (addError) throw addError
+        }
+
+        // Supprimer les membres retirés
+        if (membersToRemove.length > 0) {
+          const { error: removeError } = await supabase
+            .from('membre_group_members')
+            .delete()
+            .eq('group_id', editingGroup.id)
+            .in('membre_id', membersToRemove)
+
+          if (removeError) throw removeError
+        }
+      } else {
+        // Mode création
+        // Vérifier que les membres sélectionnés ne sont pas déjà dans un autre groupe
+        const { data: existingMemberships, error: checkError } = await supabase
+          .from('membre_group_members')
+          .select('membre_id, group_id')
+          .in('membre_id', groupFormData.selectedMembers)
+
+        if (checkError) throw checkError
+
+        if (existingMemberships && existingMemberships.length > 0) {
+          // Récupérer les noms des groupes
+          const groupIds = [...new Set(existingMemberships.map((m: any) => m.group_id))]
+          const { data: groupsData, error: groupsError } = await supabase
+            .from('membre_groups')
+            .select('id, group_name')
+            .in('id', groupIds)
+
+          if (groupsError) throw groupsError
+
+          const groupMap = new Map((groupsData || []).map(g => [g.id, g.group_name]))
+          const membersInGroups = existingMemberships.map((m: any) => {
+            const membre = membres.find(mem => mem.membre_id === m.membre_id)
+            const groupName = groupMap.get(m.group_id) || 'Groupe inconnu'
+            return `${membre?.prenom} ${membre?.nom} (${m.membre_id}) - déjà dans le groupe "${groupName}"`
+          }).join('\n')
+          
+          alert(`Les membres suivants sont déjà dans un autre groupe :\n\n${membersInGroups}\n\nUn membre ne peut être que dans un seul groupe à la fois.`)
+          setGroupSubmitting(false)
+          return
+        }
+
+        // Créer le groupe
+        const { data: newGroup, error: groupError } = await supabase
+          .from('membre_groups')
+          .insert([{
+            group_name: groupFormData.group_name.trim(),
+            agent_id: userProfile.agent_id,
+            description: groupFormData.description.trim() || null,
+          }])
+          .select()
+          .single()
+
+        if (groupError) throw groupError
+
+        // Ajouter les membres au groupe
+        const groupMembers = groupFormData.selectedMembers.map(membre_id => ({
+          group_id: newGroup.id,
+          membre_id,
+        }))
+
+        const { error: membersError } = await supabase
+          .from('membre_group_members')
+          .insert(groupMembers)
+
+        if (membersError) throw membersError
       }
 
-      // Créer le groupe
-      const { data: newGroup, error: groupError } = await supabase
-        .from('membre_groups')
-        .insert([{
-          group_name: groupFormData.group_name.trim(),
-          agent_id: userProfile.agent_id,
-          description: groupFormData.description.trim() || null,
-        }])
-        .select()
-        .single()
-
-      if (groupError) throw groupError
-
-      // Ajouter les membres au groupe
-      const groupMembers = groupFormData.selectedMembers.map(membre_id => ({
-        group_id: newGroup.id,
-        membre_id,
-      }))
-
-      const { error: membersError } = await supabase
-        .from('membre_group_members')
-        .insert(groupMembers)
-
-      if (membersError) throw membersError
-
-      alert('Groupe créé avec succès!')
+      alert(editingGroup ? 'Groupe modifié avec succès!' : 'Groupe créé avec succès!')
       setShowGroupForm(false)
+      setEditingGroup(null)
       setGroupFormData({
         group_name: '',
         description: '',
@@ -502,6 +603,31 @@ function MembresPageContent() {
       alert('Erreur: ' + (error.message || 'Erreur inconnue'))
     } finally {
       setGroupSubmitting(false)
+    }
+  }
+
+  async function handleEditGroup(group: MembreGroup) {
+    try {
+      // Charger les membres actuels du groupe
+      const { data: membersData, error } = await supabase
+        .from('membre_group_members')
+        .select('membre_id')
+        .eq('group_id', group.id)
+
+      if (error) throw error
+
+      const memberIds = membersData?.map(m => m.membre_id) || []
+
+      setEditingGroup(group)
+      setGroupFormData({
+        group_name: group.group_name,
+        description: group.description || '',
+        selectedMembers: memberIds,
+      })
+      setShowGroupForm(true)
+    } catch (error) {
+      console.error('Erreur lors du chargement du groupe:', error)
+      alert('Erreur lors du chargement du groupe')
     }
   }
 
@@ -895,7 +1021,7 @@ function MembresPageContent() {
     if (groupIds.length > 0) {
       const { data: groupPretsData } = await supabase
         .from('group_prets')
-        .select('pret_id, montant_pret, capital_restant, group_id, statut')
+        .select('pret_id, montant_pret, capital_restant, group_id, statut, date_decaissement, nombre_remboursements, frequence_remboursement')
         .in('group_id', groupIds)
         .eq('statut', 'actif')
 
@@ -907,7 +1033,7 @@ function MembresPageContent() {
     // Charger les prêts actifs individuels
     const { data: pretsActifs } = await supabase
       .from('prets')
-      .select('pret_id, montant_pret, capital_restant, statut')
+      .select('pret_id, montant_pret, capital_restant, statut, date_decaissement, nombre_remboursements, frequence_remboursement')
       .eq('membre_id', membreId)
       .eq('statut', 'actif')
       .order('date_decaissement', { ascending: false })
@@ -1007,6 +1133,9 @@ function MembresPageContent() {
     let collateralPretActif = 0
     let pretActifId: string | null = null
     let pretActifStatut: string | null = null
+    let dateDecaissement: string | undefined = undefined
+    let dateFin: string | undefined = undefined
+    let duree: number | undefined = undefined
 
     if (pretActifCourant) {
       // Charger tous les collaterals pour ce prêt actif
@@ -1022,6 +1151,7 @@ function MembresPageContent() {
         collateralPretActif = collateralsPret.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
         pretActifId = pretActifCourant.pret_id
         pretActifStatut = pretActifCourant.statut || null
+        dateDecaissement = pretActifCourant.date_decaissement
       }
     } else if (groupPretsMap.length > 0) {
       // Si pas de prêt individuel actif, vérifier le prêt de groupe actif
@@ -1037,7 +1167,20 @@ function MembresPageContent() {
         collateralPretActif = collateralsGroupPret.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
         pretActifId = groupPretActif.pret_id
         pretActifStatut = groupPretActif.statut || null
+        dateDecaissement = groupPretActif.date_decaissement
       }
+    }
+
+    // Calculer la date de fin et la durée à partir de l'échéancier
+    if (echeancier.length > 0 && dateDecaissement) {
+      // La date de fin est la date de la dernière échéance
+      const lastEcheance = echeancier[echeancier.length - 1]
+      dateFin = lastEcheance.date_remboursement
+      
+      // Calculer la durée en jours
+      const dateDecaissementObj = new Date(dateDecaissement)
+      const dateFinObj = new Date(dateFin)
+      duree = Math.ceil((dateFinObj.getTime() - dateDecaissementObj.getTime()) / (1000 * 60 * 60 * 24))
     }
 
     setMembresDetails({
@@ -1049,6 +1192,9 @@ function MembresPageContent() {
         collateralPretActif,
         pretActifId,
         pretActifStatut,
+        dateDecaissement,
+        dateFin,
+        duree,
       }
     })
   }
@@ -1510,9 +1656,11 @@ function MembresPageContent() {
         {showGroupForm && userProfile?.role === 'agent' && (
           <Card>
             <CardHeader>
-              <CardTitle>Créer un nouveau groupe</CardTitle>
+              <CardTitle>{editingGroup ? 'Modifier le groupe' : 'Créer un nouveau groupe'}</CardTitle>
               <CardDescription>
-                Sélectionnez entre 2 et 10 membres pour créer un groupe
+                {editingGroup 
+                  ? 'Modifiez le nom, la description ou les membres du groupe'
+                  : 'Sélectionnez entre 2 et 10 membres pour créer un groupe'}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -1537,7 +1685,17 @@ function MembresPageContent() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="group_members">Sélectionner les membres (2-10) *</Label>
+                  <Label htmlFor="group_members">
+                    {editingGroup 
+                      ? 'Modifier les membres du groupe (2-10) *' 
+                      : 'Sélectionner les membres (2-10) *'}
+                  </Label>
+                  {editingGroup && (
+                    <p className="text-xs text-muted-foreground mb-2">
+                      💡 Vous pouvez retirer des membres (décocher) ou ajouter de nouveaux membres (cocher). 
+                      Les membres déjà dans un autre groupe ne peuvent pas être ajoutés.
+                    </p>
+                  )}
                   <div className="border rounded-lg p-4 max-h-60 overflow-y-auto">
                     {membres.length === 0 ? (
                       <p className="text-sm text-muted-foreground">Aucun membre disponible</p>
@@ -1545,20 +1703,26 @@ function MembresPageContent() {
                       <div className="space-y-2">
                         {membres.map((membre) => {
                           const isSelected = groupFormData.selectedMembers.includes(membre.membre_id)
-                          const isInGroup = membersInGroups.has(membre.membre_id)
+                          // Si on est en mode édition, un membre est dans un autre groupe seulement s'il est dans membersInGroups
+                          // mais n'est PAS dans les membres actuellement sélectionnés (groupFormData.selectedMembers)
+                          // Cela permet de retirer des membres du groupe en cours d'édition
+                          const isInOtherGroup = editingGroup 
+                            ? membersInGroups.has(membre.membre_id) && !groupFormData.selectedMembers.includes(membre.membre_id)
+                            : membersInGroups.has(membre.membre_id)
                           return (
                             <label
                               key={membre.id}
                               className={`flex items-center space-x-2 p-2 rounded ${
-                                isInGroup ? 'opacity-50 cursor-not-allowed' : 'hover:bg-muted cursor-pointer'
+                                isInOtherGroup ? 'opacity-50 cursor-not-allowed' : 'hover:bg-muted cursor-pointer'
                               }`}
                             >
                               <input
                                 type="checkbox"
                                 checked={isSelected}
-                                disabled={isInGroup}
+                                disabled={isInOtherGroup}
                                 onChange={(e) => {
                                   if (e.target.checked) {
+                                    // Ajouter un membre
                                     if (groupFormData.selectedMembers.length >= 10) {
                                       alert('Un groupe ne peut pas contenir plus de 10 membres')
                                       return
@@ -1568,6 +1732,7 @@ function MembresPageContent() {
                                       selectedMembers: [...groupFormData.selectedMembers, membre.membre_id],
                                     })
                                   } else {
+                                    // Retirer un membre
                                     setGroupFormData({
                                       ...groupFormData,
                                       selectedMembers: groupFormData.selectedMembers.filter(
@@ -1580,9 +1745,14 @@ function MembresPageContent() {
                               />
                               <span className="text-sm">
                                 {membre.membre_id} - {membre.prenom} {membre.nom}
-                                {isInGroup && (
+                                {isInOtherGroup && (
                                   <span className="ml-2 text-xs text-muted-foreground italic">
-                                    (déjà dans un groupe)
+                                    (déjà dans un autre groupe)
+                                  </span>
+                                )}
+                                {editingGroup && isSelected && (
+                                  <span className="ml-2 text-xs text-blue-600 font-medium">
+                                    (membre actuel du groupe)
                                   </span>
                                 )}
                               </span>
@@ -1596,20 +1766,40 @@ function MembresPageContent() {
                     {groupFormData.selectedMembers.length} membre(s) sélectionné(s) (minimum 2, maximum 10)
                   </p>
                 </div>
-                <Button 
-                  type="submit" 
-                  disabled={groupSubmitting || groupFormData.selectedMembers.length < 2 || groupFormData.selectedMembers.length > 10} 
-                  className="w-full md:w-auto"
-                >
-                  {groupSubmitting ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Création...
-                    </>
-                  ) : (
-                    'Créer le groupe'
+                <div className="flex gap-2">
+                  <Button 
+                    type="submit" 
+                    disabled={groupSubmitting || groupFormData.selectedMembers.length < 2 || groupFormData.selectedMembers.length > 10} 
+                    className="w-full md:w-auto"
+                  >
+                    {groupSubmitting ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        {editingGroup ? 'Modification...' : 'Création...'}
+                      </>
+                    ) : (
+                      editingGroup ? 'Modifier le groupe' : 'Créer le groupe'
+                    )}
+                  </Button>
+                  {editingGroup && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setShowGroupForm(false)
+                        setEditingGroup(null)
+                        setGroupFormData({
+                          group_name: '',
+                          description: '',
+                          selectedMembers: [],
+                        })
+                      }}
+                      disabled={groupSubmitting}
+                    >
+                      Annuler
+                    </Button>
                   )}
-                </Button>
+                </div>
               </form>
             </CardContent>
           </Card>
@@ -1642,13 +1832,22 @@ function MembresPageContent() {
                         <TableCell>{group.member_count || 0} membre(s)</TableCell>
                         <TableCell>{formatDate(group.created_at)}</TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleViewGroupDetails(group)}
-                          >
-                            Voir détails
-                          </Button>
+                          <div className="flex gap-2 justify-end">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleEditGroup(group)}
+                            >
+                              Modifier
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleViewGroupDetails(group)}
+                            >
+                              Voir détails
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -2424,6 +2623,29 @@ function MembresPageContent() {
                         </div>
                       )}
                     </div>
+                    {/* Informations du prêt */}
+                    {membresDetails[selectedMembreForDetails.membre_id]?.dateDecaissement && (
+                      <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                        <div className="grid grid-cols-3 gap-4 text-sm">
+                          <div>
+                            <span className="text-muted-foreground">Date de décaissement:</span>
+                            <p className="font-medium">{formatDate(membresDetails[selectedMembreForDetails.membre_id]?.dateDecaissement || '')}</p>
+                          </div>
+                          {membresDetails[selectedMembreForDetails.membre_id]?.dateFin && (
+                            <div>
+                              <span className="text-muted-foreground">Date de fin:</span>
+                              <p className="font-medium">{formatDate(membresDetails[selectedMembreForDetails.membre_id]?.dateFin || '')}</p>
+                            </div>
+                          )}
+                          {membresDetails[selectedMembreForDetails.membre_id]?.duree !== undefined && (
+                            <div>
+                              <span className="text-muted-foreground">Durée du prêt:</span>
+                              <p className="font-medium">{membresDetails[selectedMembreForDetails.membre_id]?.duree} jour(s)</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     {membresDetails[selectedMembreForDetails.membre_id]?.echeancier.length === 0 ? (
                       <p className="text-muted-foreground">Aucun remboursement en attente</p>
                     ) : (

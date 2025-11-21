@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase, type Membre, type Pret, type Collateral, type Remboursement, type UserProfile, type ChefZoneMembre, type GroupPret } from '@/lib/supabase'
+import { supabase, type Membre, type Pret, type Collateral, type Remboursement, type UserProfile, type ChefZoneMembre, type GroupPret, type EpargneTransaction } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile } from '@/lib/auth'
@@ -30,10 +30,13 @@ function MembresAssignesContent() {
     epargne: number
     pretActif: number
     echeancier: Remboursement[]
+    dateDecaissement?: string
+    dateFin?: string
+    duree?: number
   }>>({})
   const [selectedMembre, setSelectedMembre] = useState<Membre | null>(null)
   const [showDetails, setShowDetails] = useState(false)
-  const [epargneTransactions, setEpargneTransactions] = useState<any[]>([])
+  const [epargneTransactions, setEpargneTransactions] = useState<EpargneTransaction[]>([])
   const [memberGroupInfo, setMemberGroupInfo] = useState<{ group_name: string; group_id: number } | null>(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -124,6 +127,9 @@ function MembresAssignesContent() {
       epargne: number
       pretActif: number
       echeancier: Remboursement[]
+      dateDecaissement?: string
+      dateFin?: string
+      duree?: number
     }> = {}
 
     // Charger les groupes qui contiennent les membres assignés
@@ -134,14 +140,14 @@ function MembresAssignesContent() {
 
     const groupIds = [...new Set((groupMembersData || []).map(gm => gm.group_id))]
 
-    // Charger les prêts de groupe actifs pour ces groupes
-    let groupPretsMap: Record<string, any[]> = {}
-    if (groupIds.length > 0) {
-      const { data: groupPretsData } = await supabase
-        .from('group_prets')
-        .select('pret_id, montant_pret, capital_restant, group_id')
-        .in('group_id', groupIds)
-        .eq('statut', 'actif') // Seulement les prêts actifs
+      // Charger les prêts de groupe actifs pour ces groupes
+      let groupPretsMap: Record<string, any[]> = {}
+      if (groupIds.length > 0) {
+        const { data: groupPretsData } = await supabase
+          .from('group_prets')
+          .select('pret_id, montant_pret, capital_restant, group_id, date_decaissement, nombre_remboursements, frequence_remboursement')
+          .in('group_id', groupIds)
+          .eq('statut', 'actif') // Seulement les prêts actifs
 
       if (groupPretsData) {
         // Créer un map par membre_id pour les prêts de groupe
@@ -161,7 +167,7 @@ function MembresAssignesContent() {
       // Charger les prêts actifs individuels d'abord pour obtenir les pret_ids
       const { data: pretsActifs } = await supabase
         .from('prets')
-        .select('pret_id, montant_pret, capital_restant')
+        .select('pret_id, montant_pret, capital_restant, date_decaissement, nombre_remboursements, frequence_remboursement')
         .eq('membre_id', membreId)
         .eq('statut', 'actif') // Seulement les prêts actifs
 
@@ -256,11 +262,41 @@ function MembresAssignesContent() {
         return dateA - dateB
       })
 
+      // Déterminer le prêt actif (individuel ou de groupe) pour obtenir les informations
+      const pretActifCourant = pretsActifs && pretsActifs.length > 0 ? pretsActifs[0] : null
+      const groupPretActif = memberGroupPrets.length > 0 ? memberGroupPrets[0] : null
+
+      let dateDecaissement: string | undefined = undefined
+      let dateFin: string | undefined = undefined
+      let duree: number | undefined = undefined
+
+      // Obtenir la date de décaissement du prêt actif
+      if (pretActifCourant) {
+        dateDecaissement = pretActifCourant.date_decaissement
+      } else if (groupPretActif) {
+        dateDecaissement = groupPretActif.date_decaissement
+      }
+
+      // Calculer la date de fin et la durée à partir de l'échéancier
+      if (echeancier.length > 0 && dateDecaissement) {
+        // La date de fin est la date de la dernière échéance
+        const lastEcheance = echeancier[echeancier.length - 1]
+        dateFin = lastEcheance.date_remboursement
+        
+        // Calculer la durée en jours
+        const dateDecaissementObj = new Date(dateDecaissement)
+        const dateFinObj = new Date(dateFin)
+        duree = Math.ceil((dateFinObj.getTime() - dateDecaissementObj.getTime()) / (1000 * 60 * 60 * 24))
+      }
+
       details[membreId] = {
         garantie: garantieTotal,
         epargne: epargneTotal,
         pretActif: pretActifTotal,
         echeancier,
+        dateDecaissement,
+        dateFin,
+        duree,
       }
     }
 
@@ -632,6 +668,29 @@ function MembresAssignesContent() {
                     {/* Échéancier */}
                     <div>
                       <h3 className="text-lg font-semibold mb-4">Échéancier</h3>
+                      {/* Informations du prêt */}
+                      {membresDetails[selectedMembre.membre_id]?.dateDecaissement && (
+                        <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="grid grid-cols-3 gap-4 text-sm">
+                            <div>
+                              <span className="text-muted-foreground">Date de décaissement:</span>
+                              <p className="font-medium">{formatDate(membresDetails[selectedMembre.membre_id]?.dateDecaissement || '')}</p>
+                            </div>
+                            {membresDetails[selectedMembre.membre_id]?.dateFin && (
+                              <div>
+                                <span className="text-muted-foreground">Date de fin:</span>
+                                <p className="font-medium">{formatDate(membresDetails[selectedMembre.membre_id]?.dateFin || '')}</p>
+                              </div>
+                            )}
+                            {membresDetails[selectedMembre.membre_id]?.duree !== undefined && (
+                              <div>
+                                <span className="text-muted-foreground">Durée du prêt:</span>
+                                <p className="font-medium">{membresDetails[selectedMembre.membre_id]?.duree} jour(s)</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                       {membresDetails[selectedMembre.membre_id]?.echeancier.length === 0 ? (
                         <p className="text-muted-foreground">Aucun remboursement en attente</p>
                       ) : (

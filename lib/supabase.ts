@@ -210,3 +210,15 @@ export interface Presence {
   updated_at: string
 }
 
+export interface EpargneTransaction {
+  id: number
+  membre_id: string
+  agent_id: string
+  type: 'depot' | 'retrait'
+  montant: number
+  date_operation: string
+  notes?: string | null
+  created_at: string
+  updated_at?: string
+}
+
