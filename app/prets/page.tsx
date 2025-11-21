@@ -672,15 +672,25 @@ function PretsPageContent() {
       // Vérifier si le membre/groupe a déjà un prêt actif
       if (loanType === 'membre') {
         // 1. Vérifier les prêts individuels actifs
+        // IMPORTANT: Cette vérification est critique pour empêcher les doublons
         const { data: activeLoans, error: activeLoansError } = await supabase
           .from('prets')
-          .select('id, pret_id, statut')
+          .select('id, pret_id, statut, date_decaissement')
           .eq('membre_id', formData.membre_id)
           .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
 
-        if (activeLoansError) throw activeLoansError
+        if (activeLoansError) {
+          console.error('Erreur lors de la vérification des prêts actifs:', activeLoansError)
+          throw activeLoansError
+        }
+        
         if (activeLoans && activeLoans.length > 0) {
-          alert(`Ce membre a déjà un prêt actif (${activeLoans[0].pret_id}), en attente de garantie ou en attente d'approbation. Il doit terminer de le rembourser ou compléter la garantie avant de contracter un nouveau prêt.`)
+          const activeLoanIds = activeLoans.map(l => l.pret_id).join(', ')
+          alert(
+            `❌ IMPOSSIBLE: Ce membre a déjà ${activeLoans.length} prêt(s) actif(s): ${activeLoanIds}\n\n` +
+            `Un membre ne peut avoir qu'UN SEUL prêt actif à la fois (actif, en attente de garantie, ou en attente d'approbation).\n\n` +
+            `Le membre doit terminer de rembourser son prêt actif ou compléter la garantie avant de contracter un nouveau prêt.`
+          )
           return
         }
 
@@ -942,7 +952,27 @@ function PretsPageContent() {
             frequence_remboursement: frequency,
           }])
 
-        if (pretError) throw pretError
+        if (pretError) {
+          // Vérifier si c'est une violation de contrainte unique (membre avec prêt actif)
+          if (pretError.code === '23505' || pretError.message?.includes('uniq_prets_membre_actif')) {
+            // Récupérer les prêts actifs du membre pour afficher un message détaillé
+            const { data: activeLoans } = await supabase
+              .from('prets')
+              .select('pret_id, statut')
+              .eq('membre_id', formData.membre_id)
+              .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+            
+            const activeLoanIds = activeLoans?.map(l => l.pret_id).join(', ') || 'inconnu'
+            alert(
+              `❌ ERREUR: Impossible de créer le prêt.\n\n` +
+              `Ce membre a déjà un prêt actif dans la base de données: ${activeLoanIds}\n\n` +
+              `Un membre ne peut avoir qu'UN SEUL prêt actif à la fois.\n\n` +
+              `Veuillez terminer le prêt existant avant d'en créer un nouveau.`
+            )
+            return
+          }
+          throw pretError
+        }
 
         // Créer la garantie (collateral) automatiquement
         const montantGarantieRequis = montantGarantieRequisCheck
@@ -1378,7 +1408,28 @@ function PretsPageContent() {
         })
         .eq('id', editingPret.id)
 
-      if (pretError) throw pretError
+      if (pretError) {
+        // Vérifier si c'est une violation de contrainte unique (membre avec prêt actif)
+        if (pretError.code === '23505' || pretError.message?.includes('uniq_prets_membre_actif')) {
+          // Récupérer les prêts actifs du membre pour afficher un message détaillé
+          const { data: activeLoans } = await supabase
+            .from('prets')
+            .select('pret_id, statut')
+            .eq('membre_id', formData.membre_id)
+            .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+            .neq('pret_id', editingPret.pret_id) // Exclure le prêt en cours d'édition
+          
+          const activeLoanIds = activeLoans?.map(l => l.pret_id).join(', ') || 'inconnu'
+          alert(
+            `❌ ERREUR: Impossible de modifier le prêt.\n\n` +
+            `Le membre sélectionné a déjà un autre prêt actif: ${activeLoanIds}\n\n` +
+            `Un membre ne peut avoir qu'UN SEUL prêt actif à la fois.\n\n` +
+            `Veuillez terminer le prêt existant avant de modifier ce prêt.`
+          )
+          return
+        }
+        throw pretError
+      }
 
       // Recréer les remboursements
       await supabase.from('remboursements').delete().eq('pret_id', editingPret.pret_id)

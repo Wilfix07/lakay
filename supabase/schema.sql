@@ -145,7 +145,11 @@ CREATE INDEX IF NOT EXISTS idx_remboursements_membre_id ON remboursements(membre
 CREATE INDEX IF NOT EXISTS idx_remboursements_statut ON remboursements(statut);
 CREATE INDEX IF NOT EXISTS idx_agent_expenses_agent_id ON agent_expenses(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_expenses_date ON agent_expenses(expense_date);
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_prets_membre_actif ON prets(membre_id) WHERE statut = 'actif';
+-- Index unique partiel pour empêcher qu'un membre ait plusieurs prêts actifs simultanément
+-- Couvre les statuts: actif, en_attente_garantie, en_attente_approbation
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_prets_membre_actif 
+ON prets(membre_id) 
+WHERE statut IN ('actif', 'en_attente_garantie', 'en_attente_approbation');
 CREATE INDEX IF NOT EXISTS idx_system_settings_key ON system_settings(key);
 CREATE INDEX IF NOT EXISTS idx_system_settings_manager_id ON system_settings(manager_id);
 CREATE INDEX IF NOT EXISTS idx_loan_amount_brackets_active ON loan_amount_brackets(is_active);

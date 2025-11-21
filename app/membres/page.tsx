@@ -486,13 +486,39 @@ function MembresPageContent() {
 
   async function loadGroups() {
     try {
-      if (!userProfile?.agent_id) return
-
-      const { data: groupsData, error: groupsError } = await supabase
+      let query = supabase
         .from('membre_groups')
         .select('*')
-        .eq('agent_id', userProfile.agent_id)
         .order('created_at', { ascending: false })
+
+      // Les agents ne voient que leurs propres groupes
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        query = query.eq('agent_id', userProfile.agent_id)
+      } else if (userProfile?.role === 'manager') {
+        // Manager voit les groupes de ses agents
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          query = query.in('agent_id', agentIds)
+        } else {
+          // Si le manager n'a pas encore d'agents, retourner un tableau vide
+          setGroups([])
+          return
+        }
+      } else if (userProfile?.role !== 'admin') {
+        // Si ce n'est ni admin, ni manager, ni agent avec agent_id, ne rien charger
+        setGroups([])
+        return
+      }
+      // Admin voit tous les groupes (pas de filtre)
+
+      const { data: groupsData, error: groupsError } = await query
 
       if (groupsError) throw groupsError
 
@@ -540,8 +566,17 @@ function MembresPageContent() {
   async function handleCreateGroup(e: React.FormEvent) {
     e.preventDefault()
     
-    if (!userProfile?.agent_id) {
+    // Pour les agents, agent_id est requis
+    // Pour les managers, on peut modifier les groupes existants mais pas en créer de nouveaux
+    // Pour les admins, pas de restriction
+    if (userProfile?.role === 'agent' && !userProfile?.agent_id) {
       alert('Erreur: Agent ID non trouvé')
+      return
+    }
+
+    // Si c'est un manager qui crée un nouveau groupe (pas en mode édition), il doit sélectionner un agent
+    if (userProfile?.role === 'manager' && !editingGroup) {
+      alert('Les managers ne peuvent pas créer de nouveaux groupes. Veuillez contacter un agent pour créer un groupe.')
       return
     }
 
@@ -613,12 +648,31 @@ function MembresPageContent() {
           }
         }
 
-        // Mettre à jour le groupe
+        // Vérifier les permissions pour les managers lors de la mise à jour
+        if (userProfile?.role === 'manager') {
+          // Vérifier que le groupe appartient toujours à un agent du manager
+          const { data: managerAgents, error: agentsError } = await supabase
+            .from('agents')
+            .select('agent_id')
+            .eq('manager_id', userProfile.id)
+
+          if (agentsError) throw agentsError
+
+          const agentIds = managerAgents?.map(a => a.agent_id) || []
+          if (!agentIds.includes(editingGroup.agent_id)) {
+            alert('Vous ne pouvez modifier que les groupes de vos agents.')
+            setGroupSubmitting(false)
+            return
+          }
+        }
+
+        // Mettre à jour le groupe (on ne change jamais l'agent_id)
         const { error: groupError } = await supabase
           .from('membre_groups')
           .update({
             group_name: groupFormData.group_name.trim(),
             description: groupFormData.description.trim() || null,
+            // Note: agent_id n'est pas modifié, il reste celui du groupe original
           })
           .eq('id', editingGroup.id)
 
@@ -754,6 +808,12 @@ function MembresPageContent() {
         }
 
         // Créer le groupe
+        if (!userProfile?.agent_id) {
+          alert('Erreur: Agent ID non trouvé')
+          setGroupSubmitting(false)
+          return
+        }
+
         const { data: newGroup, error: groupError } = await supabase
           .from('membre_groups')
           .insert([{
@@ -808,6 +868,23 @@ function MembresPageContent() {
 
   async function handleEditGroup(group: MembreGroup) {
     try {
+      // Vérifier les permissions pour les managers
+      if (userProfile?.role === 'manager') {
+        // Vérifier que le groupe appartient à un agent du manager
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (!agentIds.includes(group.agent_id)) {
+          alert('Vous ne pouvez modifier que les groupes de vos agents.')
+          return
+        }
+      }
+
       // Charger les membres actuels du groupe
       const { data: membersData, error } = await supabase
         .from('membre_group_members')
