@@ -114,7 +114,7 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Profit & Loss',
       href: '/pnl',
       icon: PiggyBank,
-      roles: ['admin', 'manager', 'agent'] as UserRole[],
+      roles: ['admin', 'manager'] as UserRole[],
     },
     {
       title: 'Impayés',

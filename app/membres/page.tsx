@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, X, Loader2, User, Users, CheckCircle2, Clock, TrendingUp, TrendingDown, DollarSign, UserPlus, Calendar, Wallet, PiggyBank, CreditCard, Download, FileText, Eye } from 'lucide-react'
+import { Plus, X, Loader2, User, Users, CheckCircle2, Clock, TrendingUp, TrendingDown, DollarSign, UserPlus, Calendar, Wallet, PiggyBank, CreditCard, Download, FileText, Eye, Filter } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
@@ -125,6 +125,16 @@ function MembresPageContent() {
     dateFin?: string
     duree?: number
   }>>({})
+  const [filters, setFilters] = useState({
+    nomMembre: '',
+    type: '', // '' = tous, 'individuel' = individuel, 'groupe' = groupe
+    telephone: '',
+    idMembre: '',
+    dateCreation: '',
+    chefZone: '', // '' = tous, sinon chef_zone_id
+  })
+  const [chefsZone, setChefsZone] = useState<UserProfile[]>([])
+  const [memberChefZoneMap, setMemberChefZoneMap] = useState<Map<string, string>>(new Map()) // membre_id -> chef_zone_id
 
   const currentLoan =
     memberLoans.find((loan) => loan.pret_id === selectedLoanId) ?? memberLoans[0] ?? null
@@ -143,6 +153,67 @@ function MembresPageContent() {
       .reduce((sum, r) => sum + Number(r.principal || 0), 0)
     return Math.max(loan.montant_pret - principalPaid, 0)
   }
+
+  const filteredMembres = useMemo(() => {
+    return membres.filter((membre) => {
+      // Filtre par nom du membre (nom + prénom)
+      if (filters.nomMembre) {
+        const nomComplet = `${membre.prenom || ''} ${membre.nom || ''}`.toLowerCase().trim()
+        const recherche = filters.nomMembre.toLowerCase()
+        if (!nomComplet.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par type (individuel ou groupe)
+      if (filters.type) {
+        const isInGroup = membersInGroups.has(membre.membre_id)
+        if (filters.type === 'individuel' && isInGroup) {
+          return false
+        }
+        if (filters.type === 'groupe' && !isInGroup) {
+          return false
+        }
+      }
+
+      // Filtre par téléphone
+      if (filters.telephone) {
+        const telephone = (membre.telephone || '').toLowerCase()
+        const recherche = filters.telephone.toLowerCase()
+        if (!telephone.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par ID membre
+      if (filters.idMembre) {
+        const membreId = (membre.membre_id || '').toLowerCase()
+        const recherche = filters.idMembre.toLowerCase()
+        if (!membreId.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par date de création
+      if (filters.dateCreation) {
+        const dateCreation = new Date(membre.created_at).toISOString().split('T')[0]
+        if (dateCreation !== filters.dateCreation) {
+          return false
+        }
+      }
+
+      // Filtre par chef de zone
+      if (filters.chefZone) {
+        const membreChefZoneId = memberChefZoneMap.get(membre.membre_id)
+        // Si le membre n'est pas assigné à un chef de zone et qu'on filtre par un chef de zone spécifique, exclure
+        if (!membreChefZoneId || membreChefZoneId !== filters.chefZone) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [membres, filters, membersInGroups, memberChefZoneMap])
 
   const memberSummary = useMemo(() => {
     if (!selectedMember) {
@@ -245,6 +316,8 @@ function MembresPageContent() {
     if (userProfile) {
       loadAgents()
       loadMembres()
+      loadChefsZone()
+      loadChefZoneAssignations()
       if (userProfile?.role === 'agent') {
         loadGroups()
       }
@@ -355,6 +428,66 @@ function MembresPageContent() {
       alert('Erreur lors du chargement des membres')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadChefsZone() {
+    try {
+      let query = supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'chef_zone')
+        .order('nom', { ascending: true })
+
+      // Les managers ne voient que les chefs de zone attachés à leurs agents
+      if (userProfile?.role === 'manager') {
+        // Récupérer les agent_id des agents du manager
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          // Charger uniquement les chefs de zone attachés aux agents du manager
+          query = query.in('agent_id', agentIds)
+        } else {
+          setChefsZone([])
+          return
+        }
+      }
+      // Les admins voient tous les chefs de zone
+      // Les agents ne voient pas les chefs de zone (optionnel, selon les besoins)
+
+      const { data, error } = await query
+
+      if (error) throw error
+      setChefsZone(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement des chefs de zone:', error)
+    }
+  }
+
+  async function loadChefZoneAssignations() {
+    try {
+      // Charger toutes les assignations membre-chef_zone
+      const { data: assignations, error: assignationsError } = await supabase
+        .from('chef_zone_membres')
+        .select('membre_id, chef_zone_id')
+
+      if (assignationsError) throw assignationsError
+
+      // Créer une map membre_id -> chef_zone_id
+      const map = new Map<string, string>()
+      assignations?.forEach((assignation) => {
+        map.set(assignation.membre_id, assignation.chef_zone_id)
+      })
+
+      setMemberChefZoneMap(map)
+    } catch (error) {
+      console.error('Erreur lors du chargement des assignations chef de zone:', error)
     }
   }
 
@@ -1862,12 +1995,107 @@ function MembresPageContent() {
         <Card>
           <CardHeader>
             <CardTitle>Liste des membres</CardTitle>
-            <CardDescription>Total: {membres.length} membre(s)</CardDescription>
+            <CardDescription>Total: {filteredMembres.length} membre(s) sur {membres.length}</CardDescription>
           </CardHeader>
           <CardContent>
-            {membres.length === 0 ? (
+            {/* Filtres */}
+            <div className="mb-6 p-4 bg-muted/50 rounded-lg border">
+              <div className="flex items-center gap-2 mb-4">
+                <Filter className="w-4 h-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Filtres</h3>
+                {(filters.nomMembre || filters.type || filters.telephone || filters.idMembre || filters.dateCreation || filters.chefZone) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setFilters({ nomMembre: '', type: '', telephone: '', idMembre: '', dateCreation: '', chefZone: '' })}
+                    className="ml-auto h-7 text-xs"
+                  >
+                    <X className="w-3 h-3 mr-1" />
+                    Réinitialiser
+                  </Button>
+                )}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
+                <div className="space-y-2">
+                  <Label htmlFor="filter-nom-membre">Nom du membre</Label>
+                  <Input
+                    id="filter-nom-membre"
+                    placeholder="Rechercher par nom..."
+                    value={filters.nomMembre}
+                    onChange={(e) => setFilters({ ...filters, nomMembre: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-type">Type</Label>
+                  <select
+                    id="filter-type"
+                    value={filters.type}
+                    onChange={(e) => setFilters({ ...filters, type: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  >
+                    <option value="">Tous les types</option>
+                    <option value="individuel">Individuel</option>
+                    <option value="groupe">Groupe</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-telephone">Téléphone</Label>
+                  <Input
+                    id="filter-telephone"
+                    placeholder="Rechercher par téléphone..."
+                    value={filters.telephone}
+                    onChange={(e) => setFilters({ ...filters, telephone: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-id-membre">ID Membre</Label>
+                  <Input
+                    id="filter-id-membre"
+                    placeholder="Rechercher par ID..."
+                    value={filters.idMembre}
+                    onChange={(e) => setFilters({ ...filters, idMembre: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-date-creation">Date création</Label>
+                  <Input
+                    id="filter-date-creation"
+                    type="date"
+                    value={filters.dateCreation}
+                    onChange={(e) => setFilters({ ...filters, dateCreation: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-chef-zone">Chef de zone</Label>
+                  <select
+                    id="filter-chef-zone"
+                    value={filters.chefZone}
+                    onChange={(e) => setFilters({ ...filters, chefZone: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  >
+                    <option value="">Tous les chefs de zone</option>
+                    {chefsZone.map((chefZone) => (
+                      <option key={chefZone.id} value={chefZone.id}>
+                        {chefZone.prenom} {chefZone.nom} {chefZone.agent_id ? `(${chefZone.agent_id})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              {(filters.nomMembre || filters.type || filters.telephone || filters.idMembre || filters.dateCreation || filters.chefZone) && (
+                <div className="mt-3 text-sm text-muted-foreground">
+                  {filteredMembres.length} membre(s) trouvé(s) sur {membres.length}
+                </div>
+              )}
+            </div>
+
+            {filteredMembres.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
-                <p>Aucun membre enregistré</p>
+                <p>
+                  {membres.length === 0
+                    ? 'Aucun membre enregistré'
+                    : 'Aucun membre ne correspond aux filtres sélectionnés'}
+                </p>
               </div>
             ) : (
               <div className="rounded-md border overflow-x-auto">
@@ -1885,7 +2113,7 @@ function MembresPageContent() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {membres.map((membre) => (
+                    {filteredMembres.map((membre) => (
                       <TableRow
                         key={membre.id}
                         className={selectedMember?.id === membre.id ? 'bg-muted/50' : ''}

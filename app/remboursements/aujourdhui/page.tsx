@@ -23,7 +23,10 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { CalendarDays, Loader2, RefreshCcw, DollarSign, CheckCircle2, AlertCircle } from 'lucide-react'
+import { CalendarDays, Loader2, RefreshCcw, DollarSign, CheckCircle2, AlertCircle, Filter, X } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button'
 
 type DailyRemboursementRow = {
   id: number
@@ -46,6 +49,14 @@ function RemboursementsJourContent() {
   const [refreshing, setRefreshing] = useState(false)
   const [remboursements, setRemboursements] = useState<DailyRemboursementRow[]>([])
   const [realtimeConnected, setRealtimeConnected] = useState(false)
+  const [filters, setFilters] = useState({
+    numeroPret: '',
+    statut: '', // '' = tous, 'paye', 'en_attente', etc.
+    membre: '',
+    chefZone: '', // '' = tous, sinon chef_zone_id
+  })
+  const [chefsZone, setChefsZone] = useState<UserProfile[]>([])
+  const [memberChefZoneMap, setMemberChefZoneMap] = useState<Map<string, string>>(new Map()) // membre_id -> chef_zone_id
 
   useEffect(() => {
     loadUserProfile()
@@ -56,6 +67,8 @@ function RemboursementsJourContent() {
 
     // Charger les remboursements initiaux
     loadRemboursements()
+    loadChefsZone()
+    loadChefZoneAssignations()
 
     // Configurer les subscriptions Supabase Realtime pour rendre la page totalement dynamique
     const subscriptions: Array<{ channel: any; unsubscribe: () => void }> = []
@@ -295,6 +308,66 @@ function RemboursementsJourContent() {
     }
   }
 
+  async function loadChefsZone() {
+    try {
+      let query = supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'chef_zone')
+        .order('nom', { ascending: true })
+
+      // Les managers ne voient que les chefs de zone attachés à leurs agents
+      if (userProfile?.role === 'manager') {
+        // Récupérer les agent_id des agents du manager
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          // Charger uniquement les chefs de zone attachés aux agents du manager
+          query = query.in('agent_id', agentIds)
+        } else {
+          setChefsZone([])
+          return
+        }
+      }
+      // Les admins voient tous les chefs de zone
+      // Les agents ne voient pas les chefs de zone (optionnel, selon les besoins)
+
+      const { data, error } = await query
+
+      if (error) throw error
+      setChefsZone(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement des chefs de zone:', error)
+    }
+  }
+
+  async function loadChefZoneAssignations() {
+    try {
+      // Charger toutes les assignations membre-chef_zone
+      const { data: assignations, error: assignationsError } = await supabase
+        .from('chef_zone_membres')
+        .select('membre_id, chef_zone_id')
+
+      if (assignationsError) throw assignationsError
+
+      // Créer une map membre_id -> chef_zone_id
+      const map = new Map<string, string>()
+      assignations?.forEach((assignation) => {
+        map.set(assignation.membre_id, assignation.chef_zone_id)
+      })
+
+      setMemberChefZoneMap(map)
+    } catch (error) {
+      console.error('Erreur lors du chargement des assignations chef de zone:', error)
+    }
+  }
+
   async function handleSignOut() {
     try {
       await signOut()
@@ -305,20 +378,59 @@ function RemboursementsJourContent() {
     }
   }
 
+  const filteredRemboursements = useMemo(() => {
+    return remboursements.filter((item) => {
+      // Filtre par numéro de prêt
+      if (filters.numeroPret) {
+        const pretId = (item.pretId || '').toLowerCase()
+        const recherche = filters.numeroPret.toLowerCase()
+        if (!pretId.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par statut
+      if (filters.statut && item.statut !== filters.statut) {
+        return false
+      }
+
+      // Filtre par membre (nom ou ID)
+      if (filters.membre) {
+        const membreName = (item.membreName || '').toLowerCase()
+        const membreId = (item.membreId || '').toLowerCase()
+        const recherche = filters.membre.toLowerCase()
+        if (!membreName.includes(recherche) && !membreId.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par chef de zone
+      if (filters.chefZone) {
+        const membreChefZoneId = memberChefZoneMap.get(item.membreId)
+        // Si le membre n'est pas assigné à un chef de zone et qu'on filtre par un chef de zone spécifique, exclure
+        if (!membreChefZoneId || membreChefZoneId !== filters.chefZone) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [remboursements, filters, memberChefZoneMap])
+
   const summary = useMemo(() => {
-    const totalMontant = remboursements.reduce((sum, item) => sum + item.montant, 0)
-    const totalPrincipal = remboursements.reduce((sum, item) => sum + item.principal, 0)
-    const totalInteret = remboursements.reduce((sum, item) => sum + item.interet, 0)
-    const payes = remboursements.filter((item) => item.statut === 'paye').length
+    const totalMontant = filteredRemboursements.reduce((sum, item) => sum + item.montant, 0)
+    const totalPrincipal = filteredRemboursements.reduce((sum, item) => sum + item.principal, 0)
+    const totalInteret = filteredRemboursements.reduce((sum, item) => sum + item.interet, 0)
+    const payes = filteredRemboursements.filter((item) => item.statut === 'paye').length
     return {
-      count: remboursements.length,
+      count: filteredRemboursements.length,
       payes,
-      restants: remboursements.length - payes,
+      restants: filteredRemboursements.length - payes,
       totalMontant,
       totalPrincipal,
       totalInteret,
     }
-  }, [remboursements])
+  }, [filteredRemboursements])
 
   if (loading || !userProfile) {
     return (
@@ -408,7 +520,7 @@ function RemboursementsJourContent() {
               <p className="text-xs text-muted-foreground mt-1">
                 {summary.payes > 0
                   ? `${formatCurrency(
-                      remboursements
+                      filteredRemboursements
                         .filter((item) => item.statut === 'paye')
                         .reduce((sum, item) => sum + item.montant, 0),
                     )} encaissés`
@@ -443,15 +555,98 @@ function RemboursementsJourContent() {
           <CardHeader>
             <CardTitle>Tableau des remboursements du jour</CardTitle>
             <CardDescription>
-              Suivez les remboursements prévus aujourd’hui, leur statut et les montants
-              associés.
+              Suivez les remboursements prévus aujourd'hui, leur statut et les montants
+              associés. {filteredRemboursements.length !== remboursements.length && (
+                <span className="font-semibold">
+                  {filteredRemboursements.length} remboursement(s) trouvé(s) sur {remboursements.length}
+                </span>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {remboursements.length === 0 ? (
+            {/* Filtres */}
+            <div className="mb-6 p-4 bg-muted/50 rounded-lg border">
+              <div className="flex items-center gap-2 mb-4">
+                <Filter className="w-4 h-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Filtres</h3>
+                {(filters.numeroPret || filters.statut || filters.membre || filters.chefZone) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setFilters({ numeroPret: '', statut: '', membre: '', chefZone: '' })}
+                    className="ml-auto h-7 text-xs"
+                  >
+                    <X className="w-3 h-3 mr-1" />
+                    Réinitialiser
+                  </Button>
+                )}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                <div className="space-y-2">
+                  <Label htmlFor="filter-numero-pret">Numéro de prêt</Label>
+                  <Input
+                    id="filter-numero-pret"
+                    placeholder="Rechercher par numéro..."
+                    value={filters.numeroPret}
+                    onChange={(e) => setFilters({ ...filters, numeroPret: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-statut">Statut</Label>
+                  <select
+                    id="filter-statut"
+                    value={filters.statut}
+                    onChange={(e) => setFilters({ ...filters, statut: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  >
+                    <option value="">Tous les statuts</option>
+                    <option value="paye">Payé</option>
+                    <option value="en_attente">En attente</option>
+                    <option value="en_retard">En retard</option>
+                    <option value="paye_partiel">Payé partiel</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-membre">Membre</Label>
+                  <Input
+                    id="filter-membre"
+                    placeholder="Rechercher par nom ou ID..."
+                    value={filters.membre}
+                    onChange={(e) => setFilters({ ...filters, membre: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-chef-zone">Chef de zone</Label>
+                  <select
+                    id="filter-chef-zone"
+                    value={filters.chefZone}
+                    onChange={(e) => setFilters({ ...filters, chefZone: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  >
+                    <option value="">Tous les chefs de zone</option>
+                    {chefsZone.map((chefZone) => (
+                      <option key={chefZone.id} value={chefZone.id}>
+                        {chefZone.prenom} {chefZone.nom} {chefZone.agent_id ? `(${chefZone.agent_id})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              {(filters.numeroPret || filters.statut || filters.membre || filters.chefZone) && (
+                <div className="mt-3 text-sm text-muted-foreground">
+                  {filteredRemboursements.length} remboursement(s) trouvé(s) sur {remboursements.length}
+                </div>
+              )}
+            </div>
+
+            {filteredRemboursements.length === 0 ? (
               <div className="h-40 flex flex-col items-center justify-center text-muted-foreground text-sm">
                 <CalendarDays className="w-6 h-6 mb-2 text-orange-500" />
-                <p>Aucun remboursement prévu pour aujourd’hui.</p>
+                <p>
+                  {remboursements.length === 0
+                    ? "Aucun remboursement prévu pour aujourd'hui."
+                    : "Aucun remboursement ne correspond aux filtres sélectionnés."}
+                </p>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -470,7 +665,7 @@ function RemboursementsJourContent() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {remboursements.map((item) => (
+                    {filteredRemboursements.map((item) => (
                       <TableRow key={item.id}>
                         <TableCell className="font-medium">{item.pretId}</TableCell>
                         <TableCell>

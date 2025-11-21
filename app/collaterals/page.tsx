@@ -29,6 +29,8 @@ import {
   Clock,
   Wallet,
   ArrowDownCircle,
+  Filter,
+  X,
 } from 'lucide-react'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { calculateLoanPlan, type FrequenceRemboursement } from '@/lib/loanUtils'
@@ -59,6 +61,12 @@ function CollateralsPageContent() {
     montant_retire: '',
     date_retrait: new Date().toISOString().split('T')[0],
     notes: '',
+  })
+  const [filters, setFilters] = useState({
+    membreNom: '',
+    numeroPret: '',
+    typePret: '', // '' = tous, 'individuel' = prêt individuel, 'groupe' = prêt de groupe
+    statut: '', // '' = tous, 'partiel', 'complet', 'rembourse'
   })
 
   useEffect(() => {
@@ -502,13 +510,52 @@ function CollateralsPageContent() {
     return collaterals.filter((c) => c.statut === 'partiel')
   }, [collaterals])
 
+  const filteredCollaterals = useMemo(() => {
+    return collaterals.filter((collateral) => {
+      // Filtre par nom du membre
+      if (filters.membreNom) {
+        const membre = membres.find((m) => m.membre_id === collateral.membre_id)
+        const membreNomComplet = membre ? `${membre.prenom} ${membre.nom}`.toLowerCase() : ''
+        const membreNomRecherche = filters.membreNom.toLowerCase()
+        if (!membreNomComplet.includes(membreNomRecherche)) {
+          return false
+        }
+      }
+
+      // Filtre par numéro de prêt
+      if (filters.numeroPret) {
+        const pretId = collateral.group_pret_id || collateral.pret_id || ''
+        if (!pretId.toLowerCase().includes(filters.numeroPret.toLowerCase())) {
+          return false
+        }
+      }
+
+      // Filtre par type de prêt (individuel ou groupe)
+      if (filters.typePret) {
+        if (filters.typePret === 'individuel' && collateral.group_pret_id) {
+          return false
+        }
+        if (filters.typePret === 'groupe' && !collateral.group_pret_id) {
+          return false
+        }
+      }
+
+      // Filtre par statut
+      if (filters.statut && collateral.statut !== filters.statut) {
+        return false
+      }
+
+      return true
+    })
+  }, [collaterals, filters, membres])
+
   const summary = useMemo(() => {
-    const totalRequis = collaterals.reduce((sum, c) => sum + c.montant_requis, 0)
-    const totalDepose = collaterals.reduce((sum, c) => sum + c.montant_depose, 0)
-    const totalRestant = collaterals.reduce((sum, c) => sum + c.montant_restant, 0)
-    const countPartiel = collaterals.filter((c) => c.statut === 'partiel').length
-    const countComplet = collaterals.filter((c) => c.statut === 'complet').length
-    const countRembourse = collaterals.filter((c) => c.statut === 'rembourse').length
+    const totalRequis = filteredCollaterals.reduce((sum, c) => sum + c.montant_requis, 0)
+    const totalDepose = filteredCollaterals.reduce((sum, c) => sum + c.montant_depose, 0)
+    const totalRestant = filteredCollaterals.reduce((sum, c) => sum + c.montant_restant, 0)
+    const countPartiel = filteredCollaterals.filter((c) => c.statut === 'partiel').length
+    const countComplet = filteredCollaterals.filter((c) => c.statut === 'complet').length
+    const countRembourse = filteredCollaterals.filter((c) => c.statut === 'rembourse').length
 
     return {
       totalRequis,
@@ -518,7 +565,7 @@ function CollateralsPageContent() {
       countComplet,
       countRembourse,
     }
-  }, [collaterals])
+  }, [filteredCollaterals])
 
   if (loading || !userProfile) {
     return (
@@ -1021,6 +1068,76 @@ function CollateralsPageContent() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {/* Filtres */}
+            <div className="mb-6 p-4 bg-muted/50 rounded-lg border">
+              <div className="flex items-center gap-2 mb-4">
+                <Filter className="w-4 h-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Filtres</h3>
+                {(filters.membreNom || filters.numeroPret || filters.typePret || filters.statut) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setFilters({ membreNom: '', numeroPret: '', typePret: '', statut: '' })}
+                    className="ml-auto h-7 text-xs"
+                  >
+                    <X className="w-3 h-3 mr-1" />
+                    Réinitialiser
+                  </Button>
+                )}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                <div className="space-y-2">
+                  <Label htmlFor="filter-membre-nom">Nom du membre</Label>
+                  <Input
+                    id="filter-membre-nom"
+                    placeholder="Rechercher par nom..."
+                    value={filters.membreNom}
+                    onChange={(e) => setFilters({ ...filters, membreNom: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-numero-pret">Numéro de prêt</Label>
+                  <Input
+                    id="filter-numero-pret"
+                    placeholder="Rechercher par numéro..."
+                    value={filters.numeroPret}
+                    onChange={(e) => setFilters({ ...filters, numeroPret: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-type-pret">Type de prêt</Label>
+                  <select
+                    id="filter-type-pret"
+                    value={filters.typePret}
+                    onChange={(e) => setFilters({ ...filters, typePret: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  >
+                    <option value="">Tous les types</option>
+                    <option value="individuel">Prêt individuel</option>
+                    <option value="groupe">Prêt de groupe</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="filter-statut">Statut</Label>
+                  <select
+                    id="filter-statut"
+                    value={filters.statut}
+                    onChange={(e) => setFilters({ ...filters, statut: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                  >
+                    <option value="">Tous les statuts</option>
+                    <option value="partiel">Partiel</option>
+                    <option value="complet">Complet</option>
+                    <option value="rembourse">Remboursé</option>
+                  </select>
+                </div>
+              </div>
+              {(filters.membreNom || filters.numeroPret || filters.typePret || filters.statut) && (
+                <div className="mt-3 text-sm text-muted-foreground">
+                  {filteredCollaterals.length} garantie(s) trouvée(s) sur {collaterals.length}
+                </div>
+              )}
+            </div>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -1037,14 +1154,16 @@ function CollateralsPageContent() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {collaterals.length === 0 ? (
+                  {filteredCollaterals.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={9} className="text-center text-muted-foreground">
-                        Aucune garantie enregistrée
+                        {collaterals.length === 0
+                          ? 'Aucune garantie enregistrée'
+                          : 'Aucune garantie ne correspond aux filtres sélectionnés'}
                       </TableCell>
                     </TableRow>
                   ) : (
-                    collaterals.map((collateral) => {
+                    filteredCollaterals.map((collateral) => {
                       const membre = getMembre(collateral.membre_id)
                       const isGroupLoan = !!collateral.group_pret_id
                       const pret = isGroupLoan ? getGroupPret(collateral.group_pret_id || '') : getPret(collateral.pret_id || '')

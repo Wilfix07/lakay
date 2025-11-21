@@ -856,12 +856,33 @@ function PretsPageContent() {
       // Générer le pret_id automatiquement
       const monthName = getMonthName(new Date(formData.date_decaissement))
       const tableName = loanType === 'groupe' ? 'group_prets' : 'prets'
-      const { data: maxPrets } = await supabase
+      
+      // Si l'utilisateur est un manager, filtrer par ses agents pour garantir l'unicité au niveau du manager
+      let agentIdsForUniqueness: string[] | null = null
+      if (userProfile?.role === 'manager') {
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+        agentIdsForUniqueness = managerAgents?.map(a => a.agent_id) || []
+      }
+
+      // Récupérer les prêts existants pour ce mois
+      let maxPretsQuery = supabase
         .from(tableName)
         .select('pret_id')
         .filter('pret_id', 'like', `CL-%${monthName}`)
         .order('pret_id', { ascending: false })
         .limit(1)
+
+      // Si manager, filtrer par ses agents uniquement
+      if (userProfile?.role === 'manager' && agentIdsForUniqueness && agentIdsForUniqueness.length > 0) {
+        maxPretsQuery = maxPretsQuery.in('agent_id', agentIdsForUniqueness)
+      }
+
+      const { data: maxPrets } = await maxPretsQuery
 
       let newPretId = `CL-000-${monthName}`
       if (maxPrets && maxPrets.length > 0 && maxPrets[0]) {
@@ -870,6 +891,29 @@ function PretsPageContent() {
           const num = parseInt(match[1], 10)
           if (!isNaN(num)) {
             newPretId = `CL-${String(num + 1).padStart(3, '0')}-${monthName}`
+          }
+        }
+      }
+
+      // Vérifier l'unicité du pret_id avant insertion (surtout pour les managers)
+      if (userProfile?.role === 'manager' && agentIdsForUniqueness && agentIdsForUniqueness.length > 0) {
+        const { data: existingPret, error: checkError } = await supabase
+          .from(tableName)
+          .select('pret_id')
+          .eq('pret_id', newPretId)
+          .in('agent_id', agentIdsForUniqueness)
+          .limit(1)
+
+        if (checkError) throw checkError
+
+        if (existingPret && existingPret.length > 0) {
+          // Si le pret_id existe déjà, générer le suivant
+          const match = newPretId.match(/CL-(\d+)-/)
+          if (match) {
+            const num = parseInt(match[1], 10)
+            if (!isNaN(num)) {
+              newPretId = `CL-${String(num + 1).padStart(3, '0')}-${monthName}`
+            }
           }
         }
       }

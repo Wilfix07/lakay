@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { supabase, type Pret, type Membre, type Agent, type UserProfile, type Collateral, type GroupPret } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -17,7 +17,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, CheckCircle2, XCircle, AlertCircle, Eye } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, AlertCircle, Eye, Filter, X } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { calculateCollateralAmount } from '@/lib/systemSettings'
 import { calculateLoanPlan, type FrequenceRemboursement } from '@/lib/loanUtils'
 
@@ -34,6 +36,12 @@ function ApprobationsPageContent() {
   const [approvingGroup, setApprovingGroup] = useState<string | null>(null)
   const [selectedPret, setSelectedPret] = useState<Pret | null>(null)
   const [showDetails, setShowDetails] = useState(false)
+  const [filters, setFilters] = useState({
+    numeroPret: '',
+    agent: '',
+    membreGroupe: '',
+    type: '', // '' = tous, 'individuel' = individuel, 'groupe' = groupe
+  })
 
   useEffect(() => {
     loadUserProfile()
@@ -130,10 +138,10 @@ function ApprobationsPageContent() {
       if (groupPretsRes.error) {
         // Si la table group_prets n'existe pas, ignorer l'erreur
         const isTableNotFound = 
-          groupPretsRes.error.code === 'PGRST116' || 
-          groupPretsRes.error.code === '42P01' ||
-          groupPretsRes.error.message?.includes('404') ||
-          groupPretsRes.error.message?.includes('does not exist')
+          groupPretsRes.error?.code === 'PGRST116' || 
+          groupPretsRes.error?.code === '42P01' ||
+          groupPretsRes.error?.message?.includes('404') ||
+          groupPretsRes.error?.message?.includes('does not exist')
         
         if (!isTableNotFound) throw groupPretsRes.error
       }
@@ -143,10 +151,10 @@ function ApprobationsPageContent() {
       if (groupsRes.error) {
         // Ignorer l'erreur si la table n'existe pas
         const isTableNotFound = 
-          groupsRes.error.code === 'PGRST116' || 
-          groupsRes.error.code === '42P01' ||
-          groupsRes.error.message?.includes('404') ||
-          groupsRes.error.message?.includes('does not exist')
+          groupsRes.error?.code === 'PGRST116' || 
+          groupsRes.error?.code === '42P01' ||
+          groupsRes.error?.message?.includes('404') ||
+          groupsRes.error?.message?.includes('does not exist')
         
         if (!isTableNotFound) throw groupsRes.error
       }
@@ -191,6 +199,88 @@ function ApprobationsPageContent() {
     const group = groups.find(g => g.id === group_id)
     return group?.group_name || `Groupe ${group_id}`
   }
+
+  const filteredPrets = useMemo(() => {
+    return prets.filter((pret) => {
+      // Filtre par numéro de prêt
+      if (filters.numeroPret) {
+        const pretId = (pret.pret_id || '').toLowerCase()
+        const recherche = filters.numeroPret.toLowerCase()
+        if (!pretId.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par agent
+      if (filters.agent) {
+        const agent = getAgent(pret.agent_id)
+        const agentName = agent ? `${agent.prenom} ${agent.nom} ${agent.agent_id}`.toLowerCase() : ''
+        const agentId = (pret.agent_id || '').toLowerCase()
+        const recherche = filters.agent.toLowerCase()
+        if (!agentName.includes(recherche) && !agentId.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par membre
+      if (filters.membreGroupe) {
+        const membre = getMembre(pret.membre_id)
+        const membreName = membre ? `${membre.prenom} ${membre.nom}`.toLowerCase() : ''
+        const membreId = (pret.membre_id || '').toLowerCase()
+        const recherche = filters.membreGroupe.toLowerCase()
+        if (!membreName.includes(recherche) && !membreId.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par type (individuel)
+      if (filters.type && filters.type !== 'individuel') {
+        return false
+      }
+
+      return true
+    })
+  }, [prets, filters, agents, membres])
+
+  const filteredGroupPrets = useMemo(() => {
+    return groupPrets.filter((groupPret) => {
+      // Filtre par numéro de prêt
+      if (filters.numeroPret) {
+        const pretId = (groupPret.pret_id || '').toLowerCase()
+        const recherche = filters.numeroPret.toLowerCase()
+        if (!pretId.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par agent
+      if (filters.agent) {
+        const agent = getAgent(groupPret.agent_id)
+        const agentName = agent ? `${agent.prenom} ${agent.nom} ${agent.agent_id}`.toLowerCase() : ''
+        const agentId = (groupPret.agent_id || '').toLowerCase()
+        const recherche = filters.agent.toLowerCase()
+        if (!agentName.includes(recherche) && !agentId.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par groupe
+      if (filters.membreGroupe) {
+        const groupName = getGroupName(groupPret.group_id).toLowerCase()
+        const recherche = filters.membreGroupe.toLowerCase()
+        if (!groupName.includes(recherche)) {
+          return false
+        }
+      }
+
+      // Filtre par type (groupe)
+      if (filters.type && filters.type !== 'groupe') {
+        return false
+      }
+
+      return true
+    })
+  }, [groupPrets, filters, agents, groups])
 
   async function handleApprove(pret: Pret) {
     // Vérifier que la garantie existe et est complète
@@ -472,30 +562,106 @@ function ApprobationsPageContent() {
         ) : (
           <Card>
             <CardHeader>
-              <CardTitle>Prêts en attente d'approbation ({prets.length + groupPrets.length})</CardTitle>
+              <CardTitle>Prêts en attente d'approbation ({filteredPrets.length + filteredGroupPrets.length} sur {prets.length + groupPrets.length})</CardTitle>
               <CardDescription>
                 Prêts avec garantie complète en attente d'activation. Seuls les prêts avec garantie complète peuvent être approuvés.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Prêt</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Membre/Groupe</TableHead>
-                    <TableHead>Agent</TableHead>
-                    <TableHead>Montant</TableHead>
-                    <TableHead>Échéances</TableHead>
-                    <TableHead>Date décaissement</TableHead>
-                    <TableHead>Date demande</TableHead>
-                    <TableHead>Garantie</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
+              {/* Filtres */}
+              <div className="mb-6 p-4 bg-muted/50 rounded-lg border">
+                <div className="flex items-center gap-2 mb-4">
+                  <Filter className="w-4 h-4 text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Filtres</h3>
+                  {(filters.numeroPret || filters.agent || filters.membreGroupe || filters.type) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setFilters({ numeroPret: '', agent: '', membreGroupe: '', type: '' })}
+                      className="ml-auto h-7 text-xs"
+                    >
+                      <X className="w-3 h-3 mr-1" />
+                      Réinitialiser
+                    </Button>
+                  )}
+                </div>
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="filter-numero-pret">Numéro de prêt</Label>
+                    <Input
+                      id="filter-numero-pret"
+                      placeholder="Rechercher par numéro..."
+                      value={filters.numeroPret}
+                      onChange={(e) => setFilters({ ...filters, numeroPret: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="filter-agent">Agent</Label>
+                    <Input
+                      id="filter-agent"
+                      placeholder="Rechercher par nom ou ID..."
+                      value={filters.agent}
+                      onChange={(e) => setFilters({ ...filters, agent: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="filter-membre-groupe">Membre/Groupe</Label>
+                    <Input
+                      id="filter-membre-groupe"
+                      placeholder="Rechercher par nom ou ID..."
+                      value={filters.membreGroupe}
+                      onChange={(e) => setFilters({ ...filters, membreGroupe: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="filter-type">Type</Label>
+                    <select
+                      id="filter-type"
+                      value={filters.type}
+                      onChange={(e) => setFilters({ ...filters, type: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+                    >
+                      <option value="">Tous les types</option>
+                      <option value="individuel">Individuel</option>
+                      <option value="groupe">Groupe</option>
+                    </select>
+                  </div>
+                </div>
+                {(filters.numeroPret || filters.agent || filters.membreGroupe || filters.type) && (
+                  <div className="mt-3 text-sm text-muted-foreground">
+                    {filteredPrets.length + filteredGroupPrets.length} prêt(s) trouvé(s) sur {prets.length + groupPrets.length}
+                  </div>
+                )}
+              </div>
+
+              {filteredPrets.length === 0 && filteredGroupPrets.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <p>
+                    {prets.length === 0 && groupPrets.length === 0
+                      ? "Aucun prêt en attente d'approbation"
+                      : "Aucun prêt ne correspond aux filtres sélectionnés"}
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Prêt</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Membre/Groupe</TableHead>
+                        <TableHead>Agent</TableHead>
+                        <TableHead>Montant</TableHead>
+                        <TableHead>Échéances</TableHead>
+                        <TableHead>Date décaissement</TableHead>
+                        <TableHead>Date demande</TableHead>
+                        <TableHead>Garantie</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                   {/* Prêts individuels */}
-                  {prets.map((pret) => {
+                  {filteredPrets.map((pret) => {
                     const membre = getMembre(pret.membre_id)
                     const agent = getAgent(pret.agent_id)
                     const collateral = getCollateral(pret.pret_id)
@@ -590,7 +756,7 @@ function ApprobationsPageContent() {
                     )
                   })}
                   {/* Prêts de groupe */}
-                  {groupPrets.map((groupPret) => {
+                  {filteredGroupPrets.map((groupPret) => {
                     const agent = getAgent(groupPret.agent_id)
                     const groupCollaterals = getGroupCollaterals(groupPret.pret_id)
                     const isProcessing = approvingGroup === groupPret.pret_id
@@ -681,8 +847,10 @@ function ApprobationsPageContent() {
                       </TableRow>
                     )
                   })}
-                </TableBody>
-              </Table>
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
