@@ -862,6 +862,7 @@ function AssignerMembresChefZoneContent() {
                             onClick={() => {
                               setTransferSourceChefZone(chef.id)
                               setSelectedMembersToTransfer(new Set(assignations[chef.id] || []))
+                              setError('')
                               setTransferMembersDialogOpen(true)
                             }}
                             disabled={saving}
@@ -978,6 +979,11 @@ function AssignerMembresChefZoneContent() {
                 Sélectionnez l'agent de destination, le chef de zone source et le chef de zone destination
               </DialogDescription>
             </DialogHeader>
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mx-6">
+                {error}
+              </div>
+            )}
             <div className="space-y-4 overflow-y-auto flex-1 pr-2">
               <div className="space-y-2">
                 <Label htmlFor="transferToAgent">Agent de Destination *</Label>
@@ -986,6 +992,7 @@ function AssignerMembresChefZoneContent() {
                   onValueChange={(value) => {
                     setTransferToAgentId(value === 'aucun' ? '' : value)
                     setTransferDestinationChefZone('')
+                    setError('')
                   }}
                   required
                 >
@@ -1017,6 +1024,7 @@ function AssignerMembresChefZoneContent() {
                     } else {
                       setSelectedMembersToTransfer(new Set())
                     }
+                    setError('')
                   }}
                   required
                   disabled={!selectedSourceAgentId}
@@ -1121,7 +1129,10 @@ function AssignerMembresChefZoneContent() {
                 <Label htmlFor="transferDestinationChefZone">Chef de Zone Destination *</Label>
                 <Select
                   value={transferDestinationChefZone || 'aucun'}
-                  onValueChange={(value) => setTransferDestinationChefZone(value === 'aucun' ? '' : value)}
+                  onValueChange={(value) => {
+                    setTransferDestinationChefZone(value === 'aucun' ? '' : value)
+                    setError('')
+                  }}
                   required
                   disabled={!transferToAgentId || loadingDestinationChefsZone}
                 >
@@ -1155,6 +1166,29 @@ function AssignerMembresChefZoneContent() {
                     )}
                   </SelectContent>
                 </Select>
+                {destinationChefsZone.length === 0 && transferToAgentId && !loadingDestinationChefsZone && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mt-2">
+                    <p className="text-sm text-yellow-800 font-medium mb-1">
+                      ⚠️ Aucun chef de zone trouvé pour l'agent {transferToAgentId}
+                    </p>
+                    <p className="text-xs text-yellow-700">
+                      Vous devez créer un chef de zone pour cet agent avant de pouvoir transférer des membres. 
+                      Allez dans la page <strong>Utilisateurs</strong> pour créer un chef de zone.
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="mt-2"
+                      onClick={() => {
+                        setTransferMembersDialogOpen(false)
+                        router.push('/utilisateurs')
+                      }}
+                    >
+                      Aller à la page Utilisateurs
+                    </Button>
+                  </div>
+                )}
                 <p className="text-xs text-muted-foreground">
                   {loadingDestinationChefsZone 
                     ? 'Chargement des chefs de zone de l\'agent de destination...'
@@ -1175,6 +1209,7 @@ function AssignerMembresChefZoneContent() {
                   setTransferSourceChefZone('')
                   setTransferDestinationChefZone('')
                   setSelectedMembersToTransfer(new Set())
+                  setError('')
                 }}
                 disabled={transferSaving}
               >
@@ -1182,8 +1217,24 @@ function AssignerMembresChefZoneContent() {
               </Button>
               <Button
                 onClick={async () => {
-                  if (!transferToAgentId || !transferSourceChefZone || !transferDestinationChefZone || selectedMembersToTransfer.size === 0) {
-                    setError('Veuillez remplir tous les champs et sélectionner au moins un membre')
+                  if (!transferToAgentId) {
+                    setError('Veuillez sélectionner un agent de destination')
+                    return
+                  }
+                  if (!transferSourceChefZone) {
+                    setError('Veuillez sélectionner un chef de zone source')
+                    return
+                  }
+                  if (!transferDestinationChefZone) {
+                    setError('Veuillez sélectionner un chef de zone destination. Si aucun chef de zone n\'est disponible, créez-en un dans la page Utilisateurs.')
+                    return
+                  }
+                  if (selectedMembersToTransfer.size === 0) {
+                    setError('Veuillez sélectionner au moins un membre à transférer')
+                    return
+                  }
+                  if (destinationChefsZone.length === 0) {
+                    setError('Aucun chef de zone disponible pour l\'agent de destination. Veuillez créer un chef de zone dans la page Utilisateurs.')
                     return
                   }
 
@@ -1325,7 +1376,15 @@ function AssignerMembresChefZoneContent() {
                     setTransferSaving(false)
                   }
                 }}
-                disabled={transferSaving || !transferToAgentId || !transferSourceChefZone || !transferDestinationChefZone || selectedMembersToTransfer.size === 0}
+                disabled={
+                  transferSaving || 
+                  !transferToAgentId || 
+                  !transferSourceChefZone || 
+                  !transferDestinationChefZone || 
+                  selectedMembersToTransfer.size === 0 ||
+                  destinationChefsZone.length === 0 ||
+                  loadingDestinationChefsZone
+                }
               >
                 {transferSaving ? 'Transfert en cours...' : 'Confirmer le transfert'}
               </Button>
