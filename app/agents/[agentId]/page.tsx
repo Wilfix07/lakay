@@ -3,17 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { supabase, type Agent, type Membre, type Pret, type GroupPret, type Remboursement, type GroupRemboursement, type Collateral, type EpargneTransaction, type AgentExpense, type UserProfile } from '@/lib/supabase'
-
-type MembreGroup = {
-  id: number
-  group_name: string
-  agent_id: string
-  description?: string | null
-  created_at: string
-  updated_at: string
-  members?: Membre[]
-}
+import { supabase, type Agent, type Membre, type Pret, type GroupPret, type Remboursement, type GroupRemboursement, type Collateral, type EpargneTransaction, type AgentExpense, type UserProfile, type MembreGroup } from '@/lib/supabase'
 import { getUserProfile, signOut } from '@/lib/auth'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { DashboardLayout } from '@/components/DashboardLayout'

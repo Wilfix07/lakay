@@ -222,3 +222,14 @@ export interface EpargneTransaction {
   updated_at?: string
 }
 
+export interface MembreGroup {
+  id: number
+  group_name: string
+  agent_id: string
+  description?: string | null
+  created_at: string
+  updated_at: string
+  member_count?: number
+  members?: Membre[]
+}
+

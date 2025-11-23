@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement, type GroupPret, type EpargneTransaction } from '@/lib/supabase'
+import { supabase, type Membre, type Agent, type UserProfile, type Pret, type Remboursement, type GroupPret, type EpargneTransaction, type MembreGroup } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
@@ -56,15 +56,6 @@ type MemberLoanHistory = {
   }[]
 }
 
-type MembreGroup = {
-  id: number
-  group_name: string
-  agent_id: string
-  description: string | null
-  created_at: string
-  member_count?: number
-  members?: Membre[]
-}
 
 function MembresPageContent() {
   const [membres, setMembres] = useState<Membre[]>([])
