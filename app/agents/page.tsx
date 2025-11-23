@@ -17,10 +17,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, X, Loader2, Pencil, Trash } from 'lucide-react'
+import { Plus, X, Loader2, Pencil, Trash, Eye } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import type { UserProfile } from '@/lib/supabase'
 
 function AgentsPageContent() {
+  const router = useRouter()
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -350,7 +352,16 @@ function AgentsPageContent() {
                             <Button
                               variant="ghost"
                               size="sm"
+                              onClick={() => router.push(`/agents/${agent.agent_id}`)}
+                              title="Voir détails"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
                               onClick={() => handleEdit(agent)}
+                              title="Modifier"
                             >
                               <Pencil className="w-4 h-4" />
                             </Button>
@@ -359,6 +370,7 @@ function AgentsPageContent() {
                               size="sm"
                               className="text-destructive hover:text-destructive"
                               onClick={() => handleDelete(agent)}
+                              title="Supprimer"
                             >
                               <Trash className="w-4 h-4" />
                             </Button>
