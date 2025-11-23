@@ -25,16 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Users, UserPlus, X, ArrowRightLeft, Filter } from 'lucide-react'
-import { Input } from '@/components/ui/input'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { UserPlus, X, ArrowRightLeft } from 'lucide-react'
 
 function AssignerMembresChefZoneContent() {
   const router = useRouter()
@@ -43,7 +34,6 @@ function AssignerMembresChefZoneContent() {
   const [chefsZone, setChefsZone] = useState<UserProfile[]>([])
   const [membres, setMembres] = useState<Membre[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
-  const [selectedChefZone, setSelectedChefZone] = useState<string>('')
   const [assignations, setAssignations] = useState<Record<string, string[]>>({}) // chef_zone_id -> membre_ids[]
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState('')
@@ -69,8 +59,16 @@ function AssignerMembresChefZoneContent() {
   const [transferSourceChefZone, setTransferSourceChefZone] = useState<string>('')
   const [transferDestinationChefZone, setTransferDestinationChefZone] = useState<string>('')
   const [destinationChefsZone, setDestinationChefsZone] = useState<UserProfile[]>([]) // Chefs de zone de l'agent de destination
+  const [loadingDestinationChefsZone, setLoadingDestinationChefsZone] = useState(false)
   const [selectedMembersToTransfer, setSelectedMembersToTransfer] = useState<Set<string>>(new Set())
   const [transferMembersDialogOpen, setTransferMembersDialogOpen] = useState(false)
+  
+  // Transfert de chef de zone d'un agent à un autre
+  const [transferChefZoneDialogOpen, setTransferChefZoneDialogOpen] = useState(false)
+  const [chefZoneToTransfer, setChefZoneToTransfer] = useState<UserProfile | null>(null)
+  const [chefZoneFromAgentId, setChefZoneFromAgentId] = useState<string>('')
+  const [chefZoneToAgentId, setChefZoneToAgentId] = useState<string>('')
+  const [transferChefZoneSaving, setTransferChefZoneSaving] = useState(false)
 
   useEffect(() => {
     loadUserProfile()
@@ -102,9 +100,7 @@ function AssignerMembresChefZoneContent() {
   // Charger les chefs de zone de l'agent de destination quand il est sélectionné
   useEffect(() => {
     if (transferToAgentId) {
-      loadChefsZoneForAgent(transferToAgentId).then((chefs) => {
-        setDestinationChefsZone(chefs || [])
-      })
+      loadDestinationChefsZone(transferToAgentId)
     } else {
       setDestinationChefsZone([])
       setTransferDestinationChefZone('')
@@ -211,6 +207,83 @@ function AssignerMembresChefZoneContent() {
         setChefsZone([])
       }
       return []
+    }
+  }
+
+  async function loadDestinationChefsZone(agentId: string) {
+    try {
+      setLoadingDestinationChefsZone(true)
+      setDestinationChefsZone([])
+      
+      // Charger les chefs de zone attachés directement à cet agent (via agent_id)
+      const { data: chefsZoneWithAgent, error: error1 } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'chef_zone')
+        .eq('agent_id', agentId)
+        .order('nom', { ascending: true })
+
+      if (error1) throw error1
+
+      // Charger les membres de cet agent
+      const { data: membresAgent, error: membresError } = await supabase
+        .from('membres')
+        .select('membre_id')
+        .eq('agent_id', agentId)
+
+      if (membresError) throw membresError
+
+      const membreIds = membresAgent?.map(m => m.membre_id) || []
+
+      // Si aucun membre, retourner seulement les chefs de zone avec agent_id
+      if (membreIds.length === 0) {
+        setDestinationChefsZone(chefsZoneWithAgent || [])
+        return
+      }
+
+      // Récupérer les chefs de zone qui ont ces membres assignés
+      const { data: chefZoneMembres, error: chefZoneMembresError } = await supabase
+        .from('chef_zone_membres')
+        .select('chef_zone_id')
+        .in('membre_id', membreIds)
+
+      if (chefZoneMembresError) throw chefZoneMembresError
+
+      const chefZoneIds = [...new Set((chefZoneMembres || []).map(czm => czm.chef_zone_id))]
+
+      // Si aucun chef de zone trouvé par membre, retourner seulement ceux avec agent_id
+      if (chefZoneIds.length === 0) {
+        setDestinationChefsZone(chefsZoneWithAgent || [])
+        return
+      }
+
+      // Charger les profils des chefs de zone qui ont des membres de cet agent
+      const { data: chefsZoneByMembres, error: error2 } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'chef_zone')
+        .in('id', chefZoneIds)
+        .order('nom', { ascending: true })
+
+      if (error2) throw error2
+
+      // Combiner les deux listes (chefs de zone avec agent_id + chefs de zone avec membres)
+      const allChefsZone = [
+        ...(chefsZoneWithAgent || []),
+        ...(chefsZoneByMembres || [])
+      ]
+
+      // Enlever les doublons (même ID)
+      const uniqueChefsZone = Array.from(
+        new Map(allChefsZone.map(cz => [cz.id, cz])).values()
+      )
+
+      setDestinationChefsZone(uniqueChefsZone)
+    } catch (error) {
+      console.error('Erreur lors du chargement des chefs de zone de destination:', error)
+      setDestinationChefsZone([])
+    } finally {
+      setLoadingDestinationChefsZone(false)
     }
   }
 
@@ -444,6 +517,51 @@ function AssignerMembresChefZoneContent() {
     }
     setTransferToAgentId('')
     setTransferDialogOpen(true)
+  }
+
+  async function handleTransferChefZoneToAgent() {
+    if (!chefZoneToTransfer || !chefZoneFromAgentId || !chefZoneToAgentId) {
+      setError('Veuillez sélectionner un chef de zone, un agent source et un agent de destination')
+      return
+    }
+
+    if (chefZoneFromAgentId === chefZoneToAgentId) {
+      setError('Le chef de zone est déjà assigné à cet agent')
+      return
+    }
+
+    try {
+      setTransferChefZoneSaving(true)
+      setError('')
+      setSuccess('')
+
+      // Mettre à jour l'agent_id du chef de zone dans user_profiles
+      const { error: updateError } = await supabase
+        .from('user_profiles')
+        .update({ agent_id: chefZoneToAgentId })
+        .eq('id', chefZoneToTransfer.id)
+
+      if (updateError) throw updateError
+
+      setSuccess(`Chef de zone ${chefZoneToTransfer.prenom} ${chefZoneToTransfer.nom} transféré avec succès de l'agent ${chefZoneFromAgentId} vers l'agent ${chefZoneToAgentId}`)
+      setTimeout(() => setSuccess(''), 5000)
+      
+      setTransferChefZoneDialogOpen(false)
+      setChefZoneToTransfer(null)
+      setChefZoneFromAgentId('')
+      setChefZoneToAgentId('')
+      
+      // Recharger les chefs de zone
+      if (selectedSourceAgentId) {
+        await loadChefsZoneForAgent(selectedSourceAgentId)
+      }
+    } catch (error: any) {
+      console.error('Erreur lors du transfert du chef de zone:', error)
+      setError(error.message || 'Erreur lors du transfert du chef de zone')
+      setTimeout(() => setError(''), 5000)
+    } finally {
+      setTransferChefZoneSaving(false)
+    }
   }
 
   async function handleTransferChefZone(e: React.FormEvent) {
@@ -750,7 +868,24 @@ function AssignerMembresChefZoneContent() {
                             className="flex items-center gap-2"
                           >
                             <ArrowRightLeft className="w-4 h-4" />
-                            Transférer
+                            Transférer Membres
+                          </Button>
+                        )}
+                        {(userProfile?.role === 'admin' || userProfile?.role === 'manager') && chef.agent_id && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setChefZoneToTransfer(chef)
+                              setChefZoneFromAgentId(chef.agent_id || '')
+                              setChefZoneToAgentId('')
+                              setTransferChefZoneDialogOpen(true)
+                            }}
+                            disabled={saving}
+                            className="flex items-center gap-2"
+                          >
+                            <ArrowRightLeft className="w-4 h-4" />
+                            Transférer Chef
                           </Button>
                         )}
                         <Badge variant="secondary">Chef de Zone</Badge>
@@ -988,24 +1123,44 @@ function AssignerMembresChefZoneContent() {
                   value={transferDestinationChefZone || 'aucun'}
                   onValueChange={(value) => setTransferDestinationChefZone(value === 'aucun' ? '' : value)}
                   required
-                  disabled={!transferToAgentId}
+                  disabled={!transferToAgentId || loadingDestinationChefsZone}
                 >
                   <SelectTrigger id="transferDestinationChefZone">
-                    <SelectValue placeholder="Sélectionner un chef de zone destination" />
+                    <SelectValue placeholder={
+                      loadingDestinationChefsZone 
+                        ? "Chargement des chefs de zone..." 
+                        : transferToAgentId 
+                          ? "Sélectionner un chef de zone destination" 
+                          : "Sélectionnez d'abord un agent de destination"
+                    } />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="aucun">Aucun</SelectItem>
-                    {destinationChefsZone
-                      .filter(chef => chef.id !== transferSourceChefZone)
-                      .map((chef) => (
-                        <SelectItem key={chef.id} value={chef.id}>
-                          {chef.prenom} {chef.nom} ({chef.email})
-                        </SelectItem>
-                      ))}
+                    {loadingDestinationChefsZone ? (
+                      <SelectItem value="loading" disabled>
+                        Chargement des chefs de zone...
+                      </SelectItem>
+                    ) : destinationChefsZone.length === 0 && transferToAgentId ? (
+                      <SelectItem value="no-chef" disabled>
+                        Aucun chef de zone trouvé
+                      </SelectItem>
+                    ) : (
+                      destinationChefsZone
+                        .filter(chef => chef.id !== transferSourceChefZone)
+                        .map((chef) => (
+                          <SelectItem key={chef.id} value={chef.id}>
+                            {chef.prenom} {chef.nom} ({chef.email})
+                          </SelectItem>
+                        ))
+                    )}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Les chefs de zone de l'agent de destination seront chargés automatiquement
+                  {loadingDestinationChefsZone 
+                    ? 'Chargement des chefs de zone de l\'agent de destination...'
+                    : transferToAgentId 
+                      ? `Les chefs de zone de l'agent de destination (${transferToAgentId}) sont chargés. ${destinationChefsZone.length > 0 ? `${destinationChefsZone.length} chef(s) de zone disponible(s).` : 'Aucun chef de zone trouvé pour cet agent.'}`
+                      : 'Sélectionnez un agent de destination pour voir ses chefs de zone'}
                 </p>
               </div>
 
@@ -1038,8 +1193,85 @@ function AssignerMembresChefZoneContent() {
                     setSuccess('')
 
                     const membreIds = Array.from(selectedMembersToTransfer)
+                    
+                    // Récupérer les membres à transférer
+                    const membresToTransfer = membres.filter(m => membreIds.includes(m.membre_id))
+                    
+                    // Vérifier si les membres doivent être transférés vers un nouvel agent
+                    const sourceAgentId = selectedSourceAgentId
+                    const destinationAgentId = transferToAgentId
+                    const needsAgentTransfer = sourceAgentId !== destinationAgentId
 
-                    // Transférer chaque membre
+                    // Si les agents sont différents, transférer les membres vers le nouvel agent
+                    if (needsAgentTransfer && membresToTransfer.length > 0) {
+                      // Vérifier qu'aucun membre n'a de prêt actif
+                      const { data: activeLoans, error: loansError } = await supabase
+                        .from('prets')
+                        .select('membre_id, pret_id')
+                        .in('membre_id', membreIds)
+                        .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+
+                      if (loansError) throw loansError
+
+                      if (activeLoans && activeLoans.length > 0) {
+                        setError(`Certains membres ont des prêts actifs (ex: ${activeLoans[0].pret_id}). Terminez-les avant de transférer.`)
+                        return
+                      }
+
+                      // Transférer les membres vers le nouvel agent
+                      const { error: membresError } = await supabase
+                        .from('membres')
+                        .update({ agent_id: destinationAgentId })
+                        .in('membre_id', membreIds)
+
+                      if (membresError) throw membresError
+
+                      // Mettre à jour les prêts
+                      const { error: pretsError } = await supabase
+                        .from('prets')
+                        .update({ agent_id: destinationAgentId })
+                        .in('membre_id', membreIds)
+
+                      if (pretsError) {
+                        // Rollback en cas d'erreur
+                        await supabase
+                          .from('membres')
+                          .update({ agent_id: sourceAgentId })
+                          .in('membre_id', membreIds)
+                        throw pretsError
+                      }
+
+                      // Mettre à jour les remboursements
+                      const { error: remboursementsError } = await supabase
+                        .from('remboursements')
+                        .update({ agent_id: destinationAgentId })
+                        .in('membre_id', membreIds)
+
+                      if (remboursementsError) {
+                        // Rollback en cas d'erreur
+                        await supabase
+                          .from('membres')
+                          .update({ agent_id: sourceAgentId })
+                          .in('membre_id', membreIds)
+                        await supabase
+                          .from('prets')
+                          .update({ agent_id: sourceAgentId })
+                          .in('membre_id', membreIds)
+                        throw remboursementsError
+                      }
+
+                      // Mettre à jour les transactions d'épargne
+                      const { error: epargneError } = await supabase
+                        .from('epargne_transactions')
+                        .update({ agent_id: destinationAgentId })
+                        .in('membre_id', membreIds)
+
+                      if (epargneError) {
+                        console.warn('Erreur lors de la mise à jour des transactions d\'épargne:', epargneError)
+                      }
+                    }
+
+                    // Transférer chaque membre vers le nouveau chef de zone
                     for (const membreId of membreIds) {
                       // Supprimer l'assignation actuelle
                       const { error: deleteError } = await supabase
@@ -1062,11 +1294,22 @@ function AssignerMembresChefZoneContent() {
                       if (insertError) throw insertError
                     }
 
-                    setSuccess(`${membreIds.length} membre(s) transféré(s) avec succès`)
+                    const successMessage = needsAgentTransfer
+                      ? `${membreIds.length} membre(s) transféré(s) avec succès du chef de zone source vers le chef de zone destination et de l'agent ${sourceAgentId} vers l'agent ${destinationAgentId}`
+                      : `${membreIds.length} membre(s) transféré(s) avec succès du chef de zone source vers le chef de zone destination`
+                    
+                    setSuccess(successMessage)
                     setTimeout(() => setSuccess(''), 5000)
 
-                    // Recharger les assignations
+                    // Recharger les assignations et les données
                     await loadAssignations()
+                    if (selectedSourceAgentId) {
+                      await loadMembresForAgent(selectedSourceAgentId)
+                      await loadChefsZoneForAgent(selectedSourceAgentId)
+                    }
+                    if (membres.length > 0) {
+                      await loadFilterData()
+                    }
                     
                     // Réinitialiser les sélections
                     setSelectedMembersToTransfer(new Set())
@@ -1087,6 +1330,134 @@ function AssignerMembresChefZoneContent() {
                 {transferSaving ? 'Transfert en cours...' : 'Confirmer le transfert'}
               </Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Dialogue de transfert de chef de zone d'un agent à un autre */}
+        <Dialog open={transferChefZoneDialogOpen} onOpenChange={setTransferChefZoneDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Transférer un chef de zone d'un agent à un autre</DialogTitle>
+              <DialogDescription>
+                Transférer un chef de zone d'un agent de crédit à un autre. Cela changera l'agent assigné au chef de zone.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="chefZoneToTransfer">Chef de Zone *</Label>
+                <Select
+                  value={chefZoneToTransfer?.id || 'aucun'}
+                  onValueChange={(value) => {
+                    if (value === 'aucun') {
+                      setChefZoneToTransfer(null)
+                      setChefZoneFromAgentId('')
+                    } else {
+                      const chef = chefsZone.find(c => c.id === value)
+                      if (chef) {
+                        setChefZoneToTransfer(chef)
+                        setChefZoneFromAgentId(chef.agent_id || '')
+                      }
+                    }
+                    setChefZoneToAgentId('')
+                  }}
+                  required
+                >
+                  <SelectTrigger id="chefZoneToTransfer">
+                    <SelectValue placeholder="Sélectionner un chef de zone" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="aucun">Aucun</SelectItem>
+                    {chefsZone
+                      .filter(chef => chef.agent_id)
+                      .map((chef) => (
+                        <SelectItem key={chef.id} value={chef.id}>
+                          {chef.prenom} {chef.nom} ({chef.email}) - Agent: {chef.agent_id}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="chefZoneFromAgentId">Agent Source *</Label>
+                <Select
+                  value={chefZoneFromAgentId || 'aucun'}
+                  onValueChange={(value) => setChefZoneFromAgentId(value === 'aucun' ? '' : value)}
+                  required
+                  disabled={!chefZoneToTransfer}
+                >
+                  <SelectTrigger id="chefZoneFromAgentId">
+                    <SelectValue placeholder="Sélectionner un agent source" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="aucun">Aucun</SelectItem>
+                    {agents
+                      .filter(a => a.agent_id === chefZoneFromAgentId)
+                      .map((agent) => (
+                        <SelectItem key={agent.agent_id} value={agent.agent_id}>
+                          {agent.agent_id} - {agent.nom} {agent.prenom}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {chefZoneToTransfer && chefZoneFromAgentId && (
+                  <p className="text-sm text-muted-foreground">
+                    Chef de zone actuellement assigné à l'agent {chefZoneFromAgentId}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="chefZoneToAgentId">Agent de Destination *</Label>
+                <Select
+                  value={chefZoneToAgentId || 'aucun'}
+                  onValueChange={(value) => setChefZoneToAgentId(value === 'aucun' ? '' : value)}
+                  required
+                  disabled={!chefZoneFromAgentId}
+                >
+                  <SelectTrigger id="chefZoneToAgentId">
+                    <SelectValue placeholder="Sélectionner un agent de destination" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="aucun">Aucun</SelectItem>
+                    {agents
+                      .filter(a => a.agent_id !== chefZoneFromAgentId)
+                      .map((agent) => (
+                        <SelectItem key={agent.agent_id} value={agent.agent_id}>
+                          {agent.agent_id} - {agent.nom} {agent.prenom}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {chefZoneToTransfer && chefZoneToAgentId && (
+                  <p className="text-sm text-muted-foreground">
+                    Le chef de zone sera transféré vers l'agent {chefZoneToAgentId}
+                  </p>
+                )}
+              </div>
+
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setTransferChefZoneDialogOpen(false)
+                    setChefZoneToTransfer(null)
+                    setChefZoneFromAgentId('')
+                    setChefZoneToAgentId('')
+                  }}
+                  disabled={transferChefZoneSaving}
+                >
+                  Annuler
+                </Button>
+                <Button
+                  onClick={handleTransferChefZoneToAgent}
+                  disabled={transferChefZoneSaving || !chefZoneToTransfer || !chefZoneFromAgentId || !chefZoneToAgentId}
+                >
+                  {transferChefZoneSaving ? 'Transfert en cours...' : 'Transférer'}
+                </Button>
+              </DialogFooter>
+            </div>
           </DialogContent>
         </Dialog>
 
