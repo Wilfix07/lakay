@@ -1,12 +1,14 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { supabase, type UserProfile, type Membre, type Pret, type GroupPret } from '@/lib/supabase'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { Pencil, Trash2, Lock, Unlock } from 'lucide-react'
+import { Pencil, Trash2, Lock, Unlock, ChevronDown, Search, X } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Input } from '@/components/ui/input'
 
 type TransactionType = 'depot' | 'retrait' | 'collateral'
 
@@ -36,6 +38,9 @@ function EpargnePageContent() {
   const [migrating, setMigrating] = useState(false)
   const [previousSoldeDisponible, setPreviousSoldeDisponible] = useState<number>(0)
   const [soldeChanged, setSoldeChanged] = useState(false)
+  const [memberSearchOpen, setMemberSearchOpen] = useState(false)
+  const [memberSearchQuery, setMemberSearchQuery] = useState('')
+  const memberSearchInputRef = useRef<HTMLInputElement>(null)
 
   const [formData, setFormData] = useState<{
     type: TransactionType
@@ -838,6 +843,42 @@ function EpargnePageContent() {
     return membres
   }, [membres, userProfile])
 
+  // Filtrer les membres selon la recherche
+  const searchedMembres = useMemo(() => {
+    if (!memberSearchQuery.trim()) return filteredMembres
+    
+    const query = memberSearchQuery.toLowerCase().trim()
+    return filteredMembres.filter((membre) => {
+      const membreId = membre.membre_id.toLowerCase()
+      const nom = membre.nom.toLowerCase()
+      const prenom = membre.prenom.toLowerCase()
+      const fullName = `${prenom} ${nom}`.toLowerCase()
+      
+      return (
+        membreId.includes(query) ||
+        nom.includes(query) ||
+        prenom.includes(query) ||
+        fullName.includes(query)
+      )
+    })
+  }, [filteredMembres, memberSearchQuery])
+
+  // Réinitialiser la recherche quand le popover se ferme
+  useEffect(() => {
+    if (!memberSearchOpen) {
+      setMemberSearchQuery('')
+    }
+  }, [memberSearchOpen])
+
+  // Focus sur l'input de recherche quand le popover s'ouvre
+  useEffect(() => {
+    if (memberSearchOpen && memberSearchInputRef.current) {
+      setTimeout(() => {
+        memberSearchInputRef.current?.focus()
+      }, 100)
+    }
+  }, [memberSearchOpen])
+
   if (loading || !userProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -869,18 +910,76 @@ function EpargnePageContent() {
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Membre *
               </label>
-              <select
-                value={selectedMembreId}
-                onChange={(e) => setSelectedMembreId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                <option value="">Sélectionner un membre</option>
-                {filteredMembres.map((membre) => (
-                  <option key={membre.id} value={membre.membre_id}>
-                    {membre.membre_id} — {membre.prenom} {membre.nom} ({membre.agent_id})
-                  </option>
-                ))}
-              </select>
+              <Popover open={memberSearchOpen} onOpenChange={setMemberSearchOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+                  >
+                    <span className={selectedMembreId ? 'text-gray-900' : 'text-gray-500'}>
+                      {selectedMembreId
+                        ? (() => {
+                            const selected = filteredMembres.find((m) => m.membre_id === selectedMembreId)
+                            return selected
+                              ? `${selected.membre_id} — ${selected.prenom} ${selected.nom} (${selected.agent_id})`
+                              : 'Sélectionner un membre'
+                          })()
+                        : 'Sélectionner un membre'}
+                    </span>
+                    <ChevronDown className="h-4 w-4 text-gray-400" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                  <div className="p-2 border-b">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                      <Input
+                        ref={memberSearchInputRef}
+                        type="text"
+                        placeholder="Rechercher par nom ou ID..."
+                        value={memberSearchQuery}
+                        onChange={(e) => setMemberSearchQuery(e.target.value)}
+                        className="pl-8 pr-8"
+                      />
+                      {memberSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setMemberSearchQuery('')}
+                          className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="max-h-[300px] overflow-y-auto">
+                    {searchedMembres.length === 0 ? (
+                      <div className="p-4 text-center text-sm text-gray-500">
+                        {memberSearchQuery ? 'Aucun membre trouvé' : 'Aucun membre disponible'}
+                      </div>
+                    ) : (
+                      searchedMembres.map((membre) => (
+                        <button
+                          key={membre.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedMembreId(membre.membre_id)
+                            setMemberSearchOpen(false)
+                          }}
+                          className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-100 transition-colors ${
+                            selectedMembreId === membre.membre_id ? 'bg-blue-50 text-blue-900' : ''
+                          }`}
+                        >
+                          <div className="font-medium">{membre.membre_id}</div>
+                          <div className="text-xs text-gray-500">
+                            {membre.prenom} {membre.nom} ({membre.agent_id})
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div>

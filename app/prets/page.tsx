@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import Link from 'next/link'
 import { supabase, type Pret, type Membre, type Agent, type UserProfile, type GroupPret, type Collateral, type LoanAmountBracket } from '@/lib/supabase'
 import { formatCurrency, formatDate, getMonthName } from '@/lib/utils'
@@ -9,6 +9,9 @@ import ProtectedRoute from '@/components/ProtectedRoute'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { useRouter } from 'next/navigation'
+import { ChevronDown, Search, X } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Input } from '@/components/ui/input'
 import {
   getScheduleSettings,
   getInterestRates,
@@ -82,6 +85,9 @@ function PretsPageContent() {
     montantRequis: number
     montantRestant: number
   } | null>(null)
+  const [memberSearchOpen, setMemberSearchOpen] = useState(false)
+  const [memberSearchQuery, setMemberSearchQuery] = useState('')
+  const memberSearchInputRef = useRef<HTMLInputElement>(null)
 
   async function handleSignOut() {
     try {
@@ -1554,6 +1560,42 @@ function PretsPageContent() {
     ? membres.filter(m => m.agent_id === formData.agent_id)
     : membres
 
+  // Filtrer les membres selon la recherche
+  const searchedMembres = useMemo(() => {
+    if (!memberSearchQuery.trim()) return filteredMembres
+    
+    const query = memberSearchQuery.toLowerCase().trim()
+    return filteredMembres.filter((membre) => {
+      const membreId = membre.membre_id.toLowerCase()
+      const nom = membre.nom.toLowerCase()
+      const prenom = membre.prenom.toLowerCase()
+      const fullName = `${prenom} ${nom}`.toLowerCase()
+      
+      return (
+        membreId.includes(query) ||
+        nom.includes(query) ||
+        prenom.includes(query) ||
+        fullName.includes(query)
+      )
+    })
+  }, [filteredMembres, memberSearchQuery])
+
+  // Réinitialiser la recherche quand le popover se ferme
+  useEffect(() => {
+    if (!memberSearchOpen) {
+      setMemberSearchQuery('')
+    }
+  }, [memberSearchOpen])
+
+  // Focus sur l'input de recherche quand le popover s'ouvre
+  useEffect(() => {
+    if (memberSearchOpen && memberSearchInputRef.current) {
+      setTimeout(() => {
+        memberSearchInputRef.current?.focus()
+      }, 100)
+    }
+  }, [memberSearchOpen])
+
   const systemInterestRatePercent = Number.isFinite(systemInterestRate)
     ? Number((systemInterestRate * 100).toFixed(2))
     : 0
@@ -1705,47 +1747,92 @@ function PretsPageContent() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Membre *
                     </label>
-                    <select
-                      required
-                      value={formData.membre_id}
-                      onChange={(e) => setFormData({ ...formData, membre_id: e.target.value })}
-                      disabled={!formData.agent_id && userProfile?.role !== 'agent'}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100"
-                    >
-                      <option value="">
-                        {formData.agent_id || userProfile?.role === 'agent' ? 'Sélectionner un membre' : 'Sélectionnez d\'abord un agent'}
-                      </option>
-                      {filteredMembres.map((membre) => {
-                        const hasActiveLoan = prets.some(
-                          (pret) => pret.membre_id === membre.membre_id && 
-                          ['actif', 'en_attente_garantie', 'en_attente_approbation'].includes(pret.statut),
-                        )
-                        // Vérifier si le membre a un prêt de groupe actif
-                        const hasActiveGroupLoan = groupPrets.some((groupPret) => {
-                          if (!['actif', 'en_attente_garantie', 'en_attente_approbation'].includes(groupPret.statut)) {
-                            return false
-                          }
-                          // Vérifier si ce membre fait partie de ce groupe
-                          // On vérifie via les remboursements de groupe ou les membres du groupe
-                          // Pour simplifier, on vérifie si le membre est dans selectedGroupMembers d'un groupe avec prêt actif
-                          // Mais ici on ne peut pas facilement vérifier sans requête supplémentaire
-                          // On laisse cette vérification pour la validation au moment de la soumission
-                          return false // Temporairement désactivé car nécessite une requête supplémentaire
-                        })
-                        const isCurrentSelection = editingPret?.membre_id === membre.membre_id
-                        const isDisabled = hasActiveLoan && !isCurrentSelection
-                        return (
-                          <option
-                            key={membre.id}
-                            value={membre.membre_id}
-                            disabled={isDisabled}
-                          >
-                            {membre.membre_id} - {membre.prenom} {membre.nom}
-                            {hasActiveLoan && !isCurrentSelection ? ' (prêt individuel actif)' : ''}
-                          </option>
-                        )
-                      })}
-                  </select>
+                    <Popover open={memberSearchOpen} onOpenChange={setMemberSearchOpen}>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          disabled={!formData.agent_id && userProfile?.role !== 'agent'}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 bg-white text-left flex items-center justify-between"
+                        >
+                          <span className={formData.membre_id ? 'text-gray-900' : 'text-gray-500'}>
+                            {formData.membre_id
+                              ? (() => {
+                                  const selected = filteredMembres.find((m) => m.membre_id === formData.membre_id)
+                                  return selected
+                                    ? `${selected.membre_id} — ${selected.prenom} ${selected.nom} (${selected.agent_id})`
+                                    : 'Sélectionner un membre'
+                                })()
+                              : formData.agent_id || userProfile?.role === 'agent'
+                              ? 'Sélectionner un membre'
+                              : 'Sélectionnez d\'abord un agent'}
+                          </span>
+                          <ChevronDown className="h-4 w-4 text-gray-400" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                        <div className="p-2 border-b">
+                          <div className="relative">
+                            <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                            <Input
+                              ref={memberSearchInputRef}
+                              type="text"
+                              placeholder="Rechercher par nom ou ID..."
+                              value={memberSearchQuery}
+                              onChange={(e) => setMemberSearchQuery(e.target.value)}
+                              className="pl-8 pr-8"
+                            />
+                            {memberSearchQuery && (
+                              <button
+                                type="button"
+                                onClick={() => setMemberSearchQuery('')}
+                                className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="max-h-[300px] overflow-y-auto">
+                          {searchedMembres.length === 0 ? (
+                            <div className="p-4 text-center text-sm text-gray-500">
+                              {memberSearchQuery ? 'Aucun membre trouvé' : 'Aucun membre disponible'}
+                            </div>
+                          ) : (
+                            searchedMembres.map((membre) => {
+                              const hasActiveLoan = prets.some(
+                                (pret) => pret.membre_id === membre.membre_id && 
+                                ['actif', 'en_attente_garantie', 'en_attente_approbation'].includes(pret.statut),
+                              )
+                              const isCurrentSelection = editingPret?.membre_id === membre.membre_id
+                              const isDisabled = hasActiveLoan && !isCurrentSelection
+                              
+                              return (
+                                <button
+                                  key={membre.id}
+                                  type="button"
+                                  onClick={() => {
+                                    if (!isDisabled) {
+                                      setFormData({ ...formData, membre_id: membre.membre_id })
+                                      setMemberSearchOpen(false)
+                                    }
+                                  }}
+                                  disabled={isDisabled}
+                                  className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-100 transition-colors ${
+                                    formData.membre_id === membre.membre_id ? 'bg-blue-50 text-blue-900' : ''
+                                  } ${isDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                  <div className="font-medium">{membre.membre_id}</div>
+                                  <div className="text-xs text-gray-500">
+                                    {membre.prenom} {membre.nom} ({membre.agent_id})
+                                    {hasActiveLoan && !isCurrentSelection ? ' (prêt individuel actif)' : ''}
+                                  </div>
+                                </button>
+                              )
+                            })
+                          )}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
                 </div>
                 ) : (
                   <div>
