@@ -6,6 +6,7 @@ import { DashboardLayout } from '@/components/DashboardLayout'
 import { supabase, type UserProfile, type Membre, type Pret, type GroupPret } from '@/lib/supabase'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { formatCurrency, formatDate } from '@/lib/utils'
+import { calculateCollateralAmount } from '@/lib/systemSettings'
 import { Pencil, Trash2, Lock, Unlock, ChevronDown, Search, X } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
@@ -427,6 +428,97 @@ function EpargnePageContent() {
         alert('Veuillez sélectionner un prêt de groupe pour la garantie.')
         return
       }
+
+      // Vérifier que le montant à bloquer ne dépasse pas le collateral requis
+      try {
+        let montantPret = 0
+        let pretId = ''
+
+        if (formData.collateralType === 'individual' && formData.collateralPretId) {
+          const pret = prets.find(p => p.pret_id === formData.collateralPretId)
+          if (!pret) {
+            alert('Prêt individuel introuvable.')
+            return
+          }
+          montantPret = Number(pret.montant_pret || 0)
+          pretId = formData.collateralPretId
+        } else if (formData.collateralType === 'group' && formData.collateralGroupPretId) {
+          const groupPret = groupPrets.find(gp => gp.pret_id === formData.collateralGroupPretId)
+          if (!groupPret) {
+            alert('Prêt de groupe introuvable.')
+            return
+          }
+          pretId = formData.collateralGroupPretId
+          
+          // Pour les prêts de groupe, calculer le montant individuel du membre
+          // en additionnant les principaux de tous ses remboursements pour ce prêt
+          const { data: groupRemboursements, error: rembError } = await supabase
+            .from('group_remboursements')
+            .select('principal')
+            .eq('pret_id', pretId)
+            .eq('membre_id', selectedMembreId)
+          
+          if (rembError && rembError.code !== '42P01' && rembError.code !== 'PGRST116') {
+            console.error('Erreur lors du chargement des remboursements de groupe:', rembError)
+            alert('Erreur lors de la récupération du montant individuel du membre pour ce prêt de groupe.')
+            return
+          }
+          
+          if (groupRemboursements && groupRemboursements.length > 0) {
+            // Calculer le montant individuel en additionnant tous les principaux
+            montantPret = groupRemboursements.reduce((sum, r) => sum + Number(r.principal || 0), 0)
+          } else {
+            // Si aucun remboursement trouvé, utiliser le montant total du prêt divisé par le nombre de membres
+            // (fallback si les remboursements ne sont pas encore créés)
+            const { data: groupMembersData, error: groupMembersError } = await supabase
+              .from('membre_group_members')
+              .select('membre_id')
+              .eq('group_id', groupPret.group_id)
+            
+            if (groupMembersError) {
+              console.error('Erreur lors du chargement des membres du groupe:', groupMembersError)
+              // En cas d'erreur, utiliser 1 comme nombre de membres par défaut
+              montantPret = Number(groupPret.montant_pret || 0)
+            } else {
+              const nombreMembres = groupMembersData?.length || 1
+              montantPret = Number(groupPret.montant_pret || 0) / nombreMembres
+            }
+          }
+        }
+
+        if (montantPret <= 0) {
+          alert('Montant du prêt invalide.')
+          return
+        }
+
+        // Calculer le montant de collateral requis sur le montant individuel du membre
+        const montantCollateralRequis = await calculateCollateralAmount(montantPret)
+
+        // Calculer le montant déjà bloqué pour ce prêt
+        const montantDejaBloque = transactions
+          .filter(t => 
+            (formData.collateralType === 'individual' && t.blocked_for_pret_id === pretId) ||
+            (formData.collateralType === 'group' && t.blocked_for_group_pret_id === pretId)
+          )
+          .reduce((sum, t) => sum + Number(t.montant || 0), 0)
+
+        // Vérifier que le montant à bloquer + ce qui est déjà bloqué ne dépasse pas le requis
+        const montantTotalApresBlocage = montantDejaBloque + montant
+        if (montantTotalApresBlocage > montantCollateralRequis) {
+          const montantMaximum = Math.max(0, montantCollateralRequis - montantDejaBloque)
+          alert(
+            `Le montant de garantie à bloquer (${formatCurrency(montant)}) dépasse le montant requis.\n\n` +
+            `Montant requis pour ce prêt: ${formatCurrency(montantCollateralRequis)}\n` +
+            `Montant déjà bloqué: ${formatCurrency(montantDejaBloque)}\n` +
+            `Montant maximum pouvant être bloqué: ${formatCurrency(montantMaximum)}`
+          )
+          return
+        }
+      } catch (error) {
+        console.error('Erreur lors de la vérification du collateral requis:', error)
+        alert('Erreur lors de la vérification du montant de garantie requis. Veuillez réessayer.')
+        return
+      }
     }
 
     try {
@@ -492,6 +584,97 @@ function EpargnePageContent() {
           return
         }
 
+        // Validation : pour le collateral, vérifier que le montant ne dépasse pas le collateral requis (mise à jour)
+        if (formData.type === 'collateral') {
+          try {
+            let montantPret = 0
+            let pretId = ''
+
+            if (formData.collateralType === 'individual' && formData.collateralPretId) {
+              const pret = prets.find(p => p.pret_id === formData.collateralPretId)
+              if (pret) {
+                montantPret = Number(pret.montant_pret || 0)
+                pretId = formData.collateralPretId
+              }
+            } else if (formData.collateralType === 'group' && formData.collateralGroupPretId) {
+              const groupPret = groupPrets.find(gp => gp.pret_id === formData.collateralGroupPretId)
+              if (groupPret) {
+                pretId = formData.collateralGroupPretId
+                
+                // Pour les prêts de groupe, calculer le montant individuel du membre
+                // en additionnant les principaux de tous ses remboursements pour ce prêt
+                const { data: groupRemboursements, error: rembError } = await supabase
+                  .from('group_remboursements')
+                  .select('principal')
+                  .eq('pret_id', pretId)
+                  .eq('membre_id', selectedMembreId)
+                
+                if (rembError && rembError.code !== '42P01' && rembError.code !== 'PGRST116') {
+                  console.error('Erreur lors du chargement des remboursements de groupe:', rembError)
+                  setErrorMessage('Erreur lors de la récupération du montant individuel du membre pour ce prêt de groupe.')
+                  setSubmitting(false)
+                  return
+                }
+                
+                if (groupRemboursements && groupRemboursements.length > 0) {
+                  // Calculer le montant individuel en additionnant tous les principaux
+                  montantPret = groupRemboursements.reduce((sum, r) => sum + Number(r.principal || 0), 0)
+                } else {
+                  // Si aucun remboursement trouvé, utiliser le montant total du prêt divisé par le nombre de membres
+                  // (fallback si les remboursements ne sont pas encore créés)
+                  const { data: groupMembersData, error: groupMembersError } = await supabase
+                    .from('membre_group_members')
+                    .select('membre_id')
+                    .eq('group_id', groupPret.group_id)
+                  
+                  if (groupMembersError) {
+                    console.error('Erreur lors du chargement des membres du groupe:', groupMembersError)
+                    // En cas d'erreur, utiliser 1 comme nombre de membres par défaut
+                    montantPret = Number(groupPret.montant_pret || 0)
+                  } else {
+                    const nombreMembres = groupMembersData?.length || 1
+                    montantPret = Number(groupPret.montant_pret || 0) / nombreMembres
+                  }
+                }
+              }
+            }
+
+            if (montantPret > 0) {
+              // Calculer le montant de collateral requis sur le montant individuel du membre
+              const montantCollateralRequis = await calculateCollateralAmount(montantPret)
+
+              // Calculer le montant déjà bloqué pour ce prêt (en excluant la transaction en cours d'édition)
+              const montantDejaBloque = transactions
+                .filter(t => 
+                  t.id !== editingTransaction.id && (
+                    (formData.collateralType === 'individual' && t.blocked_for_pret_id === pretId) ||
+                    (formData.collateralType === 'group' && t.blocked_for_group_pret_id === pretId)
+                  )
+                )
+                .reduce((sum, t) => sum + Number(t.montant || 0), 0)
+
+              // Vérifier que le montant à bloquer + ce qui est déjà bloqué ne dépasse pas le requis
+              const montantTotalApresBlocage = montantDejaBloque + montant
+              if (montantTotalApresBlocage > montantCollateralRequis) {
+                const montantMaximum = Math.max(0, montantCollateralRequis - montantDejaBloque)
+                setErrorMessage(
+                  `Le montant de garantie à bloquer (${formatCurrency(montant)}) dépasse le montant requis.\n\n` +
+                  `Montant requis pour ce prêt: ${formatCurrency(montantCollateralRequis)}\n` +
+                  `Montant déjà bloqué: ${formatCurrency(montantDejaBloque)}\n` +
+                  `Montant maximum pouvant être bloqué: ${formatCurrency(montantMaximum)}`
+                )
+                setSubmitting(false)
+                return
+              }
+            }
+          } catch (error) {
+            console.error('Erreur lors de la vérification du collateral requis:', error)
+            setErrorMessage('Erreur lors de la vérification du montant de garantie requis. Veuillez réessayer.')
+            setSubmitting(false)
+            return
+          }
+        }
+
         const { error } = await supabase
           .from('epargne_transactions')
           .update({
@@ -533,6 +716,95 @@ function EpargnePageContent() {
           )
           setSubmitting(false)
           return
+        }
+
+        // Validation : pour le collateral, vérifier que le montant ne dépasse pas le collateral requis (création)
+        if (formData.type === 'collateral') {
+          try {
+            let montantPret = 0
+            let pretId = ''
+
+            if (formData.collateralType === 'individual' && formData.collateralPretId) {
+              const pret = prets.find(p => p.pret_id === formData.collateralPretId)
+              if (pret) {
+                montantPret = Number(pret.montant_pret || 0)
+                pretId = formData.collateralPretId
+              }
+            } else if (formData.collateralType === 'group' && formData.collateralGroupPretId) {
+              const groupPret = groupPrets.find(gp => gp.pret_id === formData.collateralGroupPretId)
+              if (groupPret) {
+                pretId = formData.collateralGroupPretId
+                
+                // Pour les prêts de groupe, calculer le montant individuel du membre
+                // en additionnant les principaux de tous ses remboursements pour ce prêt
+                const { data: groupRemboursements, error: rembError } = await supabase
+                  .from('group_remboursements')
+                  .select('principal')
+                  .eq('pret_id', pretId)
+                  .eq('membre_id', selectedMembreId)
+                
+                if (rembError && rembError.code !== '42P01' && rembError.code !== 'PGRST116') {
+                  console.error('Erreur lors du chargement des remboursements de groupe:', rembError)
+                  setErrorMessage('Erreur lors de la récupération du montant individuel du membre pour ce prêt de groupe.')
+                  setSubmitting(false)
+                  return
+                }
+                
+                if (groupRemboursements && groupRemboursements.length > 0) {
+                  // Calculer le montant individuel en additionnant tous les principaux
+                  montantPret = groupRemboursements.reduce((sum, r) => sum + Number(r.principal || 0), 0)
+                } else {
+                  // Si aucun remboursement trouvé, utiliser le montant total du prêt divisé par le nombre de membres
+                  // (fallback si les remboursements ne sont pas encore créés)
+                  const { data: groupMembersData, error: groupMembersError } = await supabase
+                    .from('membre_group_members')
+                    .select('membre_id')
+                    .eq('group_id', groupPret.group_id)
+                  
+                  if (groupMembersError) {
+                    console.error('Erreur lors du chargement des membres du groupe:', groupMembersError)
+                    // En cas d'erreur, utiliser 1 comme nombre de membres par défaut
+                    montantPret = Number(groupPret.montant_pret || 0)
+                  } else {
+                    const nombreMembres = groupMembersData?.length || 1
+                    montantPret = Number(groupPret.montant_pret || 0) / nombreMembres
+                  }
+                }
+              }
+            }
+
+            if (montantPret > 0) {
+              // Calculer le montant de collateral requis sur le montant individuel du membre
+              const montantCollateralRequis = await calculateCollateralAmount(montantPret)
+
+              // Calculer le montant déjà bloqué pour ce prêt
+              const montantDejaBloque = transactions
+                .filter(t => 
+                  (formData.collateralType === 'individual' && t.blocked_for_pret_id === pretId) ||
+                  (formData.collateralType === 'group' && t.blocked_for_group_pret_id === pretId)
+                )
+                .reduce((sum, t) => sum + Number(t.montant || 0), 0)
+
+              // Vérifier que le montant à bloquer + ce qui est déjà bloqué ne dépasse pas le requis
+              const montantTotalApresBlocage = montantDejaBloque + montant
+              if (montantTotalApresBlocage > montantCollateralRequis) {
+                const montantMaximum = Math.max(0, montantCollateralRequis - montantDejaBloque)
+                setErrorMessage(
+                  `Le montant de garantie à bloquer (${formatCurrency(montant)}) dépasse le montant requis.\n\n` +
+                  `Montant requis pour ce prêt: ${formatCurrency(montantCollateralRequis)}\n` +
+                  `Montant déjà bloqué: ${formatCurrency(montantDejaBloque)}\n` +
+                  `Montant maximum pouvant être bloqué: ${formatCurrency(montantMaximum)}`
+                )
+                setSubmitting(false)
+                return
+              }
+            }
+          } catch (error) {
+            console.error('Erreur lors de la vérification du collateral requis:', error)
+            setErrorMessage('Erreur lors de la vérification du montant de garantie requis. Veuillez réessayer.')
+            setSubmitting(false)
+            return
+          }
         }
 
         const { error } = await supabase
