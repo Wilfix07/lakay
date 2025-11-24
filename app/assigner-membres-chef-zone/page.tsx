@@ -904,7 +904,37 @@ function AssignerMembresChefZoneContent() {
       }
     } catch (error: any) {
       console.error('Erreur lors du transfert:', error)
-      setError(error.message || 'Erreur lors du transfert')
+      console.error('Détails de l\'erreur:', {
+        message: error?.message,
+        code: error?.code,
+        details: error?.details,
+        hint: error?.hint,
+        error: error
+      })
+      
+      // Extraire le message d'erreur de manière robuste
+      let errorMessage = 'Erreur lors du transfert'
+      
+      if (error?.message) {
+        errorMessage = error.message
+      } else if (error?.details) {
+        errorMessage = typeof error.details === 'string' ? error.details : 'Erreur lors du transfert'
+      } else if (error?.hint) {
+        errorMessage = error.hint
+      } else if (typeof error === 'string') {
+        errorMessage = error
+      } else if (error && typeof error === 'object') {
+        try {
+          const errorStr = JSON.stringify(error)
+          if (errorStr !== '{}') {
+            errorMessage = `Erreur: ${errorStr}`
+          }
+        } catch {
+          // Si la sérialisation échoue, utiliser le message par défaut
+        }
+      }
+      
+      setError(errorMessage)
       setTimeout(() => setError(''), 5000)
     } finally {
       setTransferSaving(false)
@@ -1523,25 +1553,145 @@ function AssignerMembresChefZoneContent() {
 
                     // Transférer chaque membre vers le nouveau chef de zone
                     for (const membreId of membreIds) {
-                      // Supprimer l'assignation actuelle
-                      const { error: deleteError } = await supabase
+                      // Valider les IDs avant de faire les requêtes
+                      if (!transferSourceChefZone || !transferDestinationChefZone || !membreId) {
+                        throw new Error('Données invalides: chef de zone source, destination ou membre ID manquant')
+                      }
+
+                      // Vérifier d'abord si le membre est déjà assigné à un autre chef de zone
+                      const { data: existingAssignment, error: checkError } = await supabase
                         .from('chef_zone_membres')
-                        .delete()
-                        .eq('chef_zone_id', transferSourceChefZone)
+                        .select('id, chef_zone_id')
                         .eq('membre_id', membreId)
+                        .maybeSingle()
 
-                      if (deleteError) throw deleteError
+                      if (checkError) {
+                        console.error(`Erreur lors de la vérification de l'assignation pour membre ${membreId}:`, checkError)
+                        throw checkError
+                      }
 
-                      // Créer la nouvelle assignation
-                      const { error: insertError } = await supabase
+                      // Si le membre est déjà assigné au chef de zone destination, ne rien faire
+                      if (existingAssignment && existingAssignment.chef_zone_id === transferDestinationChefZone) {
+                        console.log(`Le membre ${membreId} est déjà assigné au chef de zone destination`)
+                        continue
+                      }
+
+                      // Supprimer l'assignation actuelle si elle existe
+                      if (existingAssignment) {
+                        const { error: deleteError, data: deleteData } = await supabase
+                          .from('chef_zone_membres')
+                          .delete()
+                          .eq('id', existingAssignment.id)
+                          .select()
+
+                        if (deleteError) {
+                          console.error(`Erreur lors de la suppression de l'assignation pour membre ${membreId}:`, deleteError)
+                          throw deleteError
+                        }
+
+                        if (!deleteData || deleteData.length === 0) {
+                          console.warn(`Aucune assignation supprimée pour membre ${membreId}`)
+                        }
+                      }
+
+                      // Vérifier que l'utilisateur a les permissions nécessaires
+                      if (!userProfile) {
+                        throw new Error('Profil utilisateur non chargé. Veuillez vous reconnecter.')
+                      }
+
+                      if (userProfile.role !== 'admin' && userProfile.role !== 'manager') {
+                        throw new Error(`Vous n'avez pas les permissions nécessaires pour créer une assignation. Rôle actuel: ${userProfile.role}. Seuls les administrateurs et les managers peuvent effectuer cette action.`)
+                      }
+
+                      // Vérifier la session Supabase pour s'assurer que auth.uid() fonctionnera
+                      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+                      if (sessionError || !session) {
+                        throw new Error('Session expirée. Veuillez vous reconnecter.')
+                      }
+
+                      if (session.user.id !== userProfile.id) {
+                        console.warn(`[DEBUG] Incohérence: session.user.id (${session.user.id}) !== userProfile.id (${userProfile.id})`)
+                      }
+
+                      // Valider les données avant l'insertion
+                      if (!transferDestinationChefZone || !membreId) {
+                        throw new Error(`Données invalides: chef_zone_id ou membre_id manquant pour le membre ${membreId}`)
+                      }
+
+                      // Créer la nouvelle assignation (ou mettre à jour si elle existe encore)
+                      const insertPayload = {
+                        chef_zone_id: transferDestinationChefZone,
+                        membre_id: membreId,
+                        assigned_by: userProfile.id, // Toujours définir assigned_by
+                      }
+
+                      console.log(`[DEBUG] Tentative d'insertion pour membre ${membreId}:`, {
+                        payload: insertPayload,
+                        userRole: userProfile.role,
+                        userId: userProfile.id,
+                        sessionUserId: session.user.id,
+                        authUidMatch: session.user.id === userProfile.id
+                      })
+
+                      const { error: insertError, data: insertData } = await supabase
                         .from('chef_zone_membres')
-                        .insert({
-                          chef_zone_id: transferDestinationChefZone,
-                          membre_id: membreId,
-                          assigned_by: userProfile?.id,
-                        })
+                        .insert(insertPayload)
+                        .select()
 
-                      if (insertError) throw insertError
+                      if (insertError) {
+                        console.error(`Erreur lors de la création de l'assignation pour membre ${membreId}:`, insertError)
+                        console.error('Détails complets de l\'erreur:', {
+                          code: insertError.code,
+                          message: insertError.message,
+                          details: insertError.details,
+                          hint: insertError.hint,
+                          error: JSON.stringify(insertError, null, 2)
+                        })
+                        
+                        // Si l'erreur est vide, c'est probablement un problème RLS
+                        if (!insertError.code && !insertError.message && Object.keys(insertError).length === 0) {
+                          throw new Error(`Erreur RLS silencieuse: L'insertion a été bloquée par les politiques de sécurité. Vérifiez que vous êtes connecté en tant qu'admin ou manager. Utilisateur actuel: ${userProfile.role}, ID: ${userProfile.id}`)
+                        }
+                        
+                        // Si l'erreur mentionne RLS policy violation
+                        if (insertError.message?.includes('row-level security policy') || insertError.message?.includes('violates row-level security')) {
+                          throw new Error(`Violation de politique RLS: ${insertError.message}. Vérifiez que votre rôle dans user_profiles est 'admin' ou 'manager'. Rôle actuel: ${userProfile.role}, ID utilisateur: ${userProfile.id}`)
+                        }
+                        
+                        // Si l'erreur est due à une contrainte UNIQUE, essayer de mettre à jour
+                        if (insertError.code === '23505' || insertError.message?.includes('unique') || insertError.message?.includes('duplicate')) {
+                          console.log(`[DEBUG] Contrainte UNIQUE détectée, tentative de mise à jour pour membre ${membreId}`)
+                          // Mettre à jour l'assignation existante
+                          const { error: updateError, data: updateData } = await supabase
+                            .from('chef_zone_membres')
+                            .update({
+                              chef_zone_id: transferDestinationChefZone,
+                              assigned_by: userProfile.id,
+                              assigned_at: new Date().toISOString()
+                            })
+                            .eq('membre_id', membreId)
+                            .select()
+
+                          if (updateError) {
+                            console.error(`Erreur lors de la mise à jour de l'assignation pour membre ${membreId}:`, updateError)
+                            throw updateError
+                          }
+
+                          if (!updateData || updateData.length === 0) {
+                            throw new Error(`Impossible de mettre à jour l'assignation pour le membre ${membreId}. Vérifiez les permissions RLS.`)
+                          }
+                          
+                          console.log(`[DEBUG] Assignation mise à jour avec succès pour membre ${membreId}`)
+                        } else {
+                          // Propager l'erreur avec un message plus informatif
+                          const errorMessage = insertError.message || insertError.hint || insertError.details || 'Erreur inconnue lors de l\'insertion'
+                          throw new Error(`Erreur lors de la création de l'assignation pour le membre ${membreId}: ${errorMessage}`)
+                        }
+                      } else if (!insertData || insertData.length === 0) {
+                        throw new Error(`Impossible de créer l'assignation pour le membre ${membreId}. Aucune donnée retournée. Vérifiez les permissions RLS.`)
+                      } else {
+                        console.log(`[DEBUG] Assignation créée avec succès pour membre ${membreId}:`, insertData)
+                      }
                     }
 
                     const successMessage = needsAgentTransfer
@@ -1569,7 +1719,38 @@ function AssignerMembresChefZoneContent() {
                     setTransferMembersDialogOpen(false)
                   } catch (error: any) {
                     console.error('Erreur lors du transfert:', error)
-                    setError(error.message || 'Erreur lors du transfert')
+                    console.error('Détails de l\'erreur:', {
+                      message: error?.message,
+                      code: error?.code,
+                      details: error?.details,
+                      hint: error?.hint,
+                      error: error
+                    })
+                    
+                    // Extraire le message d'erreur de manière robuste
+                    let errorMessage = 'Erreur lors du transfert'
+                    
+                    if (error?.message) {
+                      errorMessage = error.message
+                    } else if (error?.details) {
+                      errorMessage = typeof error.details === 'string' ? error.details : 'Erreur lors du transfert'
+                    } else if (error?.hint) {
+                      errorMessage = error.hint
+                    } else if (typeof error === 'string') {
+                      errorMessage = error
+                    } else if (error && typeof error === 'object') {
+                      // Essayer de sérialiser l'erreur pour obtenir plus d'informations
+                      try {
+                        const errorStr = JSON.stringify(error)
+                        if (errorStr !== '{}') {
+                          errorMessage = `Erreur: ${errorStr}`
+                        }
+                      } catch {
+                        // Si la sérialisation échoue, utiliser le message par défaut
+                      }
+                    }
+                    
+                    setError(errorMessage)
                     setTimeout(() => setError(''), 5000)
                   } finally {
                     setTransferSaving(false)
