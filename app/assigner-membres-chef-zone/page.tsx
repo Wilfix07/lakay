@@ -69,6 +69,8 @@ function AssignerMembresChefZoneContent() {
   const [chefZoneFromAgentId, setChefZoneFromAgentId] = useState<string>('')
   const [chefZoneToAgentId, setChefZoneToAgentId] = useState<string>('')
   const [transferChefZoneSaving, setTransferChefZoneSaving] = useState(false)
+  const [allChefsZone, setAllChefsZone] = useState<UserProfile[]>([]) // Tous les chefs de zone pour le dialogue de transfert
+  const [isTransferringChefZone, setIsTransferringChefZone] = useState(false) // Flag pour éviter le conflit avec useEffect
 
   useEffect(() => {
     loadUserProfile()
@@ -78,18 +80,24 @@ function AssignerMembresChefZoneContent() {
     if (userProfile && (userProfile.role === 'admin' || userProfile.role === 'manager')) {
       loadAgents()
       loadAssignations()
+      loadAllChefsZone() // Charger tous les chefs de zone pour le dialogue de transfert
     }
   }, [userProfile])
   
   useEffect(() => {
-    if (selectedSourceAgentId) {
+    // Ne pas charger si on est en train de transférer un chef de zone (pour éviter les conflits)
+    if (isTransferringChefZone) {
+      return
+    }
+    
+    if (selectedSourceAgentId && selectedSourceAgentId.trim() !== '') {
       loadChefsZoneForAgent(selectedSourceAgentId)
       loadMembresForAgent(selectedSourceAgentId)
     } else {
       setChefsZone([])
       setMembres([])
     }
-  }, [selectedSourceAgentId, userProfile])
+  }, [selectedSourceAgentId, userProfile, isTransferringChefZone])
   
   useEffect(() => {
     if (membres.length > 0) {
@@ -123,8 +131,10 @@ function AssignerMembresChefZoneContent() {
     }
   }
 
-  async function loadChefsZoneForAgent(agentId: string): Promise<UserProfile[]> {
+  async function loadChefsZoneForAgent(agentId: string, forceUpdate: boolean = false): Promise<UserProfile[]> {
     try {
+      console.log(`[DEBUG] loadChefsZoneForAgent appelé avec agentId=${agentId}, forceUpdate=${forceUpdate}`)
+      
       // Charger les chefs de zone attachés directement à cet agent (via agent_id)
       const { data: chefsZoneWithAgent, error: error1 } = await supabase
         .from('user_profiles')
@@ -134,6 +144,8 @@ function AssignerMembresChefZoneContent() {
         .order('nom', { ascending: true })
 
       if (error1) throw error1
+      
+      console.log(`[DEBUG] Chefs de zone trouvés pour agent ${agentId}:`, chefsZoneWithAgent?.length || 0, chefsZoneWithAgent)
 
       // Charger les membres de cet agent
       const { data: membresAgent, error: membresError } = await supabase
@@ -148,8 +160,8 @@ function AssignerMembresChefZoneContent() {
       // Si aucun membre, retourner seulement les chefs de zone avec agent_id
       if (membreIds.length === 0) {
         const result = chefsZoneWithAgent || []
-        // Si c'est pour l'agent source, mettre à jour l'état
-        if (agentId === selectedSourceAgentId) {
+        // Si c'est pour l'agent source ou si forceUpdate est vrai, mettre à jour l'état
+        if (forceUpdate || agentId === selectedSourceAgentId) {
           setChefsZone(result)
         }
         return result
@@ -168,7 +180,7 @@ function AssignerMembresChefZoneContent() {
       // Si aucun chef de zone trouvé par membre, retourner seulement ceux avec agent_id
       if (chefZoneIds.length === 0) {
         const result = chefsZoneWithAgent || []
-        if (agentId === selectedSourceAgentId) {
+        if (forceUpdate || agentId === selectedSourceAgentId) {
           setChefsZone(result)
         }
         return result
@@ -195,18 +207,66 @@ function AssignerMembresChefZoneContent() {
         new Map(allChefsZone.map(cz => [cz.id, cz])).values()
       )
 
-      // Si c'est pour l'agent source, mettre à jour l'état
-      if (agentId === selectedSourceAgentId) {
+      // Si c'est pour l'agent source ou si forceUpdate est vrai, mettre à jour l'état
+      if (forceUpdate || agentId === selectedSourceAgentId) {
+        console.log(`[DEBUG] Mise à jour de chefsZone avec ${uniqueChefsZone.length} chefs de zone pour agent ${agentId}`)
         setChefsZone(uniqueChefsZone)
+      } else {
+        console.log(`[DEBUG] Pas de mise à jour: forceUpdate=${forceUpdate}, agentId=${agentId}, selectedSourceAgentId=${selectedSourceAgentId}`)
       }
 
       return uniqueChefsZone
     } catch (error) {
       console.error('Erreur lors du chargement des chefs de zone:', error)
-      if (agentId === selectedSourceAgentId) {
+      if (forceUpdate || agentId === selectedSourceAgentId) {
         setChefsZone([])
       }
       return []
+    }
+  }
+
+  // Charger tous les chefs de zone pour permettre le transfert (pour managers et admins)
+  async function loadAllChefsZone() {
+    try {
+      if (!userProfile || (userProfile.role !== 'admin' && userProfile.role !== 'manager')) {
+        return
+      }
+
+      let query = supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('role', 'chef_zone')
+        .not('agent_id', 'is', null) // Seulement les chefs de zone avec un agent_id
+        .order('nom', { ascending: true })
+
+      // Pour les managers, filtrer seulement les chefs de zone de leurs agents
+      if (userProfile.role === 'manager') {
+        // D'abord, obtenir les IDs des agents du manager
+        const { data: managerAgents, error: agentsError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+
+        if (agentsError) throw agentsError
+
+        const agentIds = managerAgents?.map(a => a.agent_id) || []
+        if (agentIds.length > 0) {
+          query = query.in('agent_id', agentIds)
+        } else {
+          // Si le manager n'a pas d'agents, pas de chefs de zone à charger
+          setAllChefsZone([])
+          return
+        }
+      }
+      // Pour les admins, charger tous les chefs de zone de tous les agents
+
+      const { data, error } = await query
+
+      if (error) throw error
+      setAllChefsZone(data || [])
+    } catch (error) {
+      console.error('Erreur lors du chargement de tous les chefs de zone:', error)
+      setAllChefsZone([])
     }
   }
 
@@ -289,16 +349,46 @@ function AssignerMembresChefZoneContent() {
 
   async function loadMembresForAgent(agentId: string) {
     try {
+      // Vérifier que l'agentId est valide
+      if (!agentId || agentId.trim() === '') {
+        console.warn('loadMembresForAgent: agentId invalide ou vide:', agentId)
+        setMembres([])
+        return
+      }
+
       const { data, error } = await supabase
         .from('membres')
         .select('*')
         .eq('agent_id', agentId)
         .order('membre_id', { ascending: true })
 
-      if (error) throw error
+      if (error) {
+        // Améliorer le logging de l'erreur
+        console.error('Erreur Supabase lors du chargement des membres:', {
+          error,
+          errorCode: (error as any)?.code,
+          errorMessage: (error as any)?.message,
+          errorDetails: (error as any)?.details,
+          errorHint: (error as any)?.hint,
+          agentId,
+        })
+        throw error
+      }
+      
       setMembres(data || [])
-    } catch (error) {
-      console.error('Erreur lors du chargement des membres:', error)
+    } catch (error: any) {
+      // Améliorer le logging pour capturer tous les détails de l'erreur
+      console.error('Erreur lors du chargement des membres:', {
+        error,
+        errorType: typeof error,
+        errorString: String(error),
+        errorJSON: JSON.stringify(error, null, 2),
+        errorCode: error?.code,
+        errorMessage: error?.message,
+        errorDetails: error?.details,
+        errorHint: error?.hint,
+        agentId,
+      })
       setMembres([])
     }
   }
@@ -532,19 +622,67 @@ function AssignerMembresChefZoneContent() {
 
     try {
       setTransferChefZoneSaving(true)
+      setIsTransferringChefZone(true) // Activer le flag pour éviter le conflit avec useEffect
       setError('')
       setSuccess('')
 
-      // Mettre à jour l'agent_id du chef de zone dans user_profiles
-      const { error: updateError } = await supabase
-        .from('user_profiles')
-        .update({ agent_id: chefZoneToAgentId })
-        .eq('id', chefZoneToTransfer.id)
+      // Mettre à jour l'agent_id du chef de zone dans user_profiles via l'API route
+      // (qui utilise le service role et contourne les politiques RLS)
+      console.log(`[DEBUG] Transfert: Mise à jour chef de zone ${chefZoneToTransfer.id} de agent ${chefZoneFromAgentId} vers ${chefZoneToAgentId}`)
+      
+      // Récupérer le token d'authentification
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        throw new Error('Vous devez être connecté pour effectuer cette action')
+      }
 
-      if (updateError) throw updateError
+      // Utiliser l'API route qui gère les permissions correctement
+      const response = await fetch('/api/users/update', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          id: chefZoneToTransfer.id,
+          agent_id: chefZoneToAgentId,
+        }),
+      })
+
+      const contentType = response.headers.get('content-type')
+      const data = contentType && contentType.includes('application/json')
+        ? await response.json()
+        : { error: 'Réponse serveur invalide' }
+
+      if (!response.ok) {
+        console.error('[DEBUG] Erreur lors de la mise à jour via API:', data)
+        throw new Error(data.error || 'Erreur lors de la mise à jour du chef de zone')
+      }
+      
+      console.log(`[DEBUG] Chef de zone mis à jour avec succès via API`)
+      
+      // Vérifier que la mise à jour a bien été effectuée
+      const { data: verifyData, error: verifyError } = await supabase
+        .from('user_profiles')
+        .select('id, agent_id')
+        .eq('id', chefZoneToTransfer.id)
+        .single()
+      
+      if (verifyError) {
+        console.error('[DEBUG] Erreur lors de la vérification:', verifyError)
+      } else {
+        console.log(`[DEBUG] Vérification: chef de zone ${verifyData.id} a maintenant agent_id=${verifyData.agent_id}`)
+        if (verifyData.agent_id !== chefZoneToAgentId) {
+          throw new Error(`La mise à jour a échoué. Agent_id attendu: ${chefZoneToAgentId}, obtenu: ${verifyData.agent_id}`)
+        }
+      }
 
       setSuccess(`Chef de zone ${chefZoneToTransfer.prenom} ${chefZoneToTransfer.nom} transféré avec succès de l'agent ${chefZoneFromAgentId} vers l'agent ${chefZoneToAgentId}`)
       setTimeout(() => setSuccess(''), 5000)
+      
+      // Sauvegarder l'agent de destination avant de réinitialiser
+      const destinationAgentId = chefZoneToAgentId
+      const sourceAgentId = chefZoneFromAgentId
       
       setTransferChefZoneDialogOpen(false)
       setChefZoneToTransfer(null)
@@ -552,8 +690,62 @@ function AssignerMembresChefZoneContent() {
       setChefZoneToAgentId('')
       
       // Recharger les chefs de zone
-      if (selectedSourceAgentId) {
-        await loadChefsZoneForAgent(selectedSourceAgentId)
+      await loadAllChefsZone() // Recharger tous les chefs de zone
+      
+      // Recharger les chefs de zone de l'agent source (si sélectionné)
+      if (selectedSourceAgentId === sourceAgentId) {
+        await loadChefsZoneForAgent(sourceAgentId, true)
+      }
+      
+      // Toujours charger les chefs de zone de l'agent de destination
+      if (destinationAgentId && destinationAgentId.trim() !== '') {
+        console.log(`[DEBUG] Chargement des chefs de zone pour l'agent de destination: ${destinationAgentId}`)
+        
+        // Vérifier dans la base de données que le chef de zone a bien été transféré
+        const { data: verifyChefZone, error: verifyError } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('role', 'chef_zone')
+          .eq('agent_id', destinationAgentId)
+        
+        if (verifyError) {
+          console.error('[DEBUG] Erreur lors de la vérification des chefs de zone:', verifyError)
+        } else {
+          console.log(`[DEBUG] Chefs de zone dans la base pour agent ${destinationAgentId}:`, verifyChefZone?.length || 0, verifyChefZone)
+        }
+        
+        // Sélectionner l'agent de destination
+        setSelectedSourceAgentId(destinationAgentId)
+        
+        // Attendre un court délai pour s'assurer que le setState est appliqué
+        await new Promise(resolve => setTimeout(resolve, 100))
+        
+        // Utiliser forceUpdate=true pour forcer la mise à jour
+        const chefsZoneLoaded = await loadChefsZoneForAgent(destinationAgentId, true)
+        console.log(`[DEBUG] Chefs de zone chargés pour ${destinationAgentId}:`, chefsZoneLoaded.length, chefsZoneLoaded)
+        
+        // Attendre un peu pour que setState soit appliqué
+        await new Promise(resolve => setTimeout(resolve, 100))
+        
+        // Vérifier que l'état a bien été mis à jour en relisant depuis la base
+        const { data: finalCheck, error: finalCheckError } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('role', 'chef_zone')
+          .eq('agent_id', destinationAgentId)
+        
+        if (!finalCheckError && finalCheck) {
+          console.log(`[DEBUG] Vérification finale: ${finalCheck.length} chef(s) de zone dans la base pour agent ${destinationAgentId}`)
+          // Forcer la mise à jour de l'état avec les données de la base
+          if (finalCheck.length > 0) {
+            setChefsZone(finalCheck as UserProfile[])
+            console.log(`[DEBUG] État chefsZone forcé avec ${finalCheck.length} chefs de zone`)
+          }
+        }
+        
+        await loadMembresForAgent(destinationAgentId)
+      } else {
+        console.warn('handleTransferChefZoneToAgent: destinationAgentId invalide:', destinationAgentId)
       }
     } catch (error: any) {
       console.error('Erreur lors du transfert du chef de zone:', error)
@@ -561,6 +753,11 @@ function AssignerMembresChefZoneContent() {
       setTimeout(() => setError(''), 5000)
     } finally {
       setTransferChefZoneSaving(false)
+      // Désactiver le flag après un délai plus long pour permettre au chargement de se terminer
+      setTimeout(() => {
+        setIsTransferringChefZone(false)
+        console.log('[DEBUG] Flag isTransferringChefZone désactivé')
+      }, 500)
     }
   }
 
@@ -876,7 +1073,9 @@ function AssignerMembresChefZoneContent() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => {
+                            onClick={async () => {
+                              // S'assurer que tous les chefs de zone sont chargés
+                              await loadAllChefsZone()
                               setChefZoneToTransfer(chef)
                               setChefZoneFromAgentId(chef.agent_id || '')
                               setChefZoneToAgentId('')
@@ -1411,7 +1610,7 @@ function AssignerMembresChefZoneContent() {
                       setChefZoneToTransfer(null)
                       setChefZoneFromAgentId('')
                     } else {
-                      const chef = chefsZone.find(c => c.id === value)
+                      const chef = allChefsZone.find(c => c.id === value)
                       if (chef) {
                         setChefZoneToTransfer(chef)
                         setChefZoneFromAgentId(chef.agent_id || '')
@@ -1426,7 +1625,7 @@ function AssignerMembresChefZoneContent() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="aucun">Aucun</SelectItem>
-                    {chefsZone
+                    {allChefsZone
                       .filter(chef => chef.agent_id)
                       .map((chef) => (
                         <SelectItem key={chef.id} value={chef.id}>
