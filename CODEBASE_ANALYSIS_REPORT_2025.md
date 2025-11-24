@@ -64,7 +64,7 @@ npm install
 - 231 occurrences de `console.log`, `console.error`, `console.warn` dans 22 fichiers
 - Les logs de développement peuvent exposer des informations sensibles en production
 
-**Recommandation**:
+**Recommandation**: 
 ```typescript
 // Conditionner les logs pour la production
 if (process.env.NODE_ENV === 'development') {
@@ -111,9 +111,9 @@ useEffect(() => {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'table' }, handleChange)
     .subscribe()
 
-  return () => {
+return () => {
     subscription.unsubscribe()
-  }
+}
 }, [dependencies])
 ```
 

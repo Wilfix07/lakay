@@ -38,6 +38,7 @@ function ApprobationsPageContent() {
   const [showDetails, setShowDetails] = useState(false)
   const [searchInput, setSearchInput] = useState('')
   const [activeSearch, setActiveSearch] = useState('')
+  const [groupCollateralsComplete, setGroupCollateralsComplete] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     loadUserProfile()
@@ -48,6 +49,24 @@ function ApprobationsPageContent() {
       loadData()
     }
   }, [userProfile])
+
+  // Calculer les états de complétude des garanties pour les prêts de groupe
+  useEffect(() => {
+    async function calculateGroupCollateralsComplete() {
+      const completeMap: Record<string, boolean> = {}
+      for (const groupPret of groupPrets) {
+        completeMap[groupPret.pret_id] = await areAllGroupCollateralsComplete(groupPret.pret_id)
+      }
+      setGroupCollateralsComplete(completeMap)
+    }
+    
+    if (groupPrets.length > 0) {
+      calculateGroupCollateralsComplete()
+    } else {
+      setGroupCollateralsComplete({})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupPrets])
 
   async function loadUserProfile() {
     const profile = await getUserProfile()
@@ -185,10 +204,65 @@ function ApprobationsPageContent() {
     return collaterals.filter((c) => c.group_pret_id === group_pret_id)
   }
 
-  function areAllGroupCollateralsComplete(group_pret_id: string): boolean {
-    const groupCollaterals = getGroupCollaterals(group_pret_id)
-    if (groupCollaterals.length === 0) return false
-    return groupCollaterals.every((c) => c.statut === 'complet' && c.montant_restant === 0)
+  async function areAllGroupCollateralsComplete(group_pret_id: string): Promise<boolean> {
+    // Récupérer le prêt de groupe pour obtenir les membres
+    const groupPret = groupPrets.find(gp => gp.pret_id === group_pret_id)
+    if (!groupPret) return false
+
+    // Récupérer les membres du groupe
+    const { data: groupMembers, error: membersError } = await supabase
+      .from('membre_group_members')
+      .select('membre_id')
+      .eq('group_id', groupPret.group_id)
+
+    if (membersError || !groupMembers || groupMembers.length === 0) return false
+
+    // Récupérer les montants individuels depuis les remboursements
+    const { data: remboursements, error: rembError } = await supabase
+      .from('group_remboursements')
+      .select('membre_id, montant')
+      .eq('pret_id', group_pret_id)
+
+    if (rembError) return false
+
+    // Calculer le montant de prêt par membre
+    const montantsParMembre = new Map<string, number>()
+    remboursements?.forEach(r => {
+      const current = montantsParMembre.get(r.membre_id) || 0
+      montantsParMembre.set(r.membre_id, current + Number(r.montant || 0))
+    })
+
+    // Vérifier que chaque membre a sa garantie bloquée
+    const { calculateCollateralAmount } = await import('@/lib/systemSettings')
+    
+    for (const member of groupMembers) {
+      const montantPret = montantsParMembre.get(member.membre_id) || 0
+      if (montantPret <= 0) continue
+
+      const montantGarantieRequis = await calculateCollateralAmount(montantPret)
+      
+      const { data: blockedTransactions, error: epargneError } = await supabase
+        .from('epargne_transactions')
+        .select('montant, type')
+        .eq('membre_id', member.membre_id)
+        .eq('blocked_for_group_pret_id', group_pret_id)
+        .eq('is_blocked', true)
+
+      if (epargneError) return false
+
+      const montantBloque = blockedTransactions?.reduce((sum, t) => {
+        if (t.type === 'depot') {
+          return sum + Number(t.montant || 0)
+        }
+        return sum
+      }, 0) || 0
+
+      if (montantBloque < montantGarantieRequis) {
+        return false
+      }
+    }
+
+    return true
   }
 
   function getGroupName(group_id: number): string {
@@ -291,51 +365,51 @@ function ApprobationsPageContent() {
       return
     }
 
-    // Vérifier que la garantie existe et est complète
-    const collateral = getCollateral(pret.pret_id)
-    
-    if (!collateral) {
-      alert(`❌ Impossible d'approuver le prêt ${pret.pret_id}.\n\nLa garantie n'a pas été créée. Contactez l'administrateur.`)
+    // Calculer le montant de garantie requis
+    const { calculateCollateralAmount } = await import('@/lib/systemSettings')
+    const montantGarantieRequis = await calculateCollateralAmount(pret.montant_pret)
+
+    // Vérifier que la garantie est bloquée sur le compte épargne
+    const { data: blockedTransactions, error: epargneError } = await supabase
+      .from('epargne_transactions')
+      .select('montant, type')
+      .eq('membre_id', pret.membre_id)
+      .eq('blocked_for_pret_id', pret.pret_id)
+      .eq('is_blocked', true)
+
+    if (epargneError) {
+      console.error('Erreur lors de la vérification de la garantie:', epargneError)
+      alert(`❌ Erreur lors de la vérification de la garantie. Contactez l'administrateur.`)
       return
     }
 
-    // Vérifier que la garantie est complètement déposée
-    const montantDepose = Number(collateral.montant_depose || 0)
-    const montantRequis = Number(collateral.montant_requis || 0)
-    // Utiliser montant_restant directement (peut être 0, null ou undefined)
-    const montantRestant = collateral.montant_restant != null ? Number(collateral.montant_restant) : Math.max(0, montantRequis - montantDepose)
+    // Calculer le montant bloqué
+    const montantBloque = blockedTransactions?.reduce((sum, t) => {
+      if (t.type === 'depot') {
+        return sum + Number(t.montant || 0)
+      }
+      return sum
+    }, 0) || 0
 
-    if (montantDepose < montantRequis || montantRestant > 0) {
+    if (montantBloque < montantGarantieRequis) {
       alert(
         `❌ Impossible d'approuver le prêt ${pret.pret_id}.\n\n` +
-        `La garantie n'a pas été déposée en totalité.\n\n` +
-        `💰 Garantie requise: ${formatCurrency(montantRequis)}\n` +
-        `💵 Montant déposé: ${formatCurrency(montantDepose)}\n` +
-        `⚠️ Montant restant: ${formatCurrency(montantRestant)}\n\n` +
-        `Le membre doit déposer la garantie complète avant que vous puissiez approuver le prêt.\n` +
-        `Allez dans "Garanties" pour vérifier et enregistrer les dépôts.`
+        `La garantie n'est pas complètement bloquée sur le compte épargne.\n\n` +
+        `💰 Garantie requise: ${formatCurrency(montantGarantieRequis)}\n` +
+        `💵 Montant bloqué: ${formatCurrency(montantBloque)}\n` +
+        `⚠️ Montant manquant: ${formatCurrency(montantGarantieRequis - montantBloque)}\n\n` +
+        `L'agent de crédit doit bloquer la garantie complète sur le compte épargne du membre avant que vous puissiez approuver le prêt.\n` +
+        `Allez dans "Épargnes" pour bloquer la garantie.`
       )
       return
     }
 
-    if (!confirm(`Approuver le prêt ${pret.pret_id} ?\n\nMontant: ${formatCurrency(pret.montant_pret)}\nMembre: ${getMembre(pret.membre_id)?.prenom} ${getMembre(pret.membre_id)?.nom}\nGarantie: ${formatCurrency(montantDepose)} déposée`)) {
+    if (!confirm(`Approuver le prêt ${pret.pret_id} ?\n\nMontant: ${formatCurrency(pret.montant_pret)}\nMembre: ${getMembre(pret.membre_id)?.prenom} ${getMembre(pret.membre_id)?.nom}\nGarantie bloquée: ${formatCurrency(montantBloque)}`)) {
       return
     }
 
     setApproving(pret.pret_id)
     try {
-      // Mettre à jour le statut de la garantie à "complet" si nécessaire
-      if (collateral.statut !== 'complet') {
-        const { error: collateralUpdateError } = await supabase
-          .from('collaterals')
-          .update({ statut: 'complet' })
-          .eq('pret_id', pret.pret_id)
-
-        if (collateralUpdateError) {
-          console.error('Erreur lors de la mise à jour de la garantie:', collateralUpdateError)
-          throw new Error('Erreur lors de la mise à jour de la garantie: ' + collateralUpdateError.message)
-        }
-      }
 
       // La garantie est complète, donc on peut activer le prêt directement
       // Calculer le plan de remboursement
@@ -385,7 +459,7 @@ function ApprobationsPageContent() {
         throw new Error('Erreur lors de l\'activation du prêt: ' + activateError.message)
       }
 
-      alert(`✅ Prêt ${pret.pret_id} approuvé et activé avec succès!\n\nLa garantie est complète. Le prêt a été activé et les remboursements ont été créés. Le décaissement peut maintenant être effectué.`)
+      alert(`✅ Prêt ${pret.pret_id} approuvé et activé avec succès!\n\nLa garantie est bloquée sur le compte épargne. Le prêt a été activé et les remboursements ont été créés. Le décaissement peut maintenant être effectué.`)
       
       await loadData()
     } catch (error: any) {
@@ -404,17 +478,15 @@ function ApprobationsPageContent() {
       return
     }
 
-    // Vérifier que toutes les garanties sont complètes
-    const allComplete = areAllGroupCollateralsComplete(groupPret.pret_id)
+    // Vérifier que toutes les garanties sont bloquées sur les comptes épargne
+    const allComplete = await areAllGroupCollateralsComplete(groupPret.pret_id)
     
     if (!allComplete) {
-      const groupCollaterals = getGroupCollaterals(groupPret.pret_id)
-      const incompleteCount = groupCollaterals.filter(c => c.statut !== 'complet' || c.montant_restant > 0).length
       alert(
         `❌ Impossible d'approuver le prêt de groupe ${groupPret.pret_id}.\n\n` +
-        `Toutes les garanties des membres doivent être complètes.\n\n` +
-        `${incompleteCount} garantie${incompleteCount > 1 ? 's' : ''} encore incomplète${incompleteCount > 1 ? 's' : ''}.\n\n` +
-        `Allez dans "Garanties" pour vérifier et enregistrer les dépôts.`
+        `Toutes les garanties des membres doivent être bloquées sur leurs comptes épargne.\n\n` +
+        `L'agent de crédit doit bloquer la garantie complète pour chaque membre avant que vous puissiez approuver le prêt.\n` +
+        `Allez dans "Épargnes" pour bloquer les garanties.`
       )
       return
     }
@@ -449,7 +521,7 @@ function ApprobationsPageContent() {
 
       if (activateError) throw activateError
 
-      alert(`✅ Prêt de groupe ${groupPret.pret_id} approuvé et activé avec succès!\n\nToutes les garanties sont complètes. Le prêt a été activé et les remboursements ont été créés pour tous les membres. Le décaissement peut maintenant être effectué.`)
+      alert(`✅ Prêt de groupe ${groupPret.pret_id} approuvé et activé avec succès!\n\nToutes les garanties sont bloquées sur les comptes épargne. Le prêt a été activé et les remboursements ont été créés pour tous les membres. Le décaissement peut maintenant être effectué.`)
       
       await loadData()
     } catch (error) {
@@ -755,7 +827,7 @@ function ApprobationsPageContent() {
                     const agent = getAgent(groupPret.agent_id)
                     const groupCollaterals = getGroupCollaterals(groupPret.pret_id)
                     const isProcessing = approvingGroup === groupPret.pret_id
-                    const allComplete = areAllGroupCollateralsComplete(groupPret.pret_id)
+                    const allComplete = groupCollateralsComplete[groupPret.pret_id] ?? false
                     
                     const totalRequis = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_requis || 0), 0)
                     const totalDepose = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)

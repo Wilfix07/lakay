@@ -220,6 +220,9 @@ export interface EpargneTransaction {
   notes?: string | null
   created_at: string
   updated_at?: string
+  is_blocked?: boolean
+  blocked_for_pret_id?: string | null
+  blocked_for_group_pret_id?: string | null
 }
 
 export interface MembreGroup {

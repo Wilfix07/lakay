@@ -100,12 +100,6 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
     {
-      title: 'Garanties',
-      href: '/collaterals',
-      icon: Wallet,
-      roles: ['admin', 'manager', 'agent'] as UserRole[],
-    },
-    {
       title: 'Épargnes',
       href: '/epargne',
       icon: PiggyBank,

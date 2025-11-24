@@ -14,6 +14,7 @@ const nextConfig: NextConfig = {
   compress: true,
   // Compatibilité avec Next.js 16
   reactStrictMode: true,
+  // Note: Le warning Turbopack peut être ignoré - il n'affecte pas la fonctionnalité
 };
 
 export default nextConfig;

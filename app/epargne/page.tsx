@@ -3,12 +3,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { DashboardLayout } from '@/components/DashboardLayout'
-import { supabase, type UserProfile, type Membre } from '@/lib/supabase'
+import { supabase, type UserProfile, type Membre, type Pret, type GroupPret } from '@/lib/supabase'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { Pencil, Trash2 } from 'lucide-react'
+import { Pencil, Trash2, Lock, Unlock } from 'lucide-react'
 
-type TransactionType = 'depot' | 'retrait'
+type TransactionType = 'depot' | 'retrait' | 'collateral'
 
 type EpargneTransaction = {
   id: number
@@ -19,6 +19,9 @@ type EpargneTransaction = {
   date_operation: string
   notes: string | null
   created_at: string
+  is_blocked?: boolean
+  blocked_for_pret_id?: string | null
+  blocked_for_group_pret_id?: string | null
 }
 
 function EpargnePageContent() {
@@ -29,22 +32,85 @@ function EpargnePageContent() {
   const [transactions, setTransactions] = useState<EpargneTransaction[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [realtimeConnected, setRealtimeConnected] = useState(false)
+  const [migrating, setMigrating] = useState(false)
+  const [previousSoldeDisponible, setPreviousSoldeDisponible] = useState<number>(0)
+  const [soldeChanged, setSoldeChanged] = useState(false)
 
   const [formData, setFormData] = useState<{
     type: TransactionType
     montant: string
     date_operation: string
     notes: string
+    collateralPretId: string
+    collateralGroupPretId: string
+    collateralType: 'individual' | 'group' | ''
   }>({
     type: 'depot',
     montant: '',
     date_operation: new Date().toISOString().split('T')[0],
     notes: '',
+    collateralPretId: '',
+    collateralGroupPretId: '',
+    collateralType: '',
   })
+
+  // États pour charger les prêts
+  const [prets, setPrets] = useState<Pret[]>([])
+  const [groupPrets, setGroupPrets] = useState<GroupPret[]>([])
+  const [loadingPrets, setLoadingPrets] = useState(false)
 
   const solde = useMemo(() => {
     return transactions.reduce((sum, t) => {
       return sum + (t.type === 'depot' ? Number(t.montant || 0) : -Number(t.montant || 0))
+    }, 0)
+  }, [transactions])
+
+  const soldeDisponible = useMemo(() => {
+    let total = 0
+    let bloque = 0
+    transactions.forEach((t) => {
+      const montant = Number(t.montant || 0)
+      if (t.type === 'depot') {
+        total += montant
+        // Les dépôts bloqués réduisent le solde disponible
+        if (t.is_blocked) {
+          bloque += montant
+        }
+      } else if (t.type === 'retrait') {
+        // Les retraits normaux réduisent le total
+        total -= montant
+        // Les retraits bloqués (collateral) sont déjà déduits du total
+        // mais doivent être comptabilisés dans le solde bloqué
+        if (t.is_blocked) {
+          bloque += montant
+        }
+      }
+    })
+    // Le solde disponible = total des dépôts - retraits - montants bloqués
+    return Math.max(0, total - bloque)
+  }, [transactions])
+
+  // Détecter les changements du solde disponible pour l'animation
+  useEffect(() => {
+    if (previousSoldeDisponible !== soldeDisponible && previousSoldeDisponible !== 0) {
+      setSoldeChanged(true)
+      // Réinitialiser l'animation après 2 secondes
+      const timer = setTimeout(() => {
+        setSoldeChanged(false)
+      }, 2000)
+      return () => clearTimeout(timer)
+    }
+    setPreviousSoldeDisponible(soldeDisponible)
+  }, [soldeDisponible, previousSoldeDisponible])
+
+  const soldeBloque = useMemo(() => {
+    return transactions.reduce((sum, t) => {
+      // Les montants bloqués peuvent être des dépôts bloqués ou des retraits bloqués (collateral)
+      if (t.is_blocked) {
+        return sum + Number(t.montant || 0)
+      }
+      return sum
     }, 0)
   }, [transactions])
 
@@ -70,10 +136,111 @@ function EpargnePageContent() {
   useEffect(() => {
     if (selectedMembreId) {
       loadTransactions(selectedMembreId)
+      loadPretsForMember(selectedMembreId)
     } else {
       setTransactions([])
+      setPrets([])
+      setGroupPrets([])
     }
   }, [selectedMembreId])
+
+  // Subscription Supabase Realtime pour rendre la page dynamique
+  useEffect(() => {
+    if (!userProfile || !selectedMembreId) return
+
+    let transactionsChannel: ReturnType<typeof supabase.channel> | null = null
+    let isUnmounting = false
+
+    try {
+      // Construire le filtre selon le rôle
+      // Note: Les filtres Realtime doivent utiliser le format correct
+      const transactionsFilter = `membre_id=eq.${selectedMembreId}`
+
+      // Subscription pour les transactions d'épargne
+      transactionsChannel = supabase
+        .channel(`epargne-transactions-${selectedMembreId}-${Date.now()}`) // Ajouter timestamp pour éviter les conflits
+        .on(
+          'postgres_changes',
+          {
+            event: '*', // INSERT, UPDATE, DELETE
+            schema: 'public',
+            table: 'epargne_transactions',
+            filter: transactionsFilter,
+          },
+          (payload) => {
+            if (isUnmounting) return // Ignorer les callbacks après le démontage
+            if (process.env.NODE_ENV === 'development') {
+              console.log('💰 Changement détecté dans epargne_transactions:', payload.eventType)
+            }
+            // Recharger les transactions pour ce membre de manière asynchrone
+            // Utiliser setTimeout pour éviter les problèmes de timing avec les callbacks Realtime
+            setTimeout(() => {
+              if (!isUnmounting) {
+                loadTransactions(selectedMembreId).catch((error) => {
+                  // Gérer silencieusement les erreurs de rechargement
+                  if (process.env.NODE_ENV === 'development') {
+                    console.warn('⚠️ Erreur lors du rechargement des transactions:', error)
+                  }
+                })
+              }
+            }, 100)
+          }
+        )
+        .subscribe((status, err) => {
+          if (isUnmounting) return // Ignorer les callbacks après le démontage
+          
+          // Gérer les différents statuts de subscription
+          switch (status) {
+            case 'SUBSCRIBED':
+              setRealtimeConnected(true)
+              if (process.env.NODE_ENV === 'development') {
+                console.log('✅ Subscription epargne_transactions active')
+              }
+              break
+            case 'CHANNEL_ERROR':
+              // Ne pas utiliser console.error - utiliser seulement console.warn en développement
+              // L'erreur peut être due à une fermeture de connexion normale ou à un problème réseau temporaire
+              if (process.env.NODE_ENV === 'development' && err) {
+                console.warn('⚠️ Erreur de subscription epargne_transactions:', err.message || 'Erreur inconnue')
+              }
+              setRealtimeConnected(false)
+              break
+            case 'TIMED_OUT':
+            case 'CLOSED':
+              // Ne pas afficher d'erreur pour les fermetures normales ou timeouts
+              // Ces statuts sont normaux et ne nécessitent pas de log
+              setRealtimeConnected(false)
+              break
+            default:
+              // Autres statuts (JOINED, etc.) - ne pas afficher d'erreur
+              setRealtimeConnected(false)
+              break
+          }
+        })
+    } catch (error) {
+      // Gérer les erreurs de configuration de la subscription
+      console.warn('⚠️ Impossible de configurer la subscription Realtime:', error)
+      setRealtimeConnected(false)
+    }
+
+    // Nettoyer la subscription au démontage ou changement de membre
+    return () => {
+      isUnmounting = true
+      if (transactionsChannel) {
+        try {
+          transactionsChannel.unsubscribe()
+        } catch (error) {
+          // Ignorer silencieusement les erreurs lors du nettoyage
+          // Ces erreurs sont normales lors de la fermeture de connexions
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('⚠️ Erreur lors du nettoyage de la subscription:', error)
+          }
+        }
+      }
+      setRealtimeConnected(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userProfile, selectedMembreId])
 
   async function loadUserProfile() {
     const profile = await getUserProfile()
@@ -164,6 +331,65 @@ function EpargnePageContent() {
     }
   }
 
+  async function loadPretsForMember(membreId: string) {
+    setLoadingPrets(true)
+    try {
+      // Charger les prêts individuels en attente ou actifs
+      const { data: pretsData, error: pretsError } = await supabase
+        .from('prets')
+        .select('pret_id, montant_pret, statut')
+        .eq('membre_id', membreId)
+        .in('statut', ['en_attente_garantie', 'en_attente_approbation', 'actif'])
+        .order('created_at', { ascending: false })
+
+      if (pretsError && pretsError.code !== '42P01' && pretsError.code !== 'PGRST116') {
+        console.error('Erreur chargement prêts:', pretsError)
+      }
+
+      setPrets((pretsData || []) as Pret[])
+
+      // Charger les prêts de groupe
+      try {
+        // Récupérer les groupes du membre
+        const { data: groupMembers, error: groupMembersError } = await supabase
+          .from('membre_group_members')
+          .select('group_id')
+          .eq('membre_id', membreId)
+
+        if (groupMembersError && groupMembersError.code !== '42P01' && groupMembersError.code !== 'PGRST116') {
+          throw groupMembersError
+        }
+
+        if (groupMembers && groupMembers.length > 0) {
+          const groupIds = groupMembers.map(gm => gm.group_id)
+          const { data: groupPretsData, error: groupPretsError } = await supabase
+            .from('group_prets')
+            .select('pret_id, montant_pret, statut, group_id')
+            .in('group_id', groupIds)
+            .in('statut', ['en_attente_garantie', 'en_attente_approbation', 'actif'])
+            .order('created_at', { ascending: false })
+
+          if (groupPretsError && groupPretsError.code !== '42P01' && groupPretsError.code !== 'PGRST116') {
+            console.error('Erreur chargement prêts de groupe:', groupPretsError)
+          }
+
+          setGroupPrets((groupPretsData || []) as GroupPret[])
+        } else {
+          setGroupPrets([])
+        }
+      } catch (error: any) {
+        if (error?.code !== '42P01' && error?.code !== 'PGRST116') {
+          console.error('Erreur chargement groupes:', error)
+        }
+        setGroupPrets([])
+      }
+    } catch (error) {
+      console.error('Erreur chargement prêts:', error)
+    } finally {
+      setLoadingPrets(false)
+    }
+  }
+
   const [editingTransaction, setEditingTransaction] = useState<EpargneTransaction | null>(null)
 
   async function handleSubmit(e: React.FormEvent) {
@@ -177,9 +403,25 @@ function EpargnePageContent() {
       alert('Veuillez saisir un montant positif.')
       return
     }
-    if (formData.type === 'retrait' && montant > solde) {
-      alert('Montant du retrait supérieur au solde disponible.')
+    if (formData.type === 'retrait' && montant > soldeDisponible) {
+      alert(`Montant du retrait supérieur au solde disponible (${formatCurrency(soldeDisponible)}).`)
       return
+    }
+
+    // Validation pour les garanties (collateral)
+    if (formData.type === 'collateral') {
+      if (!formData.collateralType) {
+        alert('Veuillez sélectionner un type de prêt pour la garantie.')
+        return
+      }
+      if (formData.collateralType === 'individual' && !formData.collateralPretId) {
+        alert('Veuillez sélectionner un prêt individuel pour la garantie.')
+        return
+      }
+      if (formData.collateralType === 'group' && !formData.collateralGroupPretId) {
+        alert('Veuillez sélectionner un prêt de groupe pour la garantie.')
+        return
+      }
     }
 
     try {
@@ -221,12 +463,39 @@ function EpargnePageContent() {
 
       if (editingTransaction) {
         // Mise à jour d'une transaction existante
+        // Si c'est un collateral, le type doit être 'retrait' avec is_blocked: true
+        const transactionType = formData.type === 'collateral' ? 'retrait' : formData.type
+        const isBlocked = formData.type === 'collateral' || editingTransaction.is_blocked
+        const blockedForPretId = formData.type === 'collateral' && formData.collateralType === 'individual' 
+          ? formData.collateralPretId 
+          : formData.type !== 'collateral' && editingTransaction.is_blocked
+          ? editingTransaction.blocked_for_pret_id
+          : null
+        const blockedForGroupPretId = formData.type === 'collateral' && formData.collateralType === 'group'
+          ? formData.collateralGroupPretId
+          : formData.type !== 'collateral' && editingTransaction.is_blocked
+          ? editingTransaction.blocked_for_group_pret_id
+          : null
+
+        // Validation : pour le collateral, vérifier que le solde disponible est suffisant
+        if (formData.type === 'collateral' && montant > soldeDisponible) {
+          setErrorMessage(
+            `Le montant de la garantie (${formatCurrency(montant)}) dépasse le solde disponible ` +
+            `(${formatCurrency(soldeDisponible)}). Veuillez réduire le montant ou ajouter des fonds au compte d'épargne.`
+          )
+          setSubmitting(false)
+          return
+        }
+
         const { error } = await supabase
           .from('epargne_transactions')
           .update({
-            type: formData.type,
+            type: transactionType,
             montant,
             date_operation: formData.date_operation,
+            is_blocked: isBlocked,
+            blocked_for_pret_id: blockedForPretId,
+            blocked_for_group_pret_id: blockedForGroupPretId,
           })
           .eq('id', editingTransaction.id)
 
@@ -241,14 +510,37 @@ function EpargnePageContent() {
         alert('Opération mise à jour avec succès.')
       } else {
         // Création d'une nouvelle transaction
+        // Pour les garanties (collateral), créer un RETRAIT bloqué pour déduire du solde disponible
+        const transactionType = formData.type === 'collateral' ? 'retrait' : formData.type
+        const isBlocked = formData.type === 'collateral'
+        const blockedForPretId = formData.type === 'collateral' && formData.collateralType === 'individual' 
+          ? formData.collateralPretId 
+          : null
+        const blockedForGroupPretId = formData.type === 'collateral' && formData.collateralType === 'group'
+          ? formData.collateralGroupPretId
+          : null
+
+        // Validation : pour le collateral, vérifier que le solde disponible est suffisant
+        if (formData.type === 'collateral' && montant > soldeDisponible) {
+          setErrorMessage(
+            `Le montant de la garantie (${formatCurrency(montant)}) dépasse le solde disponible ` +
+            `(${formatCurrency(soldeDisponible)}). Veuillez réduire le montant ou ajouter des fonds au compte d'épargne.`
+          )
+          setSubmitting(false)
+          return
+        }
+
         const { error } = await supabase
           .from('epargne_transactions')
           .insert([{
             membre_id: selectedMembreId,
             agent_id: finalAgentId,
-            type: formData.type,
+            type: transactionType,
             montant,
             date_operation: formData.date_operation,
+            is_blocked: isBlocked,
+            blocked_for_pret_id: blockedForPretId,
+            blocked_for_group_pret_id: blockedForGroupPretId,
             // Note: La colonne 'notes' n'existe pas dans la table epargne_transactions
           }])
 
@@ -267,6 +559,48 @@ function EpargnePageContent() {
             setErrorMessage(
               "La table 'epargne_transactions' n'existe pas encore. Veuillez créer la table côté Supabase pour activer l'épargne."
             )
+          } else if (error.message?.includes('blocked_for_group_pret_id') || error.message?.includes('blocked_for_pret_id') || error.message?.includes('is_blocked')) {
+            // Essayer d'exécuter la migration automatiquement via l'API
+            try {
+              console.log('🔄 Tentative d\'exécution automatique de la migration...')
+              const migrationResponse = await fetch('/api/migrate-epargne', {
+                method: 'POST',
+              })
+              
+              if (migrationResponse.ok) {
+                const migrationResult = await migrationResponse.json()
+                console.log('✅ Migration exécutée:', migrationResult)
+                setErrorMessage(
+                  "✅ Migration exécutée automatiquement!\n\n" +
+                  "Les colonnes nécessaires ont été ajoutées. Veuillez réessayer l'opération."
+                )
+                // Recharger les transactions après un court délai
+                setTimeout(() => {
+                  if (selectedMembreId) {
+                    loadTransactions(selectedMembreId)
+                  }
+                }, 1000)
+              } else {
+                const migrationError = await migrationResponse.json()
+                console.error('Erreur migration:', migrationError)
+                setErrorMessage(
+                  "❌ Colonnes manquantes dans la table 'epargne_transactions'.\n\n" +
+                  "La migration automatique a échoué. Veuillez exécuter manuellement la migration SQL dans Supabase.\n\n" +
+                  "Fichier de migration: supabase/migration_add_epargne_blocked.sql\n\n" +
+                  "Ou exécutez d'abord: supabase/migration_add_epargne_blocked_function.sql\n" +
+                  "puis réessayez l'opération."
+                )
+              }
+            } catch (migrationErr) {
+              console.error('Erreur lors de la migration automatique:', migrationErr)
+              setErrorMessage(
+                "❌ Colonnes manquantes dans la table 'epargne_transactions'.\n\n" +
+                "Veuillez exécuter la migration SQL dans Supabase pour ajouter les colonnes nécessaires au blocage des garanties.\n\n" +
+                "1. Exécutez d'abord: supabase/migration_add_epargne_blocked_function.sql\n" +
+                "2. Puis réessayez l'opération.\n\n" +
+                "Ou exécutez directement: supabase/migration_add_epargne_blocked.sql"
+              )
+            }
           } else if ((error as any).code === '23503' || error.message?.includes('foreign key constraint')) {
             // Erreur de contrainte de clé étrangère
             if (error.message?.includes('agent_id')) {
@@ -292,6 +626,9 @@ function EpargnePageContent() {
         montant: '',
         date_operation: new Date().toISOString().split('T')[0],
         notes: '',
+        collateralPretId: '',
+        collateralGroupPretId: '',
+        collateralType: '',
       })
       await loadTransactions(selectedMembreId)
     } catch (error) {
@@ -304,11 +641,16 @@ function EpargnePageContent() {
 
   function handleEdit(transaction: EpargneTransaction) {
     setEditingTransaction(transaction)
+    // Si la transaction est bloquée, on la traite comme une garantie
+    const transactionType: TransactionType = transaction.is_blocked ? 'collateral' : transaction.type
     setFormData({
-      type: transaction.type,
+      type: transactionType,
       montant: transaction.montant.toString(),
       date_operation: transaction.date_operation,
       notes: transaction.notes || '',
+      collateralPretId: transaction.blocked_for_pret_id || '',
+      collateralGroupPretId: transaction.blocked_for_group_pret_id || '',
+      collateralType: transaction.blocked_for_pret_id ? 'individual' : transaction.blocked_for_group_pret_id ? 'group' : '',
     })
   }
 
@@ -319,6 +661,9 @@ function EpargnePageContent() {
       montant: '',
       date_operation: new Date().toISOString().split('T')[0],
       notes: '',
+      collateralPretId: '',
+      collateralGroupPretId: '',
+      collateralType: '',
     })
   }
 
@@ -335,6 +680,147 @@ function EpargnePageContent() {
     } catch (err: any) {
       console.error(err)
       setErrorMessage('Impossible de supprimer la transaction: ' + (err.message || 'Erreur inconnue'))
+    }
+  }
+
+  async function handleToggleBlock(transaction: EpargneTransaction) {
+    if (!transaction.is_blocked) {
+      // Bloquer la transaction
+      const pretId = prompt('Entrez l\'ID du prêt pour lequel bloquer cette garantie (ou laissez vide pour un prêt de groupe):')
+      if (pretId === null) return // User cancelled
+      
+      const groupPretId = pretId === '' ? prompt('Entrez l\'ID du prêt de groupe:') : null
+      if (pretId === '' && groupPretId === null) return // User cancelled
+
+      try {
+        setSubmitting(true)
+        const { error } = await supabase
+          .from('epargne_transactions')
+          .update({
+            is_blocked: true,
+            blocked_for_pret_id: pretId || null,
+            blocked_for_group_pret_id: groupPretId || null,
+          })
+          .eq('id', transaction.id)
+
+        if (error) throw error
+        alert('Garantie bloquée avec succès.')
+        await loadTransactions(selectedMembreId)
+      } catch (err: any) {
+        console.error(err)
+        setErrorMessage('Impossible de bloquer la garantie: ' + (err.message || 'Erreur inconnue'))
+      } finally {
+        setSubmitting(false)
+      }
+    } else {
+      // Débloquer la transaction
+      if (!confirm(`Débloquer cette garantie pour le prêt ${transaction.blocked_for_pret_id || transaction.blocked_for_group_pret_id || 'inconnu'} ?`)) return
+      
+      try {
+        setSubmitting(true)
+        const { error } = await supabase
+          .from('epargne_transactions')
+          .update({
+            is_blocked: false,
+            blocked_for_pret_id: null,
+            blocked_for_group_pret_id: null,
+          })
+          .eq('id', transaction.id)
+
+        if (error) throw error
+        alert('Garantie débloquée avec succès.')
+        await loadTransactions(selectedMembreId)
+      } catch (err: any) {
+        console.error(err)
+        setErrorMessage('Impossible de débloquer la garantie: ' + (err.message || 'Erreur inconnue'))
+      } finally {
+        setSubmitting(false)
+      }
+    }
+  }
+
+  async function handleRunMigration() {
+    setMigrating(true)
+    setErrorMessage(null)
+    
+    try {
+      // Essayer d'appeler la fonction RPC si elle existe
+      const { data, error } = await supabase.rpc('add_epargne_blocked_columns')
+      
+      if (error) {
+        console.log('Fonction RPC non disponible:', error.message)
+        
+        // Si la fonction RPC n'existe pas, essayer via l'API route
+        console.log('Tentative via API route...')
+        try {
+          const response = await fetch('/api/migrate-epargne', {
+            method: 'POST',
+          })
+          
+          if (response.ok) {
+            const result = await response.json()
+            setErrorMessage(
+              `✅ Migration réussie!\n\n` +
+              `Les colonnes suivantes ont été ajoutées:\n` +
+              result.results?.map((r: any) => `- ${r.column_name}: ${r.message}`).join('\n') || 'Toutes les colonnes'
+            )
+            // Recharger les transactions après un court délai
+            setTimeout(() => {
+              if (selectedMembreId) {
+                loadTransactions(selectedMembreId)
+              }
+            }, 1000)
+            return
+          } else {
+            const errorData = await response.json()
+            throw new Error(errorData.error || 'Erreur API')
+          }
+        } catch (apiError: any) {
+          console.error('Erreur API route:', apiError)
+          // Afficher les instructions pour exécuter manuellement
+          setErrorMessage(
+            `❌ La migration automatique n'est pas disponible (problème de connexion MCP).\n\n` +
+            `📋 Pour résoudre ce problème, exécutez cette migration SQL dans Supabase Dashboard:\n\n` +
+            `1. Allez dans Supabase Dashboard → SQL Editor\n` +
+            `2. Copiez le contenu du fichier: supabase/migration_add_epargne_blocked_simple.sql\n` +
+            `   (ou supabase/migration_add_epargne_blocked.sql pour la version complète)\n` +
+            `3. Collez et exécutez dans l'éditeur SQL\n` +
+            `4. Rafraîchissez cette page\n\n` +
+            `📖 Consultez QUICK_MIGRATION_GUIDE.md pour plus de détails.`
+          )
+          return
+        }
+      }
+      
+      // Migration réussie via RPC
+      if (data && data.length > 0) {
+        const addedColumns = data.filter((r: any) => r.status === 'added').map((r: any) => r.column_name)
+        const message = addedColumns.length > 0
+          ? `✅ Migration réussie!\n\nColonnes ajoutées:\n${addedColumns.map((c: string) => `- ${c}`).join('\n')}`
+          : `✅ Migration réussie!\n\nToutes les colonnes existent déjà.`
+        
+        setErrorMessage(message)
+        // Recharger les transactions après un court délai
+        setTimeout(() => {
+          if (selectedMembreId) {
+            loadTransactions(selectedMembreId)
+          }
+        }, 1000)
+      } else {
+        setErrorMessage('✅ Migration réussie! Toutes les colonnes existent déjà.')
+      }
+    } catch (err: any) {
+      console.error('Erreur migration:', err)
+      setErrorMessage(
+        `❌ Erreur lors de la migration: ${err.message}\n\n` +
+        `Veuillez exécuter manuellement la migration SQL dans Supabase Dashboard:\n\n` +
+        `1. Ouvrez Supabase Dashboard → SQL Editor\n` +
+        `2. Exécutez: supabase/migration_add_epargne_blocked_simple.sql\n` +
+        `3. Rafraîchissez cette page\n\n` +
+        `📖 Voir QUICK_MIGRATION_GUIDE.md pour plus d'aide.`
+      )
+    } finally {
+      setMigrating(false)
     }
   }
 
@@ -360,7 +846,7 @@ function EpargnePageContent() {
     )
   }
 
-  const canOperate = userProfile.role === 'agent' || userProfile.role === 'admin'
+  const canOperate = userProfile.role === 'agent' || userProfile.role === 'manager' || userProfile.role === 'admin'
 
   return (
     <DashboardLayout userProfile={userProfile} onSignOut={handleSignOut}>
@@ -369,7 +855,10 @@ function EpargnePageContent() {
           <div>
             <h1 className="text-3xl font-bold text-foreground">Épargne</h1>
             <p className="text-muted-foreground mt-2">
-              Collecte d’épargne des membres. Les agents peuvent enregistrer dépôts et retraits.
+              Collecte d'épargne des membres. Les agents et managers peuvent enregistrer dépôts, retraits et bloquer des garanties.
+              {realtimeConnected && (
+                <span className="ml-2 text-green-600 text-sm">● En direct</span>
+              )}
             </p>
           </div>
         </div>
@@ -396,12 +885,50 @@ function EpargnePageContent() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Solde actuel
+                Solde total
               </label>
               <div className="px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-800">
                 {formatCurrency(solde)}
               </div>
             </div>
+
+            {selectedMembreId && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
+                    Solde disponible
+                    {realtimeConnected && (
+                      <span className="inline-flex items-center gap-1 text-xs text-gray-500 font-normal">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                        </span>
+                        <span>Temps réel</span>
+                      </span>
+                    )}
+                  </label>
+                  <div 
+                    className={`px-3 py-2 border rounded-lg font-semibold transition-all duration-500 ease-in-out ${
+                      soldeChanged 
+                        ? 'bg-green-100 text-green-900 border-green-400 shadow-lg scale-[1.02] ring-2 ring-green-200' 
+                        : 'bg-green-50 text-green-800 border-gray-200'
+                    }`}
+                  >
+                    <span className={`inline-block ${soldeChanged ? 'animate-pulse' : ''}`}>
+                      {formatCurrency(soldeDisponible)}
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Solde bloqué (garantie)
+                  </label>
+                  <div className="px-3 py-2 border border-gray-200 rounded-lg bg-amber-50 text-amber-800 font-semibold">
+                    {formatCurrency(soldeBloque)}
+                  </div>
+                </div>
+              </>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -415,7 +942,16 @@ function EpargnePageContent() {
 
           {errorMessage && (
             <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {errorMessage}
+              <div className="whitespace-pre-line">{errorMessage}</div>
+              {errorMessage.includes('Colonnes manquantes') && (
+                <button
+                  onClick={handleRunMigration}
+                  disabled={migrating}
+                  className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm"
+                >
+                  {migrating ? 'Migration en cours...' : '🔧 Exécuter la migration automatiquement'}
+                </button>
+              )}
             </div>
           )}
 
@@ -427,12 +963,23 @@ function EpargnePageContent() {
                 </label>
                 <select
                   value={formData.type}
-                  onChange={(e) => setFormData({ ...formData, type: e.target.value as TransactionType })}
+                  onChange={(e) => {
+                    const newType = e.target.value as TransactionType
+                    setFormData({ 
+                      ...formData, 
+                      type: newType,
+                      // Réinitialiser les champs de garantie si on change de type
+                      collateralPretId: newType !== 'collateral' ? '' : formData.collateralPretId,
+                      collateralGroupPretId: newType !== 'collateral' ? '' : formData.collateralGroupPretId,
+                      collateralType: newType !== 'collateral' ? '' : formData.collateralType,
+                    })
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   disabled={!canOperate || !selectedMembreId}
                 >
                   <option value="depot">Dépôt</option>
                   <option value="retrait">Retrait</option>
+                  <option value="collateral">Collateral (Garantie)</option>
                 </select>
               </div>
 
@@ -444,12 +991,18 @@ function EpargnePageContent() {
                   type="number"
                   min="0"
                   step="0.01"
+                  max={formData.type === 'retrait' ? soldeDisponible : undefined}
                   required
                   value={formData.montant}
                   onChange={(e) => setFormData({ ...formData, montant: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   disabled={!canOperate || !selectedMembreId}
                 />
+                {formData.type === 'retrait' && selectedMembreId && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Maximum disponible: {formatCurrency(soldeDisponible)}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -466,6 +1019,97 @@ function EpargnePageContent() {
                 />
               </div>
             </div>
+
+            {/* Champs pour la garantie (collateral) */}
+            {formData.type === 'collateral' && selectedMembreId && (
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Type de prêt *
+                  </label>
+                  <select
+                    value={formData.collateralType}
+                    onChange={(e) => {
+                      const newCollateralType = e.target.value as 'individual' | 'group' | ''
+                      setFormData({
+                        ...formData,
+                        collateralType: newCollateralType,
+                        collateralPretId: newCollateralType !== 'individual' ? '' : formData.collateralPretId,
+                        collateralGroupPretId: newCollateralType !== 'group' ? '' : formData.collateralGroupPretId,
+                      })
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={!canOperate || !selectedMembreId || loadingPrets}
+                  >
+                    <option value="">Sélectionner un type</option>
+                    <option value="individual">Prêt individuel</option>
+                    <option value="group">Prêt de groupe</option>
+                  </select>
+                </div>
+
+                {formData.collateralType === 'individual' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Prêt individuel *
+                    </label>
+                    {loadingPrets ? (
+                      <div className="px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
+                        Chargement...
+                      </div>
+                    ) : prets.length === 0 ? (
+                      <div className="px-3 py-2 border border-gray-300 rounded-lg bg-yellow-50 text-yellow-700 text-sm">
+                        Aucun prêt individuel disponible
+                      </div>
+                    ) : (
+                      <select
+                        value={formData.collateralPretId}
+                        onChange={(e) => setFormData({ ...formData, collateralPretId: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        disabled={!canOperate || !selectedMembreId}
+                      >
+                        <option value="">Sélectionner un prêt</option>
+                        {prets.map((pret) => (
+                          <option key={pret.pret_id} value={pret.pret_id}>
+                            {pret.pret_id} - {formatCurrency(pret.montant_pret)} ({pret.statut})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+
+                {formData.collateralType === 'group' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Prêt de groupe *
+                    </label>
+                    {loadingPrets ? (
+                      <div className="px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
+                        Chargement...
+                      </div>
+                    ) : groupPrets.length === 0 ? (
+                      <div className="px-3 py-2 border border-gray-300 rounded-lg bg-yellow-50 text-yellow-700 text-sm">
+                        Aucun prêt de groupe disponible
+                      </div>
+                    ) : (
+                      <select
+                        value={formData.collateralGroupPretId}
+                        onChange={(e) => setFormData({ ...formData, collateralGroupPretId: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        disabled={!canOperate || !selectedMembreId}
+                      >
+                        <option value="">Sélectionner un prêt de groupe</option>
+                        {groupPrets.map((groupPret) => (
+                          <option key={groupPret.pret_id} value={groupPret.pret_id}>
+                            {groupPret.pret_id} - {formatCurrency(groupPret.montant_pret)} ({groupPret.statut})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -484,7 +1128,15 @@ function EpargnePageContent() {
             <div className="flex gap-2">
               <button
                 type="submit"
-                disabled={!canOperate || !selectedMembreId || submitting}
+                disabled={
+                  !canOperate || 
+                  !selectedMembreId || 
+                  submitting ||
+                  (formData.type === 'retrait' && parseFloat(formData.montant || '0') > soldeDisponible) ||
+                  (formData.type === 'collateral' && (!formData.collateralType || 
+                    (formData.collateralType === 'individual' && !formData.collateralPretId) ||
+                    (formData.collateralType === 'group' && !formData.collateralGroupPretId)))
+                }
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
               >
                 {submitting ? 'Enregistrement...' : editingTransaction ? 'Mettre à jour' : "Enregistrer l'opération"}
@@ -523,6 +1175,9 @@ function EpargnePageContent() {
                     Montant
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Statut
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Notes
                   </th>
                   {(userProfile?.role === 'admin' || userProfile?.role === 'manager' || userProfile?.role === 'agent') && (
@@ -535,7 +1190,7 @@ function EpargnePageContent() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {selectedMembreId && transactions.length === 0 ? (
                   <tr>
-                    <td colSpan={(userProfile?.role === 'admin' || userProfile?.role === 'manager' || userProfile?.role === 'agent') ? 5 : 4} className="px-6 py-4 text-center text-gray-500">
+                    <td colSpan={(userProfile?.role === 'admin' || userProfile?.role === 'manager' || userProfile?.role === 'agent') ? 6 : 5} className="px-6 py-4 text-center text-gray-500">
                       Aucune opération enregistrée
                     </td>
                   </tr>
@@ -549,15 +1204,34 @@ function EpargnePageContent() {
                         <span
                           className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
                             t.type === 'depot'
-                              ? 'bg-green-100 text-green-800'
+                              ? t.is_blocked
+                                ? 'bg-purple-100 text-purple-800'
+                                : 'bg-green-100 text-green-800'
                               : 'bg-amber-100 text-amber-800'
                           }`}
                         >
-                          {t.type === 'depot' ? 'Dépôt' : 'Retrait'}
+                          {t.type === 'depot' 
+                            ? 'Dépôt'
+                            : t.type === 'retrait' && t.is_blocked
+                            ? 'Collateral'
+                            : 'Retrait'}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
                         {formatCurrency(t.montant)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        {t.is_blocked ? (
+                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                            Bloqué
+                            {t.blocked_for_pret_id && ` (${t.blocked_for_pret_id})`}
+                            {t.blocked_for_group_pret_id && ` (Groupe: ${t.blocked_for_group_pret_id})`}
+                          </span>
+                        ) : (
+                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
+                            Disponible
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {t.notes || '-'}
@@ -581,6 +1255,28 @@ function EpargnePageContent() {
                             >
                               <Pencil className="w-4 h-4" />
                             </button>
+                            {(t.type === 'depot' || (t.type === 'retrait' && t.is_blocked)) && (userProfile?.role === 'agent' || userProfile?.role === 'manager' || userProfile?.role === 'admin') && (
+                              <button
+                                onClick={() => handleToggleBlock(t)}
+                                disabled={submitting}
+                                className={`p-2 rounded ${
+                                  submitting
+                                    ? 'text-gray-400 cursor-not-allowed'
+                                    : t.is_blocked
+                                    ? 'text-green-600 hover:bg-green-50'
+                                    : 'text-orange-600 hover:bg-orange-50'
+                                }`}
+                                title={
+                                  t.is_blocked
+                                    ? 'Débloquer la garantie'
+                                    : t.type === 'depot'
+                                    ? 'Bloquer comme garantie'
+                                    : 'Cette transaction est déjà un collateral'
+                                }
+                              >
+                                {t.is_blocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                              </button>
+                            )}
                             <button
                               onClick={() => handleDelete(t)}
                               disabled={!canAgentModifyTransaction(t)}

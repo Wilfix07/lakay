@@ -326,27 +326,36 @@ function PretsPageContent() {
   async function loadMemberCollateralBalance(membreId: string) {
     setLoadingCollateralBalance(true)
     try {
-      // Calculer le solde de garantie disponible du membre
-      // Somme de tous les montants déposés moins les montants remboursés
-      const { data: collaterals, error } = await supabase
-        .from('collaterals')
-        .select('montant_depose, statut')
+      // Calculer le solde disponible (non bloqué) sur le compte épargne du membre
+      const { data: transactions, error } = await supabase
+        .from('epargne_transactions')
+        .select('montant, type, is_blocked')
         .eq('membre_id', membreId)
-        .in('statut', ['partiel', 'complet'])
 
       if (error) throw error
 
-      const balance = collaterals?.reduce((sum, c) => {
-        // Seulement les garanties non remboursées comptent
-        if (c.statut === 'partiel' || c.statut === 'complet') {
-          return sum + Number(c.montant_depose || 0)
-        }
-        return sum
-      }, 0) || 0
+      // Calculer le solde total et le solde bloqué
+      let soldeTotal = 0
+      let soldeBloque = 0
 
-      setMemberCollateralBalance(balance)
+      transactions?.forEach((t) => {
+        const montant = Number(t.montant || 0)
+        if (t.type === 'depot') {
+          soldeTotal += montant
+          if (t.is_blocked) {
+            soldeBloque += montant
+          }
+        } else {
+          soldeTotal -= montant
+          // Pour les retraits, on ne peut pas retirer de l'argent bloqué
+        }
+      })
+
+      // Le solde disponible est le solde total moins le solde bloqué
+      const soldeDisponible = Math.max(0, soldeTotal - soldeBloque)
+      setMemberCollateralBalance(soldeDisponible)
     } catch (error) {
-      console.error('Erreur lors du chargement du solde de garantie:', error)
+      console.error('Erreur lors du chargement du solde d\'épargne:', error)
       setMemberCollateralBalance(0)
     } finally {
       setLoadingCollateralBalance(false)
@@ -823,14 +832,19 @@ function PretsPageContent() {
         }
       }
 
-      // Vérifier que le dépôt de garantie est fourni si nécessaire
+      // Vérifier que la garantie est disponible sur le compte épargne
       const montantGarantieRequisCheck = await calculateCollateralAmount(montantPret)
-      const montantRestantNecessaire = Math.max(montantGarantieRequisCheck - memberCollateralBalance, 0)
       
-      if (montantRestantNecessaire > 0) {
-        const montantDeposeSaisi = collateralDeposit ? parseFloat(collateralDeposit) : 0
-        if (isNaN(montantDeposeSaisi) || montantDeposeSaisi < 0) {
-          alert(`Un dépôt de garantie est requis.\n\nMontant restant nécessaire: ${formatCurrency(montantRestantNecessaire)}\n\nVeuillez saisir le montant du dépôt avant de créer le prêt.`)
+      // Pour les prêts individuels, vérifier que le solde disponible est suffisant
+      if (loanType === 'membre') {
+        if (memberCollateralBalance < montantGarantieRequisCheck) {
+          alert(
+            `❌ Solde d'épargne insuffisant pour la garantie.\n\n` +
+            `Montant de garantie requis: ${formatCurrency(montantGarantieRequisCheck)}\n` +
+            `Solde disponible sur le compte épargne: ${formatCurrency(memberCollateralBalance)}\n` +
+            `Montant manquant: ${formatCurrency(montantGarantieRequisCheck - memberCollateralBalance)}\n\n` +
+            `Le membre doit avoir au moins ${formatCurrency(montantGarantieRequisCheck)} sur son compte épargne pour obtenir ce prêt.`
+          )
           return
         }
       }
@@ -931,6 +945,8 @@ function PretsPageContent() {
       // Déterminer le statut initial selon le rôle de l'utilisateur
       const initialStatus = 'en_attente_garantie'
       let groupCollaterals: Partial<Collateral>[] = [] // Pour stocker les garanties de groupe
+      // Variable pour stocker les membres sans garantie (pour les prêts de groupe)
+      let membresSansGarantie: string[] = []
 
       if (loanType === 'membre') {
         // Créer le prêt pour un membre individuel
@@ -974,34 +990,69 @@ function PretsPageContent() {
           throw pretError
         }
 
-        // Créer la garantie (collateral) automatiquement
+        // Bloquer la garantie sur le compte épargne du membre
         const montantGarantieRequis = montantGarantieRequisCheck
-        const montantDeposeInitial = collateralDeposit ? parseFloat(collateralDeposit) : 0
-        const montantDeposeFinal = Math.min(
-          Math.max(montantDeposeInitial, 0),
-          montantGarantieRequis
-        )
-        const montantRestantFinal = Math.max(montantGarantieRequis - montantDeposeFinal, 0)
-        const statutGarantie = montantDeposeFinal >= montantGarantieRequis ? 'complet' : 'partiel'
         
-        const { error: collateralError } = await supabase
-          .from('collaterals')
-          .insert([{
-            pret_id: newPretId,
-            membre_id: formData.membre_id,
-            montant_requis: montantGarantieRequis,
-            montant_depose: montantDeposeFinal,
-            montant_restant: montantRestantFinal,
-            statut: statutGarantie,
-            date_depot: montantDeposeFinal > 0 ? formData.date_decaissement : null,
-            notes: montantDeposeFinal > 0
-              ? `Garantie générée automatiquement pour le prêt ${newPretId}. Dépôt initial de ${formatCurrency(montantDeposeFinal)} effectué lors de la création.`
-              : `Garantie générée automatiquement pour le prêt ${newPretId}`,
-          }])
+        // Récupérer les transactions d'épargne disponibles (non bloquées) du membre
+        const { data: epargneTransactions, error: epargneError } = await supabase
+          .from('epargne_transactions')
+          .select('id, montant, type, is_blocked')
+          .eq('membre_id', formData.membre_id)
+          .order('created_at', { ascending: true })
 
-        if (collateralError) {
-          console.error('Erreur lors de la création de la garantie:', collateralError)
-          throw new Error('Erreur lors de la création de la garantie. Le prêt ne peut pas être créé.')
+        if (epargneError) {
+          console.error('Erreur lors du chargement des transactions d\'épargne:', epargneError)
+          throw new Error('Erreur lors de la vérification du compte épargne. Le prêt ne peut pas être créé.')
+        }
+
+        // Calculer le solde disponible
+        let soldeDisponible = 0
+        const transactionsDisponibles: Array<{ id: number; montant: number }> = []
+        
+        epargneTransactions?.forEach((t) => {
+          const montant = Number(t.montant || 0)
+          if (t.type === 'depot' && !t.is_blocked) {
+            soldeDisponible += montant
+            transactionsDisponibles.push({ id: t.id, montant })
+          } else if (t.type === 'retrait') {
+            soldeDisponible -= montant
+          }
+        })
+
+        if (soldeDisponible < montantGarantieRequis) {
+          alert(
+            `❌ Solde d'épargne insuffisant pour bloquer la garantie.\n\n` +
+            `Montant de garantie requis: ${formatCurrency(montantGarantieRequis)}\n` +
+            `Solde disponible: ${formatCurrency(soldeDisponible)}\n\n` +
+            `Le membre doit avoir au moins ${formatCurrency(montantGarantieRequis)} sur son compte épargne.`
+          )
+          return
+        }
+
+        // Bloquer le montant requis en marquant les transactions d'épargne
+        let montantRestantABloquer = montantGarantieRequis
+        const transactionsABloquer: number[] = []
+
+        for (const trans of transactionsDisponibles) {
+          if (montantRestantABloquer <= 0) break
+          transactionsABloquer.push(trans.id)
+          montantRestantABloquer -= trans.montant
+        }
+
+        // Mettre à jour les transactions pour les bloquer
+        if (transactionsABloquer.length > 0) {
+          const { error: blockError } = await supabase
+            .from('epargne_transactions')
+            .update({
+              is_blocked: true,
+              blocked_for_pret_id: newPretId,
+            })
+            .in('id', transactionsABloquer)
+
+          if (blockError) {
+            console.error('Erreur lors du blocage de la garantie:', blockError)
+            throw new Error('Erreur lors du blocage de la garantie sur le compte épargne. Le prêt ne peut pas être créé.')
+          }
         }
       } else {
         // Créer le prêt pour un groupe
@@ -1090,97 +1141,118 @@ function PretsPageContent() {
           if (remboursementsError) throw remboursementsError
         }
 
-        // Créer une garantie pour chaque membre du groupe
-        groupCollaterals = []
+        // Bloquer la garantie sur le compte épargne de chaque membre du groupe
+        membresSansGarantie = []
+        
         for (const member of groupMembers) {
           const memberAmount = parseFloat(groupMemberAmounts[member.membre_id])
           if (isNaN(memberAmount) || memberAmount <= 0) {
-            continue // Skip si montant invalide (déjà vérifié plus haut)
+            continue
           }
 
-          // Calculer la garantie requise pour ce membre (basée sur son montant de prêt)
+          // Calculer la garantie requise pour ce membre
           const montantGarantieRequis = await calculateCollateralAmount(memberAmount)
           
-          groupCollaterals.push({
-            pret_id: null, // NULL pour les prêts de groupe
-            group_pret_id: newPretId,
-            membre_id: member.membre_id,
-            montant_requis: montantGarantieRequis,
-            montant_depose: 0,
-            montant_restant: montantGarantieRequis,
-            statut: 'partiel',
-            notes: `Garantie générée automatiquement pour le membre ${member.membre_id} dans le prêt de groupe ${newPretId}`,
+          // Vérifier le solde disponible du membre
+          const { data: memberTransactions, error: memberEpargneError } = await supabase
+            .from('epargne_transactions')
+            .select('id, montant, type, is_blocked')
+            .eq('membre_id', member.membre_id)
+            .order('created_at', { ascending: true })
+
+          if (memberEpargneError) {
+            console.error(`Erreur lors du chargement de l'épargne du membre ${member.membre_id}:`, memberEpargneError)
+            membresSansGarantie.push(member.membre_id)
+            continue
+          }
+
+          // Calculer le solde disponible
+          let soldeDisponible = 0
+          const transactionsDisponibles: Array<{ id: number; montant: number }> = []
+          
+          memberTransactions?.forEach((t) => {
+            const montant = Number(t.montant || 0)
+            if (t.type === 'depot' && !t.is_blocked) {
+              soldeDisponible += montant
+              transactionsDisponibles.push({ id: t.id, montant })
+            } else if (t.type === 'retrait') {
+              soldeDisponible -= montant
+            }
           })
+
+          if (soldeDisponible < montantGarantieRequis) {
+            membresSansGarantie.push(member.membre_id)
+            continue
+          }
+
+          // Bloquer le montant requis
+          let montantRestantABloquer = montantGarantieRequis
+          const transactionsABloquer: number[] = []
+
+          for (const trans of transactionsDisponibles) {
+            if (montantRestantABloquer <= 0) break
+            transactionsABloquer.push(trans.id)
+            montantRestantABloquer -= trans.montant
+          }
+
+          // Mettre à jour les transactions pour les bloquer
+          if (transactionsABloquer.length > 0) {
+            const { error: blockError } = await supabase
+              .from('epargne_transactions')
+              .update({
+                is_blocked: true,
+                blocked_for_group_pret_id: newPretId,
+              })
+              .in('id', transactionsABloquer)
+
+            if (blockError) {
+              console.error(`Erreur lors du blocage de la garantie pour le membre ${member.membre_id}:`, blockError)
+              membresSansGarantie.push(member.membre_id)
+            }
+          }
         }
 
-        if (groupCollaterals.length > 0) {
-          const { error: collateralError, data: collateralData } = await supabase
-            .from('collaterals')
-            .insert(groupCollaterals)
-            .select()
-
-          if (collateralError) {
-            console.error('Erreur lors de la création des garanties de groupe:', collateralError)
-            console.error('Détails de l\'erreur:', {
-              code: collateralError.code,
-              message: collateralError.message,
-              details: collateralError.details,
-              hint: collateralError.hint,
-            })
-            console.error('Données tentées d\'insérer:', groupCollaterals)
-            
-            // Afficher un message d'erreur plus détaillé à l'utilisateur
-            alert(
-              `⚠️ Attention: Le prêt de groupe a été créé, mais une erreur est survenue lors de la création des garanties.\n\n` +
-              `Erreur: ${collateralError.message || 'Erreur inconnue'}\n\n` +
-              `Veuillez créer les garanties manuellement dans la page "Garanties" ou appliquer la migration SQL si ce n'est pas déjà fait.`
-            )
-            // Ne pas bloquer la création du prêt si les garanties échouent
-            // L'utilisateur pourra les créer manuellement
-          } else {
-            console.log(`✅ ${collateralData?.length || groupCollaterals.length} garantie(s) de groupe créée(s) avec succès`)
-          }
+        if (membresSansGarantie.length > 0) {
+          alert(
+            `⚠️ Attention: Le prêt de groupe a été créé, mais certains membres n'ont pas assez d'épargne pour bloquer la garantie.\n\n` +
+            `Membres concernés: ${membresSansGarantie.join(', ')}\n\n` +
+            `Ces membres doivent avoir suffisamment d'épargne avant que le prêt puisse être approuvé.`
+          )
         }
       }
 
       // Message de succès selon le type de prêt
       if (loanType === 'membre') {
         const montantGarantieRequis = montantGarantieRequisCheck
-        const montantDeposeInitial = collateralDeposit ? parseFloat(collateralDeposit) : 0
-        const montantDeposeFinal = Math.min(
-          Math.max(montantDeposeInitial, 0),
-          montantGarantieRequis
-        )
-        const montantRestantFinal = Math.max(montantGarantieRequis - montantDeposeFinal, 0)
-        
-        const messageDepot = montantDeposeFinal > 0
-          ? `\n💰 Dépôt initial: ${formatCurrency(montantDeposeFinal)} HTG\n${montantRestantFinal > 0 ? `⚠️ Montant restant: ${formatCurrency(montantRestantFinal)} HTG\n` : '✅ Garantie complète!\n'}`
-          : '\n⚠️ Aucun dépôt effectué. Vous pouvez collecter la garantie dans la page "Garanties".\n'
-        
-        const messageStatut = montantRestantFinal > 0
-          ? `⏳ Statut: En attente de garantie\n\nVous pouvez collecter le collateral (partiel ou total) dans la page "Garanties". Une fois la garantie complète, le manager pourra approuver le prêt pour l'activer.`
-          : `⏳ Statut: En attente de garantie (garantie complète)\n\nLe manager peut maintenant approuver le prêt dans la page "Approbations" pour l'activer.`
         
         alert(
           `✅ Prêt créé avec succès!\n\n` +
           `📋 Prêt: ${newPretId}\n` +
-          `💰 Montant: ${montantPret.toFixed(2)} HTG\n` +
-          `🔒 Garantie requise: ${montantGarantieRequis.toFixed(2)} HTG (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)` +
-          messageDepot +
-          messageStatut
+          `💰 Montant: ${formatCurrency(montantPret)}\n` +
+          `🔒 Garantie bloquée: ${formatCurrency(montantGarantieRequis)} (${((montantGarantieRequis / montantPret) * 100).toFixed(0)}%)\n\n` +
+          `✅ La garantie a été bloquée sur le compte épargne du membre.\n` +
+          `⏳ Statut: En attente d'approbation\n\n` +
+          `Le manager peut maintenant approuver le prêt dans la page "Approbations" pour l'activer.`
         )
       } else {
         const groupName = groups.find(g => g.id === parseInt(formData.group_id))?.group_name || 'N/A'
-        const collateralCount = groupCollaterals.length
+        // Récupérer les membres du groupe pour le message de succès
+        const { data: groupMembersForMessage } = await supabase
+          .from('membre_group_members')
+          .select('membre_id')
+          .eq('group_id', parseInt(formData.group_id))
+        const totalMembers = groupMembersForMessage?.length || 0
+        const membresAvecGarantie = totalMembers - membresSansGarantie.length
         alert(
           `✅ Prêt de groupe créé avec succès!\n\n` +
           `📋 Prêt: ${newPretId}\n` +
-          `💰 Montant total: ${montantPret.toFixed(2)} HTG\n` +
+          `💰 Montant total: ${formatCurrency(montantPret)}\n` +
           `👥 Groupe: ${groupName}\n` +
-          `⏳ Statut: En attente de garantie\n\n` +
+          `⏳ Statut: En attente d'approbation\n\n` +
           `📝 Les remboursements ont été créés pour tous les membres du groupe.\n` +
-          `💰 ${collateralCount} garantie${collateralCount > 1 ? 's' : ''} créée${collateralCount > 1 ? 's' : ''} (une par membre).\n\n` +
-          `Vous pouvez collecter les garanties dans la page "Garanties".`
+          `💰 Garantie bloquée pour ${membresAvecGarantie} membre(s) sur ${totalMembers}\n` +
+          `${membresSansGarantie.length > 0 ? `⚠️ ${membresSansGarantie.length} membre(s) n'a/ont pas assez d'épargne.\n` : ''}\n` +
+          `Le manager peut approuver le prêt une fois que tous les membres ont suffisamment d'épargne bloquée.`
         )
       }
       setShowForm(false)
