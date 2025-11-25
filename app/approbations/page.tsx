@@ -39,6 +39,13 @@ function ApprobationsPageContent() {
   const [searchInput, setSearchInput] = useState('')
   const [activeSearch, setActiveSearch] = useState('')
   const [groupCollateralsComplete, setGroupCollateralsComplete] = useState<Record<string, boolean>>({})
+  const [groupCollateralsInfo, setGroupCollateralsInfo] = useState<Record<string, {
+    totalRequis: number
+    totalBloque: number
+    totalRestant: number
+    completeCount: number
+    totalMembers: number
+  }>>({})
 
   useEffect(() => {
     loadUserProfile()
@@ -54,16 +61,28 @@ function ApprobationsPageContent() {
   useEffect(() => {
     async function calculateGroupCollateralsComplete() {
       const completeMap: Record<string, boolean> = {}
+      const infoMap: Record<string, {
+        totalRequis: number
+        totalBloque: number
+        totalRestant: number
+        completeCount: number
+        totalMembers: number
+      }> = {}
+      
       for (const groupPret of groupPrets) {
-        completeMap[groupPret.pret_id] = await areAllGroupCollateralsComplete(groupPret.pret_id)
+        const isComplete = await areAllGroupCollateralsComplete(groupPret.pret_id)
+        completeMap[groupPret.pret_id] = isComplete
+        infoMap[groupPret.pret_id] = await getGroupCollateralsInfo(groupPret.pret_id)
       }
       setGroupCollateralsComplete(completeMap)
+      setGroupCollateralsInfo(infoMap)
     }
     
     if (groupPrets.length > 0) {
       calculateGroupCollateralsComplete()
     } else {
       setGroupCollateralsComplete({})
+      setGroupCollateralsInfo({})
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupPrets])
@@ -217,19 +236,19 @@ function ApprobationsPageContent() {
 
     if (membersError || !groupMembers || groupMembers.length === 0) return false
 
-    // Récupérer les montants individuels depuis les remboursements
+    // Récupérer les montants individuels depuis les remboursements (utiliser le principal total)
     const { data: remboursements, error: rembError } = await supabase
       .from('group_remboursements')
-      .select('membre_id, montant')
+      .select('membre_id, principal')
       .eq('pret_id', group_pret_id)
 
     if (rembError) return false
 
-    // Calculer le montant de prêt par membre
+    // Calculer le montant de prêt par membre (somme des principaux)
     const montantsParMembre = new Map<string, number>()
     remboursements?.forEach(r => {
       const current = montantsParMembre.get(r.membre_id) || 0
-      montantsParMembre.set(r.membre_id, current + Number(r.montant || 0))
+      montantsParMembre.set(r.membre_id, current + Number(r.principal || 0))
     })
 
     // Vérifier que chaque membre a sa garantie bloquée
@@ -241,6 +260,7 @@ function ApprobationsPageContent() {
 
       const montantGarantieRequis = await calculateCollateralAmount(montantPret)
       
+      // Récupérer toutes les transactions bloquées pour ce prêt de groupe
       const { data: blockedTransactions, error: epargneError } = await supabase
         .from('epargne_transactions')
         .select('montant, type')
@@ -250,9 +270,17 @@ function ApprobationsPageContent() {
 
       if (epargneError) return false
 
+      // Calculer le montant bloqué
+      // Pour les dépôts bloqués : additionner les montants
+      // Pour les retraits bloqués : additionner les montants (ils représentent la garantie bloquée)
       const montantBloque = blockedTransactions?.reduce((sum, t) => {
+        const montant = Number(t.montant || 0)
         if (t.type === 'depot') {
-          return sum + Number(t.montant || 0)
+          // Dépôt bloqué = montant positif
+          return sum + montant
+        } else if (t.type === 'retrait') {
+          // Retrait bloqué = montant positif (c'est la garantie qui a été retirée du solde disponible)
+          return sum + montant
         }
         return sum
       }, 0) || 0
@@ -263,6 +291,90 @@ function ApprobationsPageContent() {
     }
 
     return true
+  }
+
+  async function getGroupCollateralsInfo(group_pret_id: string): Promise<{
+    totalRequis: number
+    totalBloque: number
+    totalRestant: number
+    completeCount: number
+    totalMembers: number
+  }> {
+    const groupPret = groupPrets.find(gp => gp.pret_id === group_pret_id)
+    if (!groupPret) {
+      return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: 0 }
+    }
+
+    // Récupérer les membres du groupe
+    const { data: groupMembers } = await supabase
+      .from('membre_group_members')
+      .select('membre_id')
+      .eq('group_id', groupPret.group_id)
+
+    if (!groupMembers || groupMembers.length === 0) {
+      return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: 0 }
+    }
+
+    // Récupérer les montants individuels depuis les remboursements (utiliser le principal total)
+    const { data: remboursements } = await supabase
+      .from('group_remboursements')
+      .select('membre_id, principal')
+      .eq('pret_id', group_pret_id)
+
+    if (!remboursements) {
+      return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: groupMembers.length }
+    }
+
+    // Calculer le montant de prêt par membre (somme des principaux)
+    const montantsParMembre = new Map<string, number>()
+    remboursements.forEach(r => {
+      const current = montantsParMembre.get(r.membre_id) || 0
+      montantsParMembre.set(r.membre_id, current + Number(r.principal || 0))
+    })
+
+    const { calculateCollateralAmount } = await import('@/lib/systemSettings')
+    
+    let totalRequis = 0
+    let totalBloque = 0
+    let completeCount = 0
+
+    for (const member of groupMembers) {
+      const montantPret = montantsParMembre.get(member.membre_id) || 0
+      if (montantPret <= 0) continue
+
+      const montantGarantieRequis = await calculateCollateralAmount(montantPret)
+      totalRequis += montantGarantieRequis
+
+      // Récupérer toutes les transactions bloquées pour ce prêt de groupe
+      const { data: blockedTransactions } = await supabase
+        .from('epargne_transactions')
+        .select('montant, type')
+        .eq('membre_id', member.membre_id)
+        .eq('blocked_for_group_pret_id', group_pret_id)
+        .eq('is_blocked', true)
+
+      const montantBloque = blockedTransactions?.reduce((sum, t) => {
+        const montant = Number(t.montant || 0)
+        if (t.type === 'depot' || t.type === 'retrait') {
+          return sum + montant
+        }
+        return sum
+      }, 0) || 0
+
+      totalBloque += montantBloque
+
+      if (montantBloque >= montantGarantieRequis) {
+        completeCount++
+      }
+    }
+
+    return {
+      totalRequis,
+      totalBloque,
+      totalRestant: Math.max(0, totalRequis - totalBloque),
+      completeCount,
+      totalMembers: groupMembers.length
+    }
   }
 
   function getGroupName(group_id: number): string {
@@ -825,15 +937,15 @@ function ApprobationsPageContent() {
                   {/* Prêts de groupe */}
                   {filteredGroupPrets.map((groupPret) => {
                     const agent = getAgent(groupPret.agent_id)
-                    const groupCollaterals = getGroupCollaterals(groupPret.pret_id)
                     const isProcessing = approvingGroup === groupPret.pret_id
                     const allComplete = groupCollateralsComplete[groupPret.pret_id] ?? false
-                    
-                    const totalRequis = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_requis || 0), 0)
-                    const totalDepose = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
-                    const totalRestant = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_restant || 0), 0)
-                    const completeCount = groupCollaterals.filter(c => c.statut === 'complet' && c.montant_restant === 0).length
-                    const totalMembers = groupCollaterals.length
+                    const collateralsInfo = groupCollateralsInfo[groupPret.pret_id] || {
+                      totalRequis: 0,
+                      totalBloque: 0,
+                      totalRestant: 0,
+                      completeCount: 0,
+                      totalMembers: 0
+                    }
 
                     return (
                       <TableRow key={`group-${groupPret.id}`}>
@@ -858,24 +970,24 @@ function ApprobationsPageContent() {
                         <TableCell>{formatDate(groupPret.date_decaissement)}</TableCell>
                         <TableCell>{formatDate(groupPret.created_at)}</TableCell>
                         <TableCell>
-                          {groupCollaterals.length > 0 ? (
+                          {collateralsInfo.totalMembers > 0 ? (
                             <div className="space-y-1">
                               <div className={`text-xs font-semibold ${
                                 allComplete ? 'text-green-600' : 'text-yellow-600'
                               }`}>
-                                {allComplete ? '✅ Toutes complètes' : `⚠️ ${completeCount}/${totalMembers} complètes`}
+                                {allComplete ? '✅ Toutes complètes' : `⚠️ ${collateralsInfo.completeCount}/${collateralsInfo.totalMembers} complètes`}
                               </div>
                               <div className="text-xs text-muted-foreground">
-                                {formatCurrency(totalDepose)} / {formatCurrency(totalRequis)}
+                                {formatCurrency(collateralsInfo.totalBloque)} / {formatCurrency(collateralsInfo.totalRequis)}
                               </div>
-                              {!allComplete && (
+                              {!allComplete && collateralsInfo.totalRestant > 0 && (
                                 <div className="text-xs text-red-600">
-                                  Reste: {formatCurrency(totalRestant)}
+                                  Reste: {formatCurrency(collateralsInfo.totalRestant)}
                                 </div>
                               )}
                             </div>
                           ) : (
-                            <span className="text-xs text-red-600">❌ Aucune garantie</span>
+                            <span className="text-xs text-yellow-600">⏳ Calcul en cours...</span>
                           )}
                         </TableCell>
                         <TableCell className="text-right space-x-2">

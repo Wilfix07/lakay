@@ -318,13 +318,13 @@ function MembresAssignesContent() {
         pretActifId = groupPretActif.pret_id || null
         
         // Charger les informations complètes du prêt de groupe pour obtenir updated_at
-        const { data: groupPretComplet } = await supabase
+        const { data: groupPretComplet, error: groupPretError } = await supabase
           .from('group_prets')
           .select('updated_at, statut')
           .eq('pret_id', groupPretActif.pret_id)
-          .single()
+          .maybeSingle()
         
-        if (groupPretComplet && groupPretComplet.statut === 'actif' && groupPretComplet.updated_at) {
+        if (!groupPretError && groupPretComplet && groupPretComplet.statut === 'actif' && groupPretComplet.updated_at) {
           dateApprobation = groupPretComplet.updated_at
         }
       }

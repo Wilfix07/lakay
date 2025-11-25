@@ -258,11 +258,12 @@ function EpargnePageContent() {
         .from('agents')
         .select('agent_id')
         .eq('agent_id', profile.agent_id)
-        .single()
+        .maybeSingle()
       
-      if (agentCheckError || !agentExists) {
+      if (agentCheckError && agentCheckError.code !== 'PGRST116') {
+        console.error('⚠️ Erreur lors de la vérification de l\'agent_id:', agentCheckError)
+      } else if (!agentExists) {
         console.error('⚠️ L\'agent_id du profil utilisateur n\'existe pas dans la table agents:', profile.agent_id)
-        console.error('Erreur:', agentCheckError)
       }
     }
     
