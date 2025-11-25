@@ -687,26 +687,42 @@ function PretsPageContent() {
       // Vérifier si le membre/groupe a déjà un prêt actif
       if (loanType === 'membre') {
         // 1. Vérifier les prêts individuels actifs
-        // IMPORTANT: Cette vérification est critique pour empêcher les doublons
-        const { data: activeLoans, error: activeLoansError } = await supabase
-          .from('prets')
-          .select('id, pret_id, statut, date_decaissement')
-          .eq('membre_id', formData.membre_id)
-          .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+        // IMPORTANT: Utiliser une fonction SECURITY DEFINER pour bypass RLS
+        // Cette vérification est critique pour empêcher les doublons
+        try {
+          const { data: activeLoans, error: activeLoansError } = await supabase
+            .rpc('check_membre_has_active_pret', { membre_id_param: formData.membre_id?.trim() || formData.membre_id })
 
-        if (activeLoansError) {
-          console.error('Erreur lors de la vérification des prêts actifs:', activeLoansError)
-          throw activeLoansError
-        }
-        
-        if (activeLoans && activeLoans.length > 0) {
-          const activeLoanIds = activeLoans.map(l => l.pret_id).join(', ')
-          alert(
-            `❌ IMPOSSIBLE: Ce membre a déjà ${activeLoans.length} prêt(s) actif(s): ${activeLoanIds}\n\n` +
-            `Un membre ne peut avoir qu'UN SEUL prêt actif à la fois (actif, en attente de garantie, ou en attente d'approbation).\n\n` +
-            `Le membre doit terminer de rembourser son prêt actif ou compléter la garantie avant de contracter un nouveau prêt.`
-          )
-          return
+          // Si erreur, continuer quand même (la contrainte unique dans la DB empêchera les doublons)
+          if (activeLoansError) {
+            console.error('Erreur lors de la vérification des prêts actifs:', activeLoansError)
+            console.warn('Continuation malgré l\'erreur - la contrainte unique dans la DB empêchera les doublons')
+          } else if (activeLoans && Array.isArray(activeLoans)) {
+            // Filtrer les résultats valides (non null, avec pret_id et statut)
+            const validActiveLoans = activeLoans.filter(loan => {
+              return loan && 
+                     loan.pret_id && 
+                     typeof loan.pret_id === 'string' && 
+                     loan.pret_id.trim() !== '' &&
+                     loan.statut && 
+                     typeof loan.statut === 'string'
+            })
+            
+            // Seulement afficher l'erreur si on trouve vraiment des prêts actifs valides
+            if (validActiveLoans.length > 0) {
+              const activeLoanIds = validActiveLoans.map(l => l.pret_id.trim()).join(', ')
+              alert(
+                `❌ IMPOSSIBLE: Ce membre a déjà ${validActiveLoans.length} prêt(s) actif(s): ${activeLoanIds}\n\n` +
+                `Un membre ne peut avoir qu'UN SEUL prêt actif à la fois (actif, en attente de garantie, ou en attente d'approbation).\n\n` +
+                `Le membre doit terminer de rembourser son prêt actif ou compléter la garantie avant de contracter un nouveau prêt.`
+              )
+              return
+            }
+          }
+          // Si activeLoans est null, undefined, ou pas un tableau, continuer (pas de prêts actifs)
+        } catch (error) {
+          console.error('Exception lors de la vérification des prêts actifs:', error)
+          // En cas d'exception, continuer quand même
         }
 
         // 2. Vérifier si le membre a un prêt de groupe actif
@@ -739,11 +755,9 @@ function PretsPageContent() {
         }
       } else {
         // Pour les groupes, vérifier si le groupe a déjà un prêt actif
+        // Utiliser une fonction SECURITY DEFINER pour bypass RLS
         const { data: activeGroupLoans, error: activeGroupLoansError } = await supabase
-          .from('group_prets')
-          .select('id, pret_id, statut')
-          .eq('group_id', parseInt(formData.group_id))
-          .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+          .rpc('check_group_has_active_pret', { group_id_param: parseInt(formData.group_id) })
 
         if (activeGroupLoansError) throw activeGroupLoansError
         if (activeGroupLoans && activeGroupLoans.length > 0) {
@@ -758,16 +772,14 @@ function PretsPageContent() {
         }
 
         // Vérifier que chaque membre du groupe n'a pas déjà un prêt individuel actif
+        // Utiliser une fonction SECURITY DEFINER pour bypass RLS
         const memberIds = selectedGroupMembers.map(m => m.membre_id)
         const { data: membersWithActiveLoans, error: membersLoansError } = await supabase
-          .from('prets')
-          .select('membre_id, pret_id, statut')
-          .in('membre_id', memberIds)
-          .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+          .rpc('check_membres_have_active_prets', { membre_ids: memberIds })
 
         if (membersLoansError) throw membersLoansError
         if (membersWithActiveLoans && membersWithActiveLoans.length > 0) {
-          const problematicMembers = membersWithActiveLoans.map(loan => {
+          const problematicMembers = membersWithActiveLoans.map((loan: { membre_id: string; pret_id?: string; statut?: string }) => {
             const member = selectedGroupMembers.find(m => m.membre_id === loan.membre_id)
             return member ? `${member.membre_id} - ${member.prenom} ${member.nom}` : loan.membre_id
           }).join(', ')
@@ -900,19 +912,13 @@ function PretsPageContent() {
       }
 
       // Récupérer les prêts existants pour ce mois
-      let maxPretsQuery = supabase
+      // IMPORTANT: Ne pas filtrer par agent_id car la contrainte unique est globale
+      const { data: maxPrets } = await supabase
         .from(tableName)
         .select('pret_id')
         .filter('pret_id', 'like', `CL-%${monthName}`)
         .order('pret_id', { ascending: false })
         .limit(1)
-
-      // Si manager, filtrer par ses agents uniquement
-      if (userProfile?.role === 'manager' && agentIdsForUniqueness && agentIdsForUniqueness.length > 0) {
-        maxPretsQuery = maxPretsQuery.in('agent_id', agentIdsForUniqueness)
-      }
-
-      const { data: maxPrets } = await maxPretsQuery
 
       let newPretId = `CL-000-${monthName}`
       if (maxPrets && maxPrets.length > 0 && maxPrets[0]) {
@@ -925,27 +931,50 @@ function PretsPageContent() {
         }
       }
 
-      // Vérifier l'unicité du pret_id avant insertion (surtout pour les managers)
-      if (userProfile?.role === 'manager' && agentIdsForUniqueness && agentIdsForUniqueness.length > 0) {
+      // Vérifier l'unicité globale du pret_id avant insertion
+      // La contrainte unique est globale, donc on doit vérifier dans toute la table
+      let attempts = 0
+      const maxAttempts = 100 // Limite de sécurité pour éviter une boucle infinie
+      
+      while (attempts < maxAttempts) {
         const { data: existingPret, error: checkError } = await supabase
           .from(tableName)
           .select('pret_id')
           .eq('pret_id', newPretId)
-          .in('agent_id', agentIdsForUniqueness)
           .limit(1)
 
-        if (checkError) throw checkError
-
-        if (existingPret && existingPret.length > 0) {
-          // Si le pret_id existe déjà, générer le suivant
-          const match = newPretId.match(/CL-(\d+)-/)
-          if (match) {
-            const num = parseInt(match[1], 10)
-            if (!isNaN(num)) {
-              newPretId = `CL-${String(num + 1).padStart(3, '0')}-${monthName}`
-            }
-          }
+        if (checkError) {
+          console.error('Erreur lors de la vérification de l\'unicité du pret_id:', checkError)
+          throw checkError
         }
+
+        if (!existingPret || existingPret.length === 0) {
+          // Le pret_id est unique, on peut l'utiliser
+          break
+        }
+
+        // Le pret_id existe déjà, générer le suivant
+        const match = newPretId.match(/CL-(\d+)-/)
+        if (match) {
+          const num = parseInt(match[1], 10)
+          if (!isNaN(num)) {
+            newPretId = `CL-${String(num + 1).padStart(3, '0')}-${monthName}`
+          } else {
+            // Si on ne peut pas parser le numéro, utiliser un timestamp pour garantir l'unicité
+            newPretId = `CL-${Date.now().toString().slice(-3)}-${monthName}`
+            break
+          }
+        } else {
+          // Format inattendu, utiliser un timestamp
+          newPretId = `CL-${Date.now().toString().slice(-3)}-${monthName}`
+          break
+        }
+        
+        attempts++
+      }
+
+      if (attempts >= maxAttempts) {
+        throw new Error('Impossible de générer un pret_id unique après plusieurs tentatives')
       }
 
       // Déterminer le statut initial selon le rôle de l'utilisateur
@@ -955,45 +984,111 @@ function PretsPageContent() {
       let membresSansGarantie: string[] = []
 
       if (loanType === 'membre') {
-        // Créer le prêt pour un membre individuel
-        const { error: pretError } = await supabase
-          .from('prets')
-          .insert([{
-            pret_id: newPretId,
-            membre_id: formData.membre_id,
-            agent_id: finalAgentId,
-            montant_pret: montantPret,
-            montant_remboursement: overriddenPlan.montantEcheance,
-            nombre_remboursements: nombreRemboursements,
-            date_decaissement: formData.date_decaissement,
-            date_premier_remboursement: overriddenPlan.datePremierRemboursement
-              .toISOString()
-              .split('T')[0],
-            statut: initialStatus,
-            capital_restant: montantPret,
-            frequence_remboursement: frequency,
-          }])
+        // Créer le prêt pour un membre individuel avec gestion de retry en cas de conflit de pret_id
+        let pretInserted = false
+        let retryCount = 0
+        const maxRetries = 5
+        
+        while (!pretInserted && retryCount < maxRetries) {
+          const { error: pretError } = await supabase
+            .from('prets')
+            .insert([{
+              pret_id: newPretId,
+              membre_id: formData.membre_id,
+              agent_id: finalAgentId,
+              montant_pret: montantPret,
+              montant_remboursement: overriddenPlan.montantEcheance,
+              nombre_remboursements: nombreRemboursements,
+              date_decaissement: formData.date_decaissement,
+              date_premier_remboursement: overriddenPlan.datePremierRemboursement
+                .toISOString()
+                .split('T')[0],
+              statut: initialStatus,
+              capital_restant: montantPret,
+              frequence_remboursement: frequency,
+            }])
 
-        if (pretError) {
-          // Vérifier si c'est une violation de contrainte unique (membre avec prêt actif)
-          if (pretError.code === '23505' || pretError.message?.includes('uniq_prets_membre_actif')) {
-            // Récupérer les prêts actifs du membre pour afficher un message détaillé
-            const { data: activeLoans } = await supabase
-              .from('prets')
-              .select('pret_id, statut')
-              .eq('membre_id', formData.membre_id)
-              .in('statut', ['actif', 'en_attente_garantie', 'en_attente_approbation'])
+          if (pretError) {
+            // Vérifier si c'est une violation de contrainte unique (membre avec prêt actif)
+            if (pretError.code === '23505' && pretError.message?.includes('uniq_prets_membre_actif')) {
+              // Récupérer les prêts actifs du membre pour afficher un message détaillé
+              // Utiliser une fonction SECURITY DEFINER pour bypass RLS
+              const { data: activeLoans, error: checkError } = await supabase
+                .rpc('check_membre_has_active_pret', { membre_id_param: formData.membre_id })
+              
+              if (checkError) {
+                console.error('Erreur lors de la vérification des prêts actifs après erreur d\'insertion:', checkError)
+              }
+              
+              const validActiveLoans = Array.isArray(activeLoans) 
+                ? activeLoans.filter(loan => loan && loan.pret_id && loan.statut)
+                : []
+              
+              const activeLoanIds = validActiveLoans.length > 0
+                ? validActiveLoans.map(l => l.pret_id).join(', ')
+                : 'inconnu (vérification échouée)'
+              
+              alert(
+                `❌ ERREUR: Impossible de créer le prêt.\n\n` +
+                `Ce membre a déjà un prêt actif dans la base de données: ${activeLoanIds}\n\n` +
+                `Un membre ne peut avoir qu'UN SEUL prêt actif à la fois.\n\n` +
+                `Veuillez terminer le prêt existant avant d'en créer un nouveau.`
+              )
+              return
+            }
             
-            const activeLoanIds = activeLoans?.map(l => l.pret_id).join(', ') || 'inconnu'
-            alert(
-              `❌ ERREUR: Impossible de créer le prêt.\n\n` +
-              `Ce membre a déjà un prêt actif dans la base de données: ${activeLoanIds}\n\n` +
-              `Un membre ne peut avoir qu'UN SEUL prêt actif à la fois.\n\n` +
-              `Veuillez terminer le prêt existant avant d'en créer un nouveau.`
-            )
-            return
+            // Si c'est une erreur de clé dupliquée sur pret_id, générer un nouveau pret_id et réessayer
+            if (pretError.code === '23505' && pretError.message?.includes('pret_id')) {
+              retryCount++
+              console.warn(`Conflit de pret_id détecté (${newPretId}), génération d'un nouveau pret_id...`)
+              
+              // Générer un nouveau pret_id
+              const match = newPretId.match(/CL-(\d+)-/)
+              if (match) {
+                const num = parseInt(match[1], 10)
+                if (!isNaN(num)) {
+                  newPretId = `CL-${String(num + 1).padStart(3, '0')}-${monthName}`
+                } else {
+                  // Si on ne peut pas parser, utiliser un timestamp
+                  newPretId = `CL-${Date.now().toString().slice(-3)}-${monthName}`
+                }
+              } else {
+                // Format inattendu, utiliser un timestamp
+                newPretId = `CL-${Date.now().toString().slice(-3)}-${monthName}`
+              }
+              
+              // Vérifier que le nouveau pret_id n'existe pas déjà
+              const { data: checkPret } = await supabase
+                .from('prets')
+                .select('pret_id')
+                .eq('pret_id', newPretId)
+                .limit(1)
+              
+              if (!checkPret || checkPret.length === 0) {
+                // Le nouveau pret_id est disponible, continuer la boucle pour réessayer
+                continue
+              } else {
+                // Le nouveau pret_id existe aussi, incrémenter encore
+                const match2 = newPretId.match(/CL-(\d+)-/)
+                if (match2) {
+                  const num2 = parseInt(match2[1], 10)
+                  if (!isNaN(num2)) {
+                    newPretId = `CL-${String(num2 + 1).padStart(3, '0')}-${monthName}`
+                  }
+                }
+              }
+            } else {
+              // Autre erreur, la propager
+              throw pretError
+            }
+          } else {
+            // Succès
+            pretInserted = true
           }
-          throw pretError
+        }
+        
+        if (!pretInserted) {
+          throw new Error(`Impossible de créer le prêt après ${maxRetries} tentatives. Veuillez réessayer.`)
         }
 
         // Bloquer la garantie sur le compte épargne du membre
@@ -1074,26 +1169,84 @@ function PretsPageContent() {
           return
         }
 
-        // Créer le prêt de groupe
-        const { error: groupPretError } = await supabase
-          .from('group_prets')
-          .insert([{
-            pret_id: newPretId,
-            group_id: parseInt(formData.group_id),
-            agent_id: finalAgentId,
-            montant_pret: montantPret,
-            montant_remboursement: overriddenPlan.montantEcheance,
-            nombre_remboursements: nombreRemboursements,
-            date_decaissement: formData.date_decaissement,
-            date_premier_remboursement: overriddenPlan.datePremierRemboursement
-              .toISOString()
-              .split('T')[0],
-            statut: initialStatus,
-            capital_restant: montantPret,
-            frequence_remboursement: frequency,
-          }])
+        // Créer le prêt de groupe avec gestion de retry en cas de conflit de pret_id
+        let groupPretInserted = false
+        let retryCount = 0
+        const maxRetries = 5
+        
+        while (!groupPretInserted && retryCount < maxRetries) {
+          const { error: groupPretError } = await supabase
+            .from('group_prets')
+            .insert([{
+              pret_id: newPretId,
+              group_id: parseInt(formData.group_id),
+              agent_id: finalAgentId,
+              montant_pret: montantPret,
+              montant_remboursement: overriddenPlan.montantEcheance,
+              nombre_remboursements: nombreRemboursements,
+              date_decaissement: formData.date_decaissement,
+              date_premier_remboursement: overriddenPlan.datePremierRemboursement
+                .toISOString()
+                .split('T')[0],
+              statut: initialStatus,
+              capital_restant: montantPret,
+              frequence_remboursement: frequency,
+            }])
 
-        if (groupPretError) throw groupPretError
+          if (groupPretError) {
+            // Si c'est une erreur de clé dupliquée, générer un nouveau pret_id et réessayer
+            if (groupPretError.code === '23505' && groupPretError.message?.includes('pret_id')) {
+              retryCount++
+              console.warn(`Conflit de pret_id détecté (${newPretId}), génération d'un nouveau pret_id...`)
+              
+              // Générer un nouveau pret_id
+              const match = newPretId.match(/CL-(\d+)-/)
+              if (match) {
+                const num = parseInt(match[1], 10)
+                if (!isNaN(num)) {
+                  newPretId = `CL-${String(num + 1).padStart(3, '0')}-${monthName}`
+                } else {
+                  // Si on ne peut pas parser, utiliser un timestamp
+                  newPretId = `CL-${Date.now().toString().slice(-3)}-${monthName}`
+                }
+              } else {
+                // Format inattendu, utiliser un timestamp
+                newPretId = `CL-${Date.now().toString().slice(-3)}-${monthName}`
+              }
+              
+              // Vérifier que le nouveau pret_id n'existe pas déjà
+              const { data: checkPret } = await supabase
+                .from('group_prets')
+                .select('pret_id')
+                .eq('pret_id', newPretId)
+                .limit(1)
+              
+              if (!checkPret || checkPret.length === 0) {
+                // Le nouveau pret_id est disponible, continuer la boucle pour réessayer
+                continue
+              } else {
+                // Le nouveau pret_id existe aussi, incrémenter encore
+                const match2 = newPretId.match(/CL-(\d+)-/)
+                if (match2) {
+                  const num2 = parseInt(match2[1], 10)
+                  if (!isNaN(num2)) {
+                    newPretId = `CL-${String(num2 + 1).padStart(3, '0')}-${monthName}`
+                  }
+                }
+              }
+            } else {
+              // Autre erreur, la propager
+              throw groupPretError
+            }
+          } else {
+            // Succès
+            groupPretInserted = true
+          }
+        }
+        
+        if (!groupPretInserted) {
+          throw new Error(`Impossible de créer le prêt après ${maxRetries} tentatives. Veuillez réessayer.`)
+        }
 
         // Créer les remboursements pour chaque membre du groupe avec leurs montants personnalisés
         const groupRemboursements = []
@@ -1214,6 +1367,54 @@ function PretsPageContent() {
             if (blockError) {
               console.error(`Erreur lors du blocage de la garantie pour le membre ${member.membre_id}:`, blockError)
               membresSansGarantie.push(member.membre_id)
+            } else {
+              // Créer ou mettre à jour le collateral pour ce membre après le blocage
+              const montantBloque = transactionsABloquer.reduce((sum, transId) => {
+                const trans = transactionsDisponibles.find(t => t.id === transId)
+                return sum + (trans ? trans.montant : 0)
+              }, 0)
+
+              // Vérifier si le collateral existe déjà
+              const { data: existingCollateral } = await supabase
+                .from('collaterals')
+                .select('id')
+                .eq('group_pret_id', newPretId)
+                .eq('membre_id', member.membre_id)
+                .single()
+
+              if (existingCollateral) {
+                // Mettre à jour le collateral existant
+                const { error: updateCollateralError } = await supabase
+                  .from('collaterals')
+                  .update({
+                    montant_depose: montantBloque,
+                    montant_restant: Math.max(0, montantGarantieRequis - montantBloque),
+                    statut: montantBloque >= montantGarantieRequis ? 'complet' : 'partiel',
+                    date_depot: montantBloque >= montantGarantieRequis ? new Date().toISOString().split('T')[0] : null,
+                  })
+                  .eq('id', existingCollateral.id)
+
+                if (updateCollateralError) {
+                  console.error(`Erreur lors de la mise à jour du collateral pour le membre ${member.membre_id}:`, updateCollateralError)
+                }
+              } else {
+                // Créer un nouveau collateral
+                const { error: createCollateralError } = await supabase
+                  .from('collaterals')
+                  .insert({
+                    group_pret_id: newPretId,
+                    membre_id: member.membre_id,
+                    montant_requis: montantGarantieRequis,
+                    montant_depose: montantBloque,
+                    montant_restant: Math.max(0, montantGarantieRequis - montantBloque),
+                    statut: montantBloque >= montantGarantieRequis ? 'complet' : 'partiel',
+                    date_depot: montantBloque >= montantGarantieRequis ? new Date().toISOString().split('T')[0] : null,
+                  })
+
+                if (createCollateralError) {
+                  console.error(`Erreur lors de la création du collateral pour le membre ${member.membre_id}:`, createCollateralError)
+                }
+              }
             }
           }
         }

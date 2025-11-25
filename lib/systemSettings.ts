@@ -401,7 +401,13 @@ export async function getCollateralSettings(managerId?: string | null) {
     const { data, error } = await query.single()
 
     if (error && error.code !== 'PGRST116') {
-      console.error('Erreur lors de la récupération des paramètres de garantie:', error)
+      // Ignorer l'erreur 406 (Not Acceptable) qui peut survenir avec certaines configurations RLS
+      // et utiliser les valeurs par défaut
+      const errorCode = (error as { code?: string; status?: number }).code
+      const errorStatus = (error as { code?: string; status?: number }).status
+      if (errorCode !== '406' && errorStatus !== 406) {
+        console.error('Erreur lors de la récupération des paramètres de garantie:', error)
+      }
     }
 
     if (data?.setting_value) {

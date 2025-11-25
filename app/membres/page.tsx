@@ -314,6 +314,14 @@ function MembresPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfile])
 
+  // useEffect pour charger automatiquement les données quand la modal de détails s'ouvre
+  useEffect(() => {
+    if (showDetailsModal && selectedMembreForDetails?.membre_id) {
+      refreshMembreDetails(selectedMembreForDetails.membre_id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDetailsModal, selectedMembreForDetails?.membre_id])
+
   async function loadUserProfile() {
     const profile = await getUserProfile()
     setUserProfile(profile)
@@ -1232,24 +1240,30 @@ function MembresPageContent() {
   async function handleViewDetails(membre: Membre) {
     setSelectedMembreForDetails(membre)
     setShowDetailsModal(true)
-    setLoadingDetails(true)
+    // Les données seront chargées automatiquement via useEffect
+  }
+
+  // Fonction pour rafraîchir toutes les données du membre de manière dynamique
+  async function refreshMembreDetails(membreId: string) {
+    if (!membreId) return
     
+    setLoadingDetails(true)
     try {
-      // Charger les transactions d'épargne détaillées
+      // Charger les transactions d'épargne détaillées (rechargement dynamique)
       const { data: transactions, error: transactionsError } = await supabase
         .from('epargne_transactions')
         .select('*')
-        .eq('membre_id', membre.membre_id)
+        .eq('membre_id', membreId)
         .order('date_operation', { ascending: false })
 
       if (transactionsError) throw transactionsError
       setEpargneTransactions(transactions || [])
 
-      // Vérifier si le membre est dans un groupe
+      // Vérifier si le membre est dans un groupe (rechargement dynamique)
       const { data: groupMember, error: groupMemberError } = await supabase
         .from('membre_group_members')
         .select('group_id, membre_groups!inner(group_name)')
-        .eq('membre_id', membre.membre_id)
+        .eq('membre_id', membreId)
         .limit(1)
         .single()
 
@@ -1266,10 +1280,10 @@ function MembresPageContent() {
         setMemberGroupInfo(null)
       }
 
-      // Charger les détails financiers du membre
-      await loadMembreDetails(membre.membre_id)
+      // Recharger tous les détails financiers du membre (données dynamiques)
+      await loadMembreDetails(membreId)
     } catch (error) {
-      console.error('Erreur lors du chargement des détails:', error)
+      console.error('Erreur lors du rafraîchissement des détails:', error)
     } finally {
       setLoadingDetails(false)
     }
@@ -2822,6 +2836,17 @@ function MembresPageContent() {
                       src={selectedMembreForDetails.photo_url}
                       alt={`${selectedMembreForDetails.prenom} ${selectedMembreForDetails.nom}`}
                       className="w-16 h-16 rounded-full object-cover border-2 border-primary/20"
+                      onError={(e) => {
+                        // Si l'image ne charge pas, afficher l'icône par défaut
+                        e.currentTarget.style.display = 'none'
+                        const parent = e.currentTarget.parentElement
+                        if (parent) {
+                          const fallback = document.createElement('div')
+                          fallback.className = 'w-16 h-16 rounded-full bg-muted flex items-center justify-center border-2 border-primary/20'
+                          fallback.innerHTML = '<svg class="w-8 h-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>'
+                          parent.appendChild(fallback)
+                        }
+                      }}
                     />
                   ) : (
                     <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center border-2 border-primary/20">
@@ -2837,20 +2862,42 @@ function MembresPageContent() {
                     </CardDescription>
                   </div>
                 </div>
-                <Button variant="ghost" onClick={() => {
-                  setShowDetailsModal(false)
-                  setEpargneTransactions([])
-                  setMemberGroupInfo(null)
-                  setSelectedMembreForDetails(null)
-                }}>
-                  ✕
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      if (selectedMembreForDetails?.membre_id) {
+                        refreshMembreDetails(selectedMembreForDetails.membre_id)
+                      }
+                    }}
+                    disabled={loadingDetails}
+                    className="gap-2"
+                  >
+                    {loadingDetails ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <TrendingUp className="h-4 w-4" />
+                    )}
+                    Actualiser
+                  </Button>
+                  <Button variant="ghost" onClick={() => {
+                    setShowDetailsModal(false)
+                    setEpargneTransactions([])
+                    setMemberGroupInfo(null)
+                    setSelectedMembreForDetails(null)
+                  }}>
+                    ✕
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
               {loadingDetails ? (
                 <div className="text-center py-8">
-                  <div className="text-muted-foreground">Chargement des détails...</div>
+                  <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-primary" />
+                  <div className="text-muted-foreground">Chargement des détails en cours...</div>
+                  <div className="text-xs text-muted-foreground mt-2">Actualisation des données financières</div>
                 </div>
               ) : (
                 <>

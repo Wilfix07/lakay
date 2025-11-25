@@ -113,24 +113,28 @@ function ApprobationsPageContent() {
         agentQuery = agentQuery.eq('manager_id', userProfile.id)
       }
 
+      // Récupérer les agent_ids du manager une seule fois si nécessaire
+      let managerAgentIds: string[] = []
+      if (userProfile.role === 'manager') {
+        const { data: managerAgents } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('manager_id', userProfile.id)
+        managerAgentIds = managerAgents?.map(a => a.agent_id) || []
+      }
+
       const [pretsRes, groupPretsRes, membresRes, agentsRes, collateralsRes, groupsRes] = await Promise.all([
-        // Charger les prêts individuels en attente de garantie
+        // Charger les prêts individuels en attente de garantie OU en attente d'approbation
         (async () => {
           let query = supabase
             .from('prets')
             .select('*')
-            .eq('statut', 'en_attente_garantie')
+            .in('statut', ['en_attente_garantie', 'en_attente_approbation'])
             .order('created_at', { ascending: false })
 
           if (userProfile.role === 'manager') {
-            const { data: managerAgents } = await supabase
-              .from('agents')
-              .select('agent_id')
-              .eq('manager_id', userProfile.id)
-
-            const agentIds = managerAgents?.map(a => a.agent_id) || []
-            if (agentIds.length > 0) {
-              query = query.in('agent_id', agentIds)
+            if (managerAgentIds.length > 0) {
+              query = query.in('agent_id', managerAgentIds)
             } else {
               return { data: [], error: null }
             }
@@ -138,23 +142,17 @@ function ApprobationsPageContent() {
 
           return await query
         })(),
-        // Charger les prêts de groupe en attente de garantie
+        // Charger les prêts de groupe en attente de garantie OU en attente d'approbation
         (async () => {
           let query = supabase
             .from('group_prets')
             .select('*')
-            .eq('statut', 'en_attente_garantie')
+            .in('statut', ['en_attente_garantie', 'en_attente_approbation'])
             .order('created_at', { ascending: false })
 
           if (userProfile.role === 'manager') {
-            const { data: managerAgents } = await supabase
-              .from('agents')
-              .select('agent_id')
-              .eq('manager_id', userProfile.id)
-
-            const agentIds = managerAgents?.map(a => a.agent_id) || []
-            if (agentIds.length > 0) {
-              query = query.in('agent_id', agentIds)
+            if (managerAgentIds.length > 0) {
+              query = query.in('agent_id', managerAgentIds)
             } else {
               return { data: [], error: null }
             }
@@ -162,10 +160,25 @@ function ApprobationsPageContent() {
 
           return await query
         })(),
-        supabase.from('membres').select('*'),
+        // Charger les membres (filtrer par agent_id pour les managers)
+        (async () => {
+          let query = supabase.from('membres').select('*')
+          if (userProfile.role === 'manager' && managerAgentIds.length > 0) {
+            query = query.in('agent_id', managerAgentIds)
+          }
+          return await query
+        })(),
         agentQuery,
+        // Charger les collaterals (les politiques RLS filtrent automatiquement pour les managers)
         supabase.from('collaterals').select('*'),
-        supabase.from('membre_groups').select('id, group_name'),
+        // Charger les groupes (filtrer par agent_id pour les managers)
+        (async () => {
+          let query = supabase.from('membre_groups').select('id, group_name')
+          if (userProfile.role === 'manager' && managerAgentIds.length > 0) {
+            query = query.in('agent_id', managerAgentIds)
+          }
+          return await query
+        })(),
       ])
 
       if (pretsRes.error) throw pretsRes.error
@@ -236,6 +249,38 @@ function ApprobationsPageContent() {
 
     if (membersError || !groupMembers || groupMembers.length === 0) return false
 
+    // Vérifier directement dans la table collaterals (plus fiable)
+    const { data: groupCollaterals, error: collateralsError } = await supabase
+      .from('collaterals')
+      .select('membre_id, statut, montant_depose, montant_requis')
+      .eq('group_pret_id', group_pret_id)
+
+    if (collateralsError) {
+      console.error('Erreur lors de la vérification des collaterals:', collateralsError)
+      // Fallback: utiliser l'ancienne méthode avec les transactions bloquées
+      return await areAllGroupCollateralsCompleteFallback(group_pret_id, groupMembers)
+    }
+
+    // Vérifier que chaque membre du groupe a un collateral complet
+    const membersWithCollateral = new Set(groupCollaterals?.map(c => c.membre_id) || [])
+    
+    // Tous les membres doivent avoir un collateral
+    if (membersWithCollateral.size !== groupMembers.length) {
+      return false
+    }
+
+    // Tous les collaterals doivent être complets
+    const allComplete = groupCollaterals?.every(c => {
+      const montantDepose = Number(c.montant_depose || 0)
+      const montantRequis = Number(c.montant_requis || 0)
+      return c.statut === 'complet' && montantDepose >= montantRequis
+    }) || false
+
+    return allComplete
+  }
+
+  // Fonction de fallback utilisant les transactions bloquées (pour compatibilité)
+  async function areAllGroupCollateralsCompleteFallback(group_pret_id: string, groupMembers: Array<{ membre_id: string }>): Promise<boolean> {
     // Récupérer les montants individuels depuis les remboursements (utiliser le principal total)
     const { data: remboursements, error: rembError } = await supabase
       .from('group_remboursements')
@@ -271,15 +316,11 @@ function ApprobationsPageContent() {
       if (epargneError) return false
 
       // Calculer le montant bloqué
-      // Pour les dépôts bloqués : additionner les montants
-      // Pour les retraits bloqués : additionner les montants (ils représentent la garantie bloquée)
       const montantBloque = blockedTransactions?.reduce((sum, t) => {
         const montant = Number(t.montant || 0)
         if (t.type === 'depot') {
-          // Dépôt bloqué = montant positif
           return sum + montant
         } else if (t.type === 'retrait') {
-          // Retrait bloqué = montant positif (c'est la garantie qui a été retirée du solde disponible)
           return sum + montant
         }
         return sum
@@ -315,6 +356,28 @@ function ApprobationsPageContent() {
       return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: 0 }
     }
 
+    // Utiliser directement les collaterals de la table collaterals (plus fiable)
+    const { data: groupCollaterals, error: collateralsError } = await supabase
+      .from('collaterals')
+      .select('membre_id, montant_requis, montant_depose, montant_restant, statut')
+      .eq('group_pret_id', group_pret_id)
+
+    if (!collateralsError && groupCollaterals && groupCollaterals.length > 0) {
+      const totalRequis = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_requis || 0), 0)
+      const totalBloque = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
+      const totalRestant = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_restant || 0), 0)
+      const completeCount = groupCollaterals.filter(c => c.statut === 'complet').length
+
+      return {
+        totalRequis,
+        totalBloque,
+        totalRestant,
+        completeCount,
+        totalMembers: groupMembers.length
+      }
+    }
+
+    // Fallback: utiliser l'ancienne méthode avec les remboursements
     // Récupérer les montants individuels depuis les remboursements (utiliser le principal total)
     const { data: remboursements } = await supabase
       .from('group_remboursements')

@@ -181,7 +181,8 @@ function AgentDetailsPageContent() {
         supabase.from('remboursements').select('*').eq('agent_id', agentId),
         supabase.from('group_remboursements').select('*').eq('agent_id', agentId),
         supabase.from('membre_groups').select('*').eq('agent_id', agentId),
-        supabase.from('user_profiles').select('*').eq('role', 'chef_zone'),
+        // Charger uniquement les chefs de zone attachés à cet agent spécifique
+        supabase.from('user_profiles').select('*').eq('role', 'chef_zone').eq('agent_id', agentId),
       ])
 
       if (pretsRes.error) throw pretsRes.error
