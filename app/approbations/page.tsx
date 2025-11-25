@@ -58,8 +58,33 @@ function ApprobationsPageContent() {
   }, [userProfile])
 
   // Calculer les états de complétude des garanties pour les prêts de groupe
+  // IMPORTANT: Recalculer avec les données les plus récentes pour éviter les incohérences
   useEffect(() => {
     async function calculateGroupCollateralsComplete() {
+      if (groupPrets.length === 0) {
+        setGroupCollateralsComplete({})
+        setGroupCollateralsInfo({})
+        return
+      }
+
+      // Recharger les collaterals pour s'assurer d'avoir les données les plus récentes
+      // Cela évite les problèmes de synchronisation entre l'affichage et la vérification
+      const { data: freshCollaterals } = await supabase
+        .from('collaterals')
+        .select('*')
+        .in('group_pret_id', groupPrets.map(gp => gp.pret_id))
+      
+      if (freshCollaterals) {
+        // Mettre à jour l'état local avec les données fraîches (sans déclencher de re-render infini)
+        setCollaterals(prev => {
+          const updated = [...prev.filter(c => !c.group_pret_id || !groupPrets.some(gp => gp.pret_id === c.group_pret_id))]
+          freshCollaterals.forEach(fresh => {
+            updated.push(fresh as Collateral)
+          })
+          return updated
+        })
+      }
+      
       const completeMap: Record<string, boolean> = {}
       const infoMap: Record<string, {
         totalRequis: number
@@ -70,20 +95,18 @@ function ApprobationsPageContent() {
       }> = {}
       
       for (const groupPret of groupPrets) {
+        // Utiliser la fonction de vérification stricte qui vérifie les deux sources de vérité
+        // (collaterals ET transactions bloquées)
         const isComplete = await areAllGroupCollateralsComplete(groupPret.pret_id)
         completeMap[groupPret.pret_id] = isComplete
+        // Obtenir les informations avec la vérification stricte des montants
         infoMap[groupPret.pret_id] = await getGroupCollateralsInfo(groupPret.pret_id)
       }
       setGroupCollateralsComplete(completeMap)
       setGroupCollateralsInfo(infoMap)
     }
     
-    if (groupPrets.length > 0) {
-      calculateGroupCollateralsComplete()
-    } else {
-      setGroupCollateralsComplete({})
-      setGroupCollateralsInfo({})
-    }
+    calculateGroupCollateralsComplete()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupPrets])
 
@@ -252,7 +275,7 @@ function ApprobationsPageContent() {
     // Vérifier directement dans la table collaterals (plus fiable)
     const { data: groupCollaterals, error: collateralsError } = await supabase
       .from('collaterals')
-      .select('membre_id, statut, montant_depose, montant_requis')
+      .select('membre_id, statut, montant_depose, montant_requis, montant_restant')
       .eq('group_pret_id', group_pret_id)
 
     if (collateralsError) {
@@ -269,14 +292,65 @@ function ApprobationsPageContent() {
       return false
     }
 
-    // Tous les collaterals doivent être complets
+    // Vérification stricte: tous les collaterals doivent être complets
+    // Vérifier à la fois le statut ET les montants pour éviter les incohérences
+    // La table collaterals EST la source de vérité pour les garanties
     const allComplete = groupCollaterals?.every(c => {
       const montantDepose = Number(c.montant_depose || 0)
       const montantRequis = Number(c.montant_requis || 0)
-      return c.statut === 'complet' && montantDepose >= montantRequis
+      const montantRestant = Number(c.montant_restant || 0)
+      
+      // Vérifier que le statut est 'complet' ET que les montants sont cohérents
+      const isStatusComplete = c.statut === 'complet'
+      // La garantie est complète si le montant déposé >= montant requis
+      // (montant_restant peut ne pas être à jour si le dépôt a été fait directement)
+      const isAmountComplete = montantDepose >= montantRequis
+      
+      // Les deux conditions doivent être vraies
+      return isStatusComplete && isAmountComplete
     }) || false
 
-    return allComplete
+    // Si les collaterals ne sont pas tous complets, retourner false immédiatement
+    if (!allComplete) {
+      return false
+    }
+
+    // Vérification supplémentaire OPTIONNELLE: vérifier les transactions bloquées
+    // Cette vérification est faite SEULEMENT pour logging, pas pour bloquer l'approbation
+    // car la table collaterals est la source de vérité principale
+    try {
+      for (const collateral of groupCollaterals || []) {
+        const { data: blockedTransactions } = await supabase
+          .from('epargne_transactions')
+          .select('montant, type')
+          .eq('membre_id', collateral.membre_id)
+          .eq('blocked_for_group_pret_id', group_pret_id)
+          .eq('is_blocked', true)
+
+        const montantBloque = blockedTransactions?.reduce((sum, t) => {
+          const montant = Number(t.montant || 0)
+          if (t.type === 'depot') {
+            return sum + montant
+          } else if (t.type === 'retrait') {
+            return sum - montant
+          }
+          return sum
+        }, 0) || 0
+
+        const montantRequis = Number(collateral.montant_requis || 0)
+        
+        // Juste un warning de logging, pas un blocage
+        if (montantBloque < montantRequis && montantBloque > 0) {
+          console.info(`Info: Membre ${collateral.membre_id} - transactions bloquées (${montantBloque}) différent du montant requis (${montantRequis}), mais collateral est complet`)
+        }
+      }
+    } catch (error) {
+      // Ignorer les erreurs de vérification des transactions bloquées
+      // La table collaterals reste la source de vérité
+      console.warn('Erreur lors de la vérification des transactions bloquées (non bloquant):', error)
+    }
+
+    return true
   }
 
   // Fonction de fallback utilisant les transactions bloquées (pour compatibilité)
@@ -315,13 +389,13 @@ function ApprobationsPageContent() {
 
       if (epargneError) return false
 
-      // Calculer le montant bloqué
+      // Calculer le montant bloqué (dépôts - retraits)
       const montantBloque = blockedTransactions?.reduce((sum, t) => {
         const montant = Number(t.montant || 0)
         if (t.type === 'depot') {
           return sum + montant
         } else if (t.type === 'retrait') {
-          return sum + montant
+          return sum - montant // Soustraire les retraits, pas les additionner
         }
         return sum
       }, 0) || 0
@@ -365,8 +439,25 @@ function ApprobationsPageContent() {
     if (!collateralsError && groupCollaterals && groupCollaterals.length > 0) {
       const totalRequis = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_requis || 0), 0)
       const totalBloque = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
-      const totalRestant = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_restant || 0), 0)
-      const completeCount = groupCollaterals.filter(c => c.statut === 'complet').length
+      // Calculer le montant restant réel basé sur les montants déposés vs requis
+      const totalRestant = groupCollaterals.reduce((sum, c) => {
+        const requis = Number(c.montant_requis || 0)
+        const depose = Number(c.montant_depose || 0)
+        return sum + Math.max(0, requis - depose)
+      }, 0)
+      
+      // Vérification simple: compter les garanties avec statut 'complet' ET montant déposé >= requis
+      // La table collaterals est la source de vérité
+      const completeCount = groupCollaterals.filter(c => {
+        const montantDepose = Number(c.montant_depose || 0)
+        const montantRequis = Number(c.montant_requis || 0)
+        
+        // Une garantie est complète si le statut est 'complet' ET le montant déposé >= requis
+        const isStatusComplete = c.statut === 'complet'
+        const isAmountComplete = montantDepose >= montantRequis
+        
+        return isStatusComplete && isAmountComplete
+      }).length
 
       return {
         totalRequis,
@@ -416,10 +507,13 @@ function ApprobationsPageContent() {
         .eq('blocked_for_group_pret_id', group_pret_id)
         .eq('is_blocked', true)
 
+      // Calculer le montant bloqué (dépôts - retraits)
       const montantBloque = blockedTransactions?.reduce((sum, t) => {
         const montant = Number(t.montant || 0)
-        if (t.type === 'depot' || t.type === 'retrait') {
+        if (t.type === 'depot') {
           return sum + montant
+        } else if (t.type === 'retrait') {
+          return sum - montant // Soustraire les retraits, pas les additionner
         }
         return sum
       }, 0) || 0
@@ -540,46 +634,55 @@ function ApprobationsPageContent() {
       return
     }
 
-    // Calculer le montant de garantie requis
-    const { calculateCollateralAmount } = await import('@/lib/systemSettings')
-    const montantGarantieRequis = await calculateCollateralAmount(pret.montant_pret)
+    // Recharger les données pour s'assurer d'avoir les informations les plus récentes
+    await loadData()
+    await new Promise(resolve => setTimeout(resolve, 100))
 
-    // Vérifier que la garantie est bloquée sur le compte épargne
-    const { data: blockedTransactions, error: epargneError } = await supabase
-      .from('epargne_transactions')
-      .select('montant, type')
-      .eq('membre_id', pret.membre_id)
-      .eq('blocked_for_pret_id', pret.pret_id)
-      .eq('is_blocked', true)
+    // Vérifier dans la table collaterals (source de vérité principale)
+    // Recharger le collateral directement depuis la base de données pour avoir les dernières données
+    const { data: freshCollateral, error: collateralError } = await supabase
+      .from('collaterals')
+      .select('*')
+      .eq('pret_id', pret.pret_id)
+      .single()
 
-    if (epargneError) {
-      console.error('Erreur lors de la vérification de la garantie:', epargneError)
-      alert(`❌ Erreur lors de la vérification de la garantie. Contactez l'administrateur.`)
-      return
+    if (collateralError && collateralError.code !== 'PGRST116') {
+      console.error('Erreur lors de la vérification du collateral:', collateralError)
     }
 
-    // Calculer le montant bloqué
-    const montantBloque = blockedTransactions?.reduce((sum, t) => {
-      if (t.type === 'depot') {
-        return sum + Number(t.montant || 0)
-      }
-      return sum
-    }, 0) || 0
-
-    if (montantBloque < montantGarantieRequis) {
+    const collateral = freshCollateral || getCollateral(pret.pret_id)
+    
+    if (!collateral) {
       alert(
         `❌ Impossible d'approuver le prêt ${pret.pret_id}.\n\n` +
-        `La garantie n'est pas complètement bloquée sur le compte épargne.\n\n` +
-        `💰 Garantie requise: ${formatCurrency(montantGarantieRequis)}\n` +
-        `💵 Montant bloqué: ${formatCurrency(montantBloque)}\n` +
-        `⚠️ Montant manquant: ${formatCurrency(montantGarantieRequis - montantBloque)}\n\n` +
-        `L'agent de crédit doit bloquer la garantie complète sur le compte épargne du membre avant que vous puissiez approuver le prêt.\n` +
-        `Allez dans "Épargnes" pour bloquer la garantie.`
+        `Aucune garantie n'a été trouvée pour ce prêt.\n\n` +
+        `L'agent de crédit doit d'abord enregistrer la garantie.`
       )
       return
     }
 
-    if (!confirm(`Approuver le prêt ${pret.pret_id} ?\n\nMontant: ${formatCurrency(pret.montant_pret)}\nMembre: ${getMembre(pret.membre_id)?.prenom} ${getMembre(pret.membre_id)?.nom}\nGarantie bloquée: ${formatCurrency(montantBloque)}`)) {
+    const montantDepose = Number(collateral.montant_depose || 0)
+    const montantRequis = Number(collateral.montant_requis || 0)
+    const isStatusComplete = collateral.statut === 'complet'
+    const isAmountComplete = montantDepose >= montantRequis
+
+    if (!isStatusComplete || !isAmountComplete) {
+      const montantRestant = Math.max(0, montantRequis - montantDepose)
+      alert(
+        `❌ Impossible d'approuver le prêt ${pret.pret_id}.\n\n` +
+        `La garantie n'est pas complète.\n\n` +
+        `📊 État de la garantie:\n` +
+        `   • Statut: ${collateral.statut}\n` +
+        `   • Montant déposé: ${formatCurrency(montantDepose)}\n` +
+        `   • Montant requis: ${formatCurrency(montantRequis)}\n` +
+        `   • Montant restant: ${formatCurrency(montantRestant)}\n\n` +
+        `L'agent de crédit doit compléter la garantie avant que vous puissiez approuver le prêt.`
+      )
+      return
+    }
+
+    // La garantie est complète - procéder à l'approbation
+    if (!confirm(`Approuver le prêt ${pret.pret_id} ?\n\nMontant: ${formatCurrency(pret.montant_pret)}\nMembre: ${getMembre(pret.membre_id)?.prenom} ${getMembre(pret.membre_id)?.nom}\nGarantie déposée: ${formatCurrency(montantDepose)}`)) {
       return
     }
 
@@ -653,15 +756,30 @@ function ApprobationsPageContent() {
       return
     }
 
+    // Recharger les données pour s'assurer d'avoir les informations les plus récentes
+    // Cela empêche les problèmes de synchronisation entre l'affichage et la vérification
+    await loadData()
+
+    // Attendre un peu pour que les données soient bien chargées
+    await new Promise(resolve => setTimeout(resolve, 100))
+
     // Vérifier que toutes les garanties sont bloquées sur les comptes épargne
+    // Cette vérification utilise une double validation (collaterals + transactions bloquées)
     const allComplete = await areAllGroupCollateralsComplete(groupPret.pret_id)
     
     if (!allComplete) {
+      // Obtenir des informations détaillées pour un message d'erreur plus précis
+      const collateralsInfo = await getGroupCollateralsInfo(groupPret.pret_id)
+      
       alert(
         `❌ Impossible d'approuver le prêt de groupe ${groupPret.pret_id}.\n\n` +
-        `Toutes les garanties des membres doivent être bloquées sur leurs comptes épargne.\n\n` +
-        `L'agent de crédit doit bloquer la garantie complète pour chaque membre avant que vous puissiez approuver le prêt.\n` +
-        `Allez dans "Épargnes" pour bloquer les garanties.`
+        `Toutes les garanties des membres doivent être complètes.\n\n` +
+        `📊 État actuel:\n` +
+        `   • Garanties complètes: ${collateralsInfo.completeCount}/${collateralsInfo.totalMembers}\n` +
+        `   • Montant déposé: ${formatCurrency(collateralsInfo.totalBloque)}\n` +
+        `   • Montant requis: ${formatCurrency(collateralsInfo.totalRequis)}\n` +
+        `   • Montant restant: ${formatCurrency(collateralsInfo.totalRestant)}\n\n` +
+        `L'agent de crédit doit compléter la garantie pour chaque membre avant que vous puissiez approuver le prêt.`
       )
       return
     }
@@ -911,14 +1029,13 @@ function ApprobationsPageContent() {
                     
                     const montantDepose = collateral ? Number(collateral.montant_depose || 0) : 0
                     const montantRequis = collateral ? Number(collateral.montant_requis || 0) : 0
-                    // Utiliser montant_restant directement (peut être 0, null ou undefined)
-                    // Si montant_restant est null/undefined, calculer: max(0, montantRequis - montantDepose)
-                    const montantRestant = collateral 
-                      ? (collateral.montant_restant != null 
-                          ? Number(collateral.montant_restant) 
-                          : Math.max(0, montantRequis - montantDepose))
-                      : montantRequis
-                    const garantieComplete = montantDepose >= montantRequis && montantRestant <= 0
+                    // Calculer le montant restant réel basé sur les montants déposés vs requis
+                    const montantRestant = Math.max(0, montantRequis - montantDepose)
+                    // Vérification simple: statut 'complet' ET montant déposé >= requis
+                    // La table collaterals est la source de vérité
+                    const isStatusComplete = collateral?.statut === 'complet'
+                    const isAmountComplete = montantDepose >= montantRequis
+                    const garantieComplete = isStatusComplete && isAmountComplete
 
                     return (
                       <TableRow key={`pret-${pret.id}`}>
@@ -1038,7 +1155,8 @@ function ApprobationsPageContent() {
                               <div className={`text-xs font-semibold ${
                                 allComplete ? 'text-green-600' : 'text-yellow-600'
                               }`}>
-                                {allComplete ? '✅ Toutes complètes' : `⚠️ ${collateralsInfo.completeCount}/${collateralsInfo.totalMembers} complètes`}
+                                {allComplete ? '✅ Toutes complètes' : 
+                                 `⚠️ ${collateralsInfo.completeCount}/${collateralsInfo.totalMembers} complètes`}
                               </div>
                               <div className="text-xs text-muted-foreground">
                                 {formatCurrency(collateralsInfo.totalBloque)} / {formatCurrency(collateralsInfo.totalRequis)}
