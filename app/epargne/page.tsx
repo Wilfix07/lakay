@@ -249,25 +249,29 @@ function EpargnePageContent() {
   }, [userProfile, selectedMembreId])
 
   async function loadUserProfile() {
-    const profile = await getUserProfile()
-    setUserProfile(profile)
-    
-    // Si l'utilisateur est un agent, vérifier que son agent_id existe
-    if (profile?.role === 'agent' && profile.agent_id) {
-      const { data: agentExists, error: agentCheckError } = await supabase
-        .from('agents')
-        .select('agent_id')
-        .eq('agent_id', profile.agent_id)
-        .maybeSingle()
+    try {
+      const profile = await getUserProfile()
+      setUserProfile(profile)
       
-      if (agentCheckError && agentCheckError.code !== 'PGRST116') {
-        console.error('⚠️ Erreur lors de la vérification de l\'agent_id:', agentCheckError)
-      } else if (!agentExists) {
-        console.error('⚠️ L\'agent_id du profil utilisateur n\'existe pas dans la table agents:', profile.agent_id)
+      // Si l'utilisateur est un agent, vérifier que son agent_id existe
+      if (profile?.role === 'agent' && profile.agent_id) {
+        const { data: agentExists, error: agentCheckError } = await supabase
+          .from('agents')
+          .select('agent_id')
+          .eq('agent_id', profile.agent_id)
+          .maybeSingle()
+        
+        if (agentCheckError && agentCheckError.code !== 'PGRST116') {
+          console.error('⚠️ Erreur lors de la vérification de l\'agent_id:', agentCheckError)
+        } else if (!agentExists) {
+          console.error('⚠️ L\'agent_id du profil utilisateur n\'existe pas dans la table agents:', profile.agent_id)
+        }
       }
+    } catch (error) {
+      console.error('Erreur lors du chargement du profil:', error)
+    } finally {
+      setLoading(false)
     }
-    
-    setLoading(false)
   }
 
   async function loadMembres() {

@@ -652,37 +652,42 @@ function ApprobationsPageContent() {
 
     const collateral = freshCollateral || getCollateral(pret.pret_id)
     
-    if (!collateral) {
-      alert(
-        `❌ Impossible d'approuver le prêt ${pret.pret_id}.\n\n` +
-        `Aucune garantie n'a été trouvée pour ce prêt.\n\n` +
-        `L'agent de crédit doit d'abord enregistrer la garantie.`
-      )
-      return
+    // La garantie est maintenant optionnelle - vérifier seulement si elle existe
+    let hasCollateral = false
+    let montantDepose = 0
+    let montantRequis = 0
+    
+    if (collateral) {
+      hasCollateral = true
+      montantDepose = Number(collateral.montant_depose || 0)
+      montantRequis = Number(collateral.montant_requis || 0)
+      const isStatusComplete = collateral.statut === 'complet'
+      const isAmountComplete = montantDepose >= montantRequis
+
+      // Si une garantie existe mais n'est pas complète, demander confirmation
+      if (!isStatusComplete || !isAmountComplete) {
+        const montantRestant = Math.max(0, montantRequis - montantDepose)
+        const shouldContinue = confirm(
+          `⚠️ La garantie n'est pas complète pour le prêt ${pret.pret_id}.\n\n` +
+          `📊 État de la garantie:\n` +
+          `   • Statut: ${collateral.statut}\n` +
+          `   • Montant déposé: ${formatCurrency(montantDepose)}\n` +
+          `   • Montant requis: ${formatCurrency(montantRequis)}\n` +
+          `   • Montant restant: ${formatCurrency(montantRestant)}\n\n` +
+          `Voulez-vous quand même approuver ce prêt sans garantie complète ?`
+        )
+        if (!shouldContinue) {
+          return
+        }
+        // Continuer avec l'approbation même si la garantie n'est pas complète
+      }
     }
 
-    const montantDepose = Number(collateral.montant_depose || 0)
-    const montantRequis = Number(collateral.montant_requis || 0)
-    const isStatusComplete = collateral.statut === 'complet'
-    const isAmountComplete = montantDepose >= montantRequis
-
-    if (!isStatusComplete || !isAmountComplete) {
-      const montantRestant = Math.max(0, montantRequis - montantDepose)
-      alert(
-        `❌ Impossible d'approuver le prêt ${pret.pret_id}.\n\n` +
-        `La garantie n'est pas complète.\n\n` +
-        `📊 État de la garantie:\n` +
-        `   • Statut: ${collateral.statut}\n` +
-        `   • Montant déposé: ${formatCurrency(montantDepose)}\n` +
-        `   • Montant requis: ${formatCurrency(montantRequis)}\n` +
-        `   • Montant restant: ${formatCurrency(montantRestant)}\n\n` +
-        `L'agent de crédit doit compléter la garantie avant que vous puissiez approuver le prêt.`
-      )
-      return
-    }
-
-    // La garantie est complète - procéder à l'approbation
-    if (!confirm(`Approuver le prêt ${pret.pret_id} ?\n\nMontant: ${formatCurrency(pret.montant_pret)}\nMembre: ${getMembre(pret.membre_id)?.prenom} ${getMembre(pret.membre_id)?.nom}\nGarantie déposée: ${formatCurrency(montantDepose)}`)) {
+    // Confirmation d'approbation (avec ou sans garantie)
+    const collateralInfo = hasCollateral 
+      ? `\nGarantie déposée: ${formatCurrency(montantDepose)}`
+      : `\n⚠️ Aucune garantie`
+    if (!confirm(`Approuver le prêt ${pret.pret_id} ?\n\nMontant: ${formatCurrency(pret.montant_pret)}\nMembre: ${getMembre(pret.membre_id)?.prenom} ${getMembre(pret.membre_id)?.nom}${collateralInfo}`)) {
       return
     }
 
@@ -763,28 +768,34 @@ function ApprobationsPageContent() {
     // Attendre un peu pour que les données soient bien chargées
     await new Promise(resolve => setTimeout(resolve, 100))
 
-    // Vérifier que toutes les garanties sont bloquées sur les comptes épargne
+    // Vérifier l'état des garanties (maintenant optionnelles)
     // Cette vérification utilise une double validation (collaterals + transactions bloquées)
     const allComplete = await areAllGroupCollateralsComplete(groupPret.pret_id)
     
+    // Obtenir des informations détaillées sur les garanties
+    const collateralsInfo = await getGroupCollateralsInfo(groupPret.pret_id)
+    
+    // Si toutes les garanties ne sont pas complètes, demander confirmation
     if (!allComplete) {
-      // Obtenir des informations détaillées pour un message d'erreur plus précis
-      const collateralsInfo = await getGroupCollateralsInfo(groupPret.pret_id)
-      
-      alert(
-        `❌ Impossible d'approuver le prêt de groupe ${groupPret.pret_id}.\n\n` +
-        `Toutes les garanties des membres doivent être complètes.\n\n` +
+      const shouldContinue = confirm(
+        `⚠️ Certaines garanties ne sont pas complètes pour le prêt de groupe ${groupPret.pret_id}.\n\n` +
         `📊 État actuel:\n` +
         `   • Garanties complètes: ${collateralsInfo.completeCount}/${collateralsInfo.totalMembers}\n` +
         `   • Montant déposé: ${formatCurrency(collateralsInfo.totalBloque)}\n` +
         `   • Montant requis: ${formatCurrency(collateralsInfo.totalRequis)}\n` +
         `   • Montant restant: ${formatCurrency(collateralsInfo.totalRestant)}\n\n` +
-        `L'agent de crédit doit compléter la garantie pour chaque membre avant que vous puissiez approuver le prêt.`
+        `Voulez-vous quand même approuver ce prêt de groupe sans garanties complètes ?`
       )
-      return
+      if (!shouldContinue) {
+        return
+      }
     }
 
-    if (!confirm(`Approuver le prêt de groupe ${groupPret.pret_id} ?\n\nMontant total: ${formatCurrency(groupPret.montant_pret)}\nAgent: ${getAgent(groupPret.agent_id)?.prenom} ${getAgent(groupPret.agent_id)?.nom}\nToutes les garanties sont complètes`)) {
+    const collateralInfo = allComplete
+      ? `\n✅ Toutes les garanties sont complètes`
+      : `\n⚠️ ${collateralsInfo.completeCount}/${collateralsInfo.totalMembers} garanties complètes`
+    
+    if (!confirm(`Approuver le prêt de groupe ${groupPret.pret_id} ?\n\nMontant total: ${formatCurrency(groupPret.montant_pret)}\nAgent: ${getAgent(groupPret.agent_id)?.prenom} ${getAgent(groupPret.agent_id)?.nom}${collateralInfo}`)) {
       return
     }
 
@@ -814,7 +825,10 @@ function ApprobationsPageContent() {
 
       if (activateError) throw activateError
 
-      alert(`✅ Prêt de groupe ${groupPret.pret_id} approuvé et activé avec succès!\n\nToutes les garanties sont bloquées sur les comptes épargne. Le prêt a été activé et les remboursements ont été créés pour tous les membres. Le décaissement peut maintenant être effectué.`)
+      const successMessage = allComplete
+        ? `✅ Prêt de groupe ${groupPret.pret_id} approuvé et activé avec succès!\n\nToutes les garanties sont bloquées sur les comptes épargne. Le prêt a été activé et les remboursements ont été créés pour tous les membres. Le décaissement peut maintenant être effectué.`
+        : `✅ Prêt de groupe ${groupPret.pret_id} approuvé et activé avec succès!\n\n⚠️ Note: ${collateralsInfo.totalMembers - collateralsInfo.completeCount} membre(s) n'a/ont pas de garantie complète. Le prêt a été activé et les remboursements ont été créés pour tous les membres. Le décaissement peut maintenant être effectué.`
+      alert(successMessage)
       
       await loadData()
     } catch (error) {
