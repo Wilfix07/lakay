@@ -684,6 +684,74 @@ function PretsPageContent() {
         return
       }
 
+      // Vérifier les doublons exacts (même membre, même montant, même date, même agent)
+      if (loanType === 'membre') {
+        try {
+          const { data: duplicateCheck, error: duplicateError } = await supabase
+            .rpc('check_duplicate_pret', {
+              p_membre_id: formData.membre_id?.trim() || formData.membre_id,
+              p_montant_pret: montantPret,
+              p_date_decaissement: formData.date_decaissement,
+              p_agent_id: finalAgentId,
+              p_pret_id: null // Nouveau prêt, pas d'exclusion
+            })
+
+          if (duplicateError) {
+            console.error('Erreur lors de la vérification des doublons:', duplicateError)
+            // Continuer quand même, le trigger de la DB empêchera les doublons
+          } else if (duplicateCheck && duplicateCheck.length > 0 && duplicateCheck[0]?.is_duplicate) {
+            const existingPretId = duplicateCheck[0].existing_pret_id || 'inconnu'
+            const existingStatut = duplicateCheck[0].existing_statut || 'inconnu'
+            alert(
+              `❌ DOUBLON DÉTECTÉ: Un prêt identique existe déjà pour ce membre!\n\n` +
+              `Prêt existant: ${existingPretId} (statut: ${existingStatut})\n\n` +
+              `Un membre ne peut pas avoir deux prêts identiques avec:\n` +
+              `- Le même montant (${montantPret} HTG)\n` +
+              `- La même date de décaissement (${formData.date_decaissement})\n` +
+              `- Le même agent (${finalAgentId})\n\n` +
+              `Veuillez vérifier le prêt existant ou modifier les informations.`
+            )
+            return
+          }
+        } catch (error) {
+          console.error('Exception lors de la vérification des doublons:', error)
+          // Continuer quand même, le trigger de la DB empêchera les doublons
+        }
+      } else if (loanType === 'groupe') {
+        // Vérifier les doublons pour les prêts de groupe
+        try {
+          const { data: duplicateCheck, error: duplicateError } = await supabase
+            .rpc('check_duplicate_group_pret', {
+              p_group_id: parseInt(formData.group_id),
+              p_montant_pret: montantPret,
+              p_date_decaissement: formData.date_decaissement,
+              p_agent_id: finalAgentId,
+              p_pret_id: null
+            })
+
+          if (duplicateError) {
+            console.error('Erreur lors de la vérification des doublons de groupe:', duplicateError)
+            // Continuer quand même, le trigger de la DB empêchera les doublons
+          } else if (duplicateCheck && duplicateCheck.length > 0 && duplicateCheck[0]?.is_duplicate) {
+            const existingPretId = duplicateCheck[0].existing_pret_id || 'inconnu'
+            const existingStatut = duplicateCheck[0].existing_statut || 'inconnu'
+            alert(
+              `❌ DOUBLON DÉTECTÉ: Un prêt de groupe identique existe déjà!\n\n` +
+              `Prêt existant: ${existingPretId} (statut: ${existingStatut})\n\n` +
+              `Un groupe ne peut pas avoir deux prêts identiques avec:\n` +
+              `- Le même montant (${montantPret} HTG)\n` +
+              `- La même date de décaissement (${formData.date_decaissement})\n` +
+              `- Le même agent (${finalAgentId})\n\n` +
+              `Veuillez vérifier le prêt existant ou modifier les informations.`
+            )
+            return
+          }
+        } catch (error) {
+          console.error('Exception lors de la vérification des doublons de groupe:', error)
+          // Continuer quand même, le trigger de la DB empêchera les doublons
+        }
+      }
+
       // Vérifier si le membre/groupe a déjà un prêt actif
       if (loanType === 'membre') {
         // 1. Vérifier les prêts individuels actifs
@@ -1009,6 +1077,15 @@ function PretsPageContent() {
             }])
 
           if (pretError) {
+            // Vérifier si c'est une erreur de doublon détectée par le trigger
+            if (pretError.message?.includes('Un prêt identique existe déjà') || 
+                pretError.message?.includes('doublon') ||
+                pretError.message?.includes('identique existe déjà')) {
+              const errorMessage = pretError.message || 'Un prêt identique existe déjà pour ce membre.'
+              alert(`❌ DOUBLON DÉTECTÉ: ${errorMessage}\n\nVeuillez vérifier les informations du prêt.`)
+              return
+            }
+            
             // Vérifier si c'est une violation de contrainte unique (membre avec prêt actif)
             if (pretError.code === '23505' && pretError.message?.includes('uniq_prets_membre_actif')) {
               // Récupérer les prêts actifs du membre pour afficher un message détaillé
@@ -1585,6 +1662,54 @@ function PretsPageContent() {
         return
       }
 
+      // Vérifier les doublons exacts avant la mise à jour
+      // Un doublon est défini comme: même membre, même montant, même date, même agent
+      // Pour les agents, s'assurer qu'ils ne peuvent pas modifier l'agent_id
+      let finalAgentIdForUpdate = formData.agent_id || editingPret.agent_id
+      if (userProfile?.role === 'agent' && userProfile.agent_id) {
+        // Les agents ne peuvent pas changer l'agent_id, utiliser celui du profil
+        finalAgentIdForUpdate = userProfile.agent_id
+      }
+      const hasChangedKeyFields = 
+        formData.membre_id !== editingPret.membre_id ||
+        parseFloat(formData.montant_pret) !== editingPret.montant_pret ||
+        formData.date_decaissement !== editingPret.date_decaissement ||
+        finalAgentIdForUpdate !== editingPret.agent_id
+
+      if (hasChangedKeyFields) {
+        try {
+          const { data: duplicateCheck, error: duplicateError } = await supabase
+            .rpc('check_duplicate_pret', {
+              p_membre_id: formData.membre_id?.trim() || formData.membre_id,
+              p_montant_pret: montantPret,
+              p_date_decaissement: formData.date_decaissement,
+              p_agent_id: finalAgentIdForUpdate,
+              p_pret_id: editingPret.pret_id // Exclure le prêt en cours d'édition
+            })
+
+          if (duplicateError) {
+            console.error('Erreur lors de la vérification des doublons:', duplicateError)
+            // Continuer quand même, le trigger de la DB empêchera les doublons
+          } else if (duplicateCheck && duplicateCheck.length > 0 && duplicateCheck[0]?.is_duplicate) {
+            const existingPretId = duplicateCheck[0].existing_pret_id || 'inconnu'
+            const existingStatut = duplicateCheck[0].existing_statut || 'inconnu'
+            alert(
+              `❌ DOUBLON DÉTECTÉ: Un prêt identique existe déjà pour ce membre!\n\n` +
+              `Prêt existant: ${existingPretId} (statut: ${existingStatut})\n\n` +
+              `Un membre ne peut pas avoir deux prêts identiques avec:\n` +
+              `- Le même montant (${montantPret} HTG)\n` +
+              `- La même date de décaissement (${formData.date_decaissement})\n` +
+              `- Le même agent (${finalAgentIdForUpdate})\n\n` +
+              `Veuillez modifier au moins un de ces champs pour éviter le doublon.`
+            )
+            return
+          }
+        } catch (error) {
+          console.error('Exception lors de la vérification des doublons:', error)
+          // Continuer quand même, le trigger de la DB empêchera les doublons
+        }
+      }
+
       if (formData.membre_id !== editingPret.membre_id) {
         // Vérifier les prêts individuels actifs (exclure le prêt en cours d'édition)
         const { data: activeLoans, error: activeLoansError } = await supabase
@@ -1663,13 +1788,6 @@ function PretsPageContent() {
       }
     }
 
-      // Pour les agents, s'assurer qu'ils ne peuvent pas modifier l'agent_id
-      // Les agents ne peuvent modifier que leurs propres prêts
-      let finalAgentIdForUpdate = formData.agent_id
-      if (userProfile?.role === 'agent' && userProfile.agent_id) {
-        // Les agents ne peuvent pas changer l'agent_id, utiliser celui du profil
-        finalAgentIdForUpdate = userProfile.agent_id
-      }
 
       const { error: pretError } = await supabase
         .from('prets')
@@ -1688,6 +1806,15 @@ function PretsPageContent() {
         .eq('id', editingPret.id)
 
       if (pretError) {
+        // Vérifier si c'est une erreur de doublon détectée par le trigger
+        if (pretError.message?.includes('Un prêt identique existe déjà') || 
+            pretError.message?.includes('doublon') ||
+            pretError.message?.includes('identique existe déjà')) {
+          const errorMessage = pretError.message || 'Un prêt identique existe déjà pour ce membre.'
+          alert(`❌ DOUBLON DÉTECTÉ: ${errorMessage}\n\nVeuillez modifier les informations du prêt.`)
+          return
+        }
+        
         // Vérifier si c'est une violation de contrainte unique (membre avec prêt actif)
         if (pretError.code === '23505' || pretError.message?.includes('uniq_prets_membre_actif')) {
           // Récupérer les prêts actifs du membre pour afficher un message détaillé

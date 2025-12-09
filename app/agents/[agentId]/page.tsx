@@ -398,38 +398,6 @@ function AgentDetailsPageContent() {
     return allImpayes.sort((a, b) => b.daysLate - a.daysLate)
   }, [remboursements, groupRemboursements, membres, groupMembres])
 
-  // Calculs PNL
-  const pnlData = useMemo(async () => {
-    const interestRates = await getInterestRates()
-    const commissionRate = interestRates?.commissionRate || 0.3
-
-    // Calculer les intérêts collectés
-    const interestCollected = [...remboursements, ...groupRemboursements]
-      .filter(r => r.statut === 'paye' || r.statut === 'paye_partiel')
-      .reduce((sum, r) => sum + Number(r.interet || 0), 0)
-
-    // Calculer les dépenses
-    const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0)
-
-    // Net avant commission
-    const net = interestCollected - totalExpenses
-
-    // Commission
-    const commission = net * commissionRate
-
-    // Net après commission
-    const netAfterCommission = net - commission
-
-    return {
-      interestCollected,
-      totalExpenses,
-      net,
-      commission,
-      netAfterCommission,
-      commissionRate,
-    }
-  }, [remboursements, groupRemboursements, expenses])
-
   const [pnlStats, setPnlStats] = useState({
     interestCollected: 0,
     totalExpenses: 0,
@@ -439,13 +407,40 @@ function AgentDetailsPageContent() {
     commissionRate: 0.3,
   })
 
+  // Calculs PNL - Fixed: useMemo cannot be used with async functions
   useEffect(() => {
     async function calculatePnl() {
-      const data = await pnlData
-      setPnlStats(data)
+      const interestRates = await getInterestRates()
+      const commissionRate = interestRates?.commissionRate || 0.3
+
+      // Calculer les intérêts collectés
+      const interestCollected = [...remboursements, ...groupRemboursements]
+        .filter(r => r.statut === 'paye' || r.statut === 'paye_partiel')
+        .reduce((sum, r) => sum + Number(r.interet || 0), 0)
+
+      // Calculer les dépenses
+      const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0)
+
+      // Net avant commission
+      const net = interestCollected - totalExpenses
+
+      // Commission
+      const commission = net * commissionRate
+
+      // Net après commission
+      const netAfterCommission = net - commission
+
+      setPnlStats({
+        interestCollected,
+        totalExpenses,
+        net,
+        commission,
+        netAfterCommission,
+        commissionRate,
+      })
     }
     calculatePnl()
-  }, [pnlData])
+  }, [remboursements, groupRemboursements, expenses])
 
   async function handleSignOut() {
     try {
