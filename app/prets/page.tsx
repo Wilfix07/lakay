@@ -925,6 +925,7 @@ function PretsPageContent() {
       
       if (loanType === 'membre' && collateralDeposit && parseFloat(collateralDeposit) > 0) {
         // L'utilisateur a fourni une garantie, vérifier qu'elle est suffisante
+        // Le taux utilisé est celui configuré dans la page "parametre" par le manager/admin
         montantGarantieRequisCheck = await calculateCollateralAmount(montantPret)
         const montantDepose = parseFloat(collateralDeposit)
         
@@ -942,6 +943,7 @@ function PretsPageContent() {
         }
       } else if (loanType === 'membre' && memberCollateralBalance > 0) {
         // Vérifier si le solde disponible est suffisant (optionnel)
+        // Le taux utilisé est celui configuré dans la page "parametre" par le manager/admin
         montantGarantieRequisCheck = await calculateCollateralAmount(montantPret)
         if (memberCollateralBalance >= montantGarantieRequisCheck) {
           hasCollateral = true
@@ -1404,6 +1406,8 @@ function PretsPageContent() {
           }
 
           // Calculer la garantie requise pour ce membre
+          // Le taux utilisé est celui configuré dans la page "parametre" par le manager/admin
+          // Il est appliqué sur le montant du prêt de chaque membre individuellement
           const montantGarantieRequis = await calculateCollateralAmount(memberAmount)
           
           // Vérifier le solde disponible du membre

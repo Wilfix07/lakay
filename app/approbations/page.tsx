@@ -45,6 +45,12 @@ function ApprobationsPageContent() {
     totalRestant: number
     completeCount: number
     totalMembers: number
+    memberDetails?: Array<{
+      membre_id: string
+      montantRequis: number
+      montantBloque: number
+      isComplete: boolean
+    }>
   }>>({})
 
   useEffect(() => {
@@ -92,6 +98,12 @@ function ApprobationsPageContent() {
         totalRestant: number
         completeCount: number
         totalMembers: number
+        memberDetails?: Array<{
+          membre_id: string
+          montantRequis: number
+          montantBloque: number
+          isComplete: boolean
+        }>
       }> = {}
       
       for (const groupPret of groupPrets) {
@@ -296,15 +308,22 @@ function ApprobationsPageContent() {
     // Vérifier à la fois le statut ET les montants pour éviter les incohérences
     // La table collaterals EST la source de vérité pour les garanties
     const allComplete = groupCollaterals?.every(c => {
-      const montantDepose = Number(c.montant_depose || 0)
-      const montantRequis = Number(c.montant_requis || 0)
-      const montantRestant = Number(c.montant_restant || 0)
+      // Convertir correctement les valeurs (peuvent être des chaînes ou des nombres)
+      const montantDepose = typeof c.montant_depose === 'string' 
+        ? parseFloat(c.montant_depose) 
+        : Number(c.montant_depose || 0)
+      const montantRequis = typeof c.montant_requis === 'string'
+        ? parseFloat(c.montant_requis)
+        : Number(c.montant_requis || 0)
+      
+      const deposeSafe = isNaN(montantDepose) ? 0 : Math.abs(montantDepose)
+      const requisSafe = isNaN(montantRequis) ? 0 : Math.abs(montantRequis)
       
       // Vérifier que le statut est 'complet' ET que les montants sont cohérents
       const isStatusComplete = c.statut === 'complet'
       // La garantie est complète si le montant déposé >= montant requis
-      // (montant_restant peut ne pas être à jour si le dépôt a été fait directement)
-      const isAmountComplete = montantDepose >= montantRequis
+      // Utiliser une petite tolérance pour les flottants
+      const isAmountComplete = deposeSafe >= (requisSafe - 0.01)
       
       // Les deux conditions doivent être vraies
       return isStatusComplete && isAmountComplete
@@ -414,10 +433,16 @@ function ApprobationsPageContent() {
     totalRestant: number
     completeCount: number
     totalMembers: number
+    memberDetails: Array<{
+      membre_id: string
+      montantRequis: number
+      montantBloque: number
+      isComplete: boolean
+    }>
   }> {
     const groupPret = groupPrets.find(gp => gp.pret_id === group_pret_id)
     if (!groupPret) {
-      return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: 0 }
+      return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: 0, memberDetails: [] }
     }
 
     // Récupérer les membres du groupe
@@ -427,110 +452,142 @@ function ApprobationsPageContent() {
       .eq('group_id', groupPret.group_id)
 
     if (!groupMembers || groupMembers.length === 0) {
-      return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: 0 }
+      return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: 0, memberDetails: [] }
     }
 
-    // Utiliser directement les collaterals de la table collaterals (plus fiable)
+    // APPROCHE HYBRIDE: Utiliser la table collaterals comme source principale
+    // car elle contient les montants déposés mis à jour lors de la création du prêt
+    // Puis vérifier les transactions si nécessaire
+    
+    // 1. Récupérer les collaterals depuis la table (source de vérité principale)
     const { data: groupCollaterals, error: collateralsError } = await supabase
       .from('collaterals')
       .select('membre_id, montant_requis, montant_depose, montant_restant, statut')
       .eq('group_pret_id', group_pret_id)
 
-    if (!collateralsError && groupCollaterals && groupCollaterals.length > 0) {
-      const totalRequis = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_requis || 0), 0)
-      const totalBloque = groupCollaterals.reduce((sum, c) => sum + Number(c.montant_depose || 0), 0)
-      // Calculer le montant restant réel basé sur les montants déposés vs requis
-      const totalRestant = groupCollaterals.reduce((sum, c) => {
-        const requis = Number(c.montant_requis || 0)
-        const depose = Number(c.montant_depose || 0)
-        return sum + Math.max(0, requis - depose)
-      }, 0)
-      
-      // Vérification simple: compter les garanties avec statut 'complet' ET montant déposé >= requis
-      // La table collaterals est la source de vérité
-      const completeCount = groupCollaterals.filter(c => {
-        const montantDepose = Number(c.montant_depose || 0)
-        const montantRequis = Number(c.montant_requis || 0)
-        
-        // Une garantie est complète si le statut est 'complet' ET le montant déposé >= requis
-        const isStatusComplete = c.statut === 'complet'
-        const isAmountComplete = montantDepose >= montantRequis
-        
-        return isStatusComplete && isAmountComplete
-      }).length
-
-      return {
-        totalRequis,
-        totalBloque,
-        totalRestant,
-        completeCount,
-        totalMembers: groupMembers.length
-      }
-    }
-
-    // Fallback: utiliser l'ancienne méthode avec les remboursements
-    // Récupérer les montants individuels depuis les remboursements (utiliser le principal total)
+    // 2. Récupérer les remboursements pour calculer les montants de prêt par membre
     const { data: remboursements } = await supabase
       .from('group_remboursements')
       .select('membre_id, principal')
       .eq('pret_id', group_pret_id)
 
-    if (!remboursements) {
-      return { totalRequis: 0, totalBloque: 0, totalRestant: 0, completeCount: 0, totalMembers: groupMembers.length }
-    }
-
     // Calculer le montant de prêt par membre (somme des principaux)
     const montantsParMembre = new Map<string, number>()
-    remboursements.forEach(r => {
-      const current = montantsParMembre.get(r.membre_id) || 0
-      montantsParMembre.set(r.membre_id, current + Number(r.principal || 0))
-    })
+    if (remboursements && remboursements.length > 0) {
+      remboursements.forEach(r => {
+        const principal = typeof r.principal === 'string' ? parseFloat(r.principal) : Number(r.principal || 0)
+        if (!isNaN(principal) && principal > 0) {
+          const current = montantsParMembre.get(r.membre_id) || 0
+          montantsParMembre.set(r.membre_id, current + principal)
+        }
+      })
+    }
 
     const { calculateCollateralAmount } = await import('@/lib/systemSettings')
     
     let totalRequis = 0
     let totalBloque = 0
     let completeCount = 0
+    const memberDetails: Array<{ membre_id: string; montantRequis: number; montantBloque: number; isComplete: boolean }> = []
 
-    for (const member of groupMembers) {
-      const montantPret = montantsParMembre.get(member.membre_id) || 0
-      if (montantPret <= 0) continue
-
-      const montantGarantieRequis = await calculateCollateralAmount(montantPret)
-      totalRequis += montantGarantieRequis
-
-      // Récupérer toutes les transactions bloquées pour ce prêt de groupe
-      const { data: blockedTransactions } = await supabase
-        .from('epargne_transactions')
-        .select('montant, type')
-        .eq('membre_id', member.membre_id)
-        .eq('blocked_for_group_pret_id', group_pret_id)
-        .eq('is_blocked', true)
-
-      // Calculer le montant bloqué (dépôts - retraits)
-      const montantBloque = blockedTransactions?.reduce((sum, t) => {
-        const montant = Number(t.montant || 0)
-        if (t.type === 'depot') {
-          return sum + montant
-        } else if (t.type === 'retrait') {
-          return sum - montant // Soustraire les retraits, pas les additionner
-        }
-        return sum
-      }, 0) || 0
-
-      totalBloque += montantBloque
-
-      if (montantBloque >= montantGarantieRequis) {
-        completeCount++
-      }
+    // Créer un map des collaterals par membre_id pour accès rapide
+    const collateralsMap = new Map<string, { montant_requis: any; montant_depose: any; statut: string }>()
+    if (groupCollaterals && groupCollaterals.length > 0) {
+      groupCollaterals.forEach(c => {
+        collateralsMap.set(c.membre_id, c)
+      })
     }
 
+    // Pour chaque membre, utiliser les données de collaterals si disponibles, sinon calculer
+    for (const member of groupMembers) {
+      const montantPret = montantsParMembre.get(member.membre_id) || 0
+      
+      // Calculer la garantie requise pour ce membre
+      const montantGarantieRequis = montantPret > 0 
+        ? await calculateCollateralAmount(montantPret)
+        : 0
+      
+      totalRequis += montantGarantieRequis
+
+      // PRIORITÉ 1: Utiliser les données de la table collaterals (source de vérité)
+      let montantBloque = 0
+      const collateral = collateralsMap.get(member.membre_id)
+      
+      if (collateral) {
+        // Convertir correctement les valeurs depuis collaterals
+        const montantDepose = typeof collateral.montant_depose === 'string' 
+          ? parseFloat(collateral.montant_depose) 
+          : Number(collateral.montant_depose || 0)
+        montantBloque = isNaN(montantDepose) ? 0 : Math.abs(montantDepose)
+        
+        // Utiliser montant_requis du collateral si disponible, sinon celui calculé
+        const montantRequisCollateral = typeof collateral.montant_requis === 'string'
+          ? parseFloat(collateral.montant_requis)
+          : Number(collateral.montant_requis || 0)
+        const requisFinal = (!isNaN(montantRequisCollateral) && montantRequisCollateral > 0) 
+          ? montantRequisCollateral 
+          : montantGarantieRequis
+        
+        // Ajuster totalRequis si on utilise le montant du collateral
+        if (requisFinal !== montantGarantieRequis) {
+          totalRequis = totalRequis - montantGarantieRequis + requisFinal
+        }
+      } else {
+        // PRIORITÉ 2: Fallback - calculer depuis les transactions bloquées
+        const { data: blockedTransactions } = await supabase
+          .from('epargne_transactions')
+          .select('montant, type')
+          .eq('membre_id', member.membre_id)
+          .eq('blocked_for_group_pret_id', group_pret_id)
+          .eq('is_blocked', true)
+
+        if (blockedTransactions && blockedTransactions.length > 0) {
+          montantBloque = blockedTransactions.reduce((sum, t) => {
+            const type = (t.type || '').toLowerCase().trim()
+            if (type === 'depot') {
+              const montant = typeof t.montant === 'string' ? parseFloat(t.montant) : Number(t.montant || 0)
+              return sum + (isNaN(montant) ? 0 : Math.abs(montant))
+            }
+            return sum
+          }, 0)
+        }
+      }
+
+      // S'assurer que le montant est positif
+      montantBloque = Math.abs(montantBloque)
+      totalBloque += montantBloque
+
+      // Une garantie est complète si le montant bloqué >= montant requis
+      // Utiliser une petite tolérance pour les flottants
+      const requisFinal = collateral && typeof collateral.montant_requis !== 'undefined'
+        ? (typeof collateral.montant_requis === 'string' ? parseFloat(collateral.montant_requis) : Number(collateral.montant_requis || 0))
+        : montantGarantieRequis
+      const requisFinalSafe = isNaN(requisFinal) ? montantGarantieRequis : Math.abs(requisFinal)
+      
+      const isComplete = montantBloque >= (requisFinalSafe - 0.01)
+      if (isComplete) {
+        completeCount++
+      }
+
+      memberDetails.push({
+        membre_id: member.membre_id,
+        montantRequis: requisFinalSafe,
+        montantBloque: montantBloque,
+        isComplete
+      })
+    }
+
+    const safeTotalBloque = Math.abs(totalBloque)
+    const safeTotalRequis = Math.abs(totalRequis)
+    const safeTotalRestant = Math.max(0, safeTotalRequis - safeTotalBloque)
+
     return {
-      totalRequis,
-      totalBloque,
-      totalRestant: Math.max(0, totalRequis - totalBloque),
+      totalRequis: safeTotalRequis,
+      totalBloque: safeTotalBloque,
+      totalRestant: safeTotalRestant,
       completeCount,
-      totalMembers: groupMembers.length
+      totalMembers: groupMembers.length,
+      memberDetails
     }
   }
 
@@ -777,6 +834,19 @@ function ApprobationsPageContent() {
     
     // Si toutes les garanties ne sont pas complètes, demander confirmation
     if (!allComplete) {
+      // Identifier les membres avec garantie incomplète pour les lister
+      const incompleteMembers = collateralsInfo.memberDetails?.filter(m => !m.isComplete) || []
+      
+      // Construire la liste des membres incomplets
+      let membersListStr = ''
+      if (incompleteMembers.length > 0) {
+        membersListStr = incompleteMembers.map(m => {
+          const membre = getMembre(m.membre_id)
+          const nomComplet = membre ? `${membre.prenom} ${membre.nom}` : `Membre ${m.membre_id}`
+          return `   • ${nomComplet}: ${formatCurrency(m.montantBloque)} / ${formatCurrency(m.montantRequis)}`
+        }).join('\n')
+      }
+
       const shouldContinue = confirm(
         `⚠️ Certaines garanties ne sont pas complètes pour le prêt de groupe ${groupPret.pret_id}.\n\n` +
         `📊 État actuel:\n` +
@@ -784,6 +854,7 @@ function ApprobationsPageContent() {
         `   • Montant déposé: ${formatCurrency(collateralsInfo.totalBloque)}\n` +
         `   • Montant requis: ${formatCurrency(collateralsInfo.totalRequis)}\n` +
         `   • Montant restant: ${formatCurrency(collateralsInfo.totalRestant)}\n\n` +
+        (membersListStr ? `❌ Membres incomplets:\n${membersListStr}\n\n` : '') +
         `Voulez-vous quand même approuver ce prêt de groupe sans garanties complètes ?`
       )
       if (!shouldContinue) {
@@ -1165,12 +1236,36 @@ function ApprobationsPageContent() {
                         <TableCell>{formatDate(groupPret.created_at)}</TableCell>
                         <TableCell>
                           {collateralsInfo.totalMembers > 0 ? (
-                            <div className="space-y-1">
+                            <div className="space-y-1 relative group">
                               <div className={`text-xs font-semibold ${
                                 allComplete ? 'text-green-600' : 'text-yellow-600'
-                              }`}>
+                              } cursor-help flex items-center gap-1`}>
                                 {allComplete ? '✅ Toutes complètes' : 
                                  `⚠️ ${collateralsInfo.completeCount}/${collateralsInfo.totalMembers} complètes`}
+                                 <AlertCircle className="w-3 h-3 ml-1" />
+                                 
+                                 {/* Tooltip amélioré au survol */}
+                                 <div className="hidden group-hover:block absolute left-0 top-full mt-1 z-50 bg-white dark:bg-gray-800 p-3 rounded-md shadow-lg border text-left w-72 max-h-80 overflow-y-auto">
+                                   <h4 className="font-semibold mb-2 text-xs border-b pb-1">Détails des garanties par membre</h4>
+                                   {collateralsInfo.memberDetails?.map(detail => {
+                                     const membre = getMembre(detail.membre_id)
+                                     return (
+                                       <div key={detail.membre_id} className="mb-2 last:mb-0 pb-1 border-b border-gray-100 last:border-0">
+                                         <div className="font-medium text-xs truncate">
+                                           {membre ? `${membre.prenom} ${membre.nom}` : detail.membre_id}
+                                         </div>
+                                         <div className="flex justify-between items-center text-[10px] mt-1">
+                                           <span className="text-muted-foreground">
+                                             {formatCurrency(detail.montantBloque)} / {formatCurrency(detail.montantRequis)}
+                                           </span>
+                                           <span className={detail.isComplete ? "text-green-600 font-bold bg-green-50 px-1 rounded" : "text-red-500 font-bold bg-red-50 px-1 rounded"}>
+                                             {detail.isComplete ? "OK" : "MANQUE " + formatCurrency(Math.max(0, detail.montantRequis - detail.montantBloque))}
+                                           </span>
+                                         </div>
+                                       </div>
+                                     )
+                                   })}
+                                 </div>
                               </div>
                               <div className="text-xs text-muted-foreground">
                                 {formatCurrency(collateralsInfo.totalBloque)} / {formatCurrency(collateralsInfo.totalRequis)}
