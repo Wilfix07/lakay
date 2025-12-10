@@ -919,7 +919,7 @@ function ApprobationsPageContent() {
               Approbations de prêts
             </h1>
             <p className="text-muted-foreground mt-2">
-              Approuvez les prêts avec garantie complète pour les activer. Les agents peuvent collecter le collateral sans approbation.
+              Approuvez les prêts pour les activer. Vous pouvez approuver même si les garanties ne sont pas complètes.
             </p>
           </div>
           <Button
@@ -948,7 +948,7 @@ function ApprobationsPageContent() {
                 Aucun prêt en attente d'approbation
               </p>
               <p className="text-muted-foreground">
-                Il n'y a actuellement aucun prêt avec garantie complète en attente d'activation.
+                Il n'y a actuellement aucun prêt en attente d'activation.
               </p>
             </CardContent>
           </Card>
@@ -957,7 +957,7 @@ function ApprobationsPageContent() {
             <CardHeader>
               <CardTitle>Prêts en attente d'approbation ({filteredPrets.length + filteredGroupPrets.length} sur {prets.length + groupPrets.length})</CardTitle>
               <CardDescription>
-                Prêts avec garantie complète en attente d'activation. Seuls les prêts avec garantie complète peuvent être approuvés.
+                Prêts en attente d'activation. Vous pouvez approuver même si les garanties ne sont pas complètes.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -1095,10 +1095,10 @@ function ApprobationsPageContent() {
                         <TableCell className="text-right space-x-2">
                           <Button
                             onClick={() => handleApprove(pret)}
-                            disabled={isProcessing || !garantieComplete}
+                            disabled={isProcessing}
                             size="sm"
                             className="bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={!garantieComplete ? 'La garantie doit être complète avant d\'approuver' : ''}
+                            title={!garantieComplete ? 'La garantie n\'est pas complète, mais vous pouvez quand même approuver' : ''}
                           >
                             {isProcessing ? (
                               <Loader2 className="w-4 h-4 animate-spin" />
@@ -1188,10 +1188,10 @@ function ApprobationsPageContent() {
                         <TableCell className="text-right space-x-2">
                           <Button
                             onClick={() => handleApproveGroupPret(groupPret)}
-                            disabled={isProcessing || !allComplete}
+                            disabled={isProcessing}
                             size="sm"
                             className="bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={!allComplete ? 'Toutes les garanties doivent être complètes avant d\'approuver' : ''}
+                            title={!allComplete ? 'Certaines garanties ne sont pas complètes, mais vous pouvez quand même approuver' : ''}
                           >
                             {isProcessing ? (
                               <Loader2 className="w-4 h-4 animate-spin" />
