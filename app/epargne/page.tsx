@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { DashboardLayout } from '@/components/DashboardLayout'
-import { supabase, type UserProfile, type Membre, type Pret, type GroupPret } from '@/lib/supabase'
+import { supabase, type UserProfile, type Membre, type Pret, type GroupPret, type Collateral } from '@/lib/supabase'
 import { getUserProfile, signOut } from '@/lib/auth'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { calculateCollateralAmount } from '@/lib/systemSettings'
@@ -65,6 +65,9 @@ function EpargnePageContent() {
   const [prets, setPrets] = useState<Pret[]>([])
   const [groupPrets, setGroupPrets] = useState<GroupPret[]>([])
   const [loadingPrets, setLoadingPrets] = useState(false)
+  
+  // États pour charger les collaterals depuis la table collaterals
+  const [collaterals, setCollaterals] = useState<Collateral[]>([])
 
   const solde = useMemo(() => {
     return transactions.reduce((sum, t) => {
@@ -72,30 +75,64 @@ function EpargnePageContent() {
     }, 0)
   }, [transactions])
 
+  const soldeBloque = useMemo(() => {
+    // Si aucun membre n'est sélectionné, retourner 0
+    if (!selectedMembreId) return 0
+    
+    // Calculer le montant bloqué depuis la table collaterals
+    // Les collaterals sont déjà filtrés par membre_id dans loadCollaterals
+    
+    // Prendre en compte TOUS les collaterals du membre
+    // Un collateral peut être bloqué même si le prêt n'est pas encore actif (en attente d'approbation)
+    const collateralsDuMembre = collaterals.filter(c => c.membre_id === selectedMembreId)
+    
+    const montantBloqueTotal = collateralsDuMembre.reduce((sum, c) => {
+      const montant = Number(c.montant_depose || 0)
+      return sum + (isNaN(montant) ? 0 : montant)
+    }, 0)
+    
+    // Debug: logger pour comprendre le problème
+    if (process.env.NODE_ENV === 'development') {
+      if (collateralsDuMembre.length > 0) {
+        console.log('🔍 Debug soldeBloque:', {
+          selectedMembreId,
+          totalCollaterals: collaterals.length,
+          collateralsDuMembre: collateralsDuMembre.length,
+          montantBloqueTotal,
+          collateralsDetails: collateralsDuMembre.map(c => ({
+            id: c.id,
+            membre_id: c.membre_id,
+            montant_depose: c.montant_depose,
+            pret_id: c.pret_id,
+            group_pret_id: c.group_pret_id,
+          }))
+        })
+      }
+    }
+    
+    return montantBloqueTotal
+  }, [collaterals, selectedMembreId])
+
+  // montantGarantieActive est identique à soldeBloque
+  const montantGarantieActive = soldeBloque
+
   const soldeDisponible = useMemo(() => {
+    // Calculer le solde depuis les transactions (dépôts et retraits uniquement)
+    // Les collaterals ne sont plus dans epargne_transactions
     let total = 0
-    let bloque = 0
     transactions.forEach((t) => {
       const montant = Number(t.montant || 0)
       if (t.type === 'depot') {
         total += montant
-        // Les dépôts bloqués réduisent le solde disponible
-        if (t.is_blocked) {
-          bloque += montant
-        }
       } else if (t.type === 'retrait') {
         // Les retraits normaux réduisent le total
         total -= montant
-        // Les retraits bloqués (collateral) sont déjà déduits du total
-        // mais doivent être comptabilisés dans le solde bloqué
-        if (t.is_blocked) {
-          bloque += montant
-        }
       }
     })
-    // Le solde disponible = total des dépôts - retraits - montants bloqués
-    return Math.max(0, total - bloque)
-  }, [transactions])
+    
+    // Soustraire le montant bloqué depuis la table collaterals (pour les prêts actifs)
+    return Math.max(0, total - soldeBloque)
+  }, [transactions, soldeBloque])
 
   // Détecter les changements du solde disponible pour l'animation
   useEffect(() => {
@@ -110,48 +147,10 @@ function EpargnePageContent() {
     setPreviousSoldeDisponible(soldeDisponible)
   }, [soldeDisponible, previousSoldeDisponible])
 
-  const soldeBloque = useMemo(() => {
-    return transactions.reduce((sum, t) => {
-      // Les montants bloqués peuvent être des dépôts bloqués ou des retraits bloqués (collateral)
-      if (t.is_blocked) {
-        return sum + Number(t.montant || 0)
-      }
-      return sum
-    }, 0)
-  }, [transactions])
-
-  // Calculer le montant de garantie bloqué pour les prêts actifs uniquement
-  const montantGarantieActive = useMemo(() => {
-    if (!selectedMembreId) return 0
-    
-    // Récupérer les IDs des prêts actifs
-    const activePretIds = prets
-      .filter(p => p.statut === 'actif')
-      .map(p => p.pret_id)
-    
-    const activeGroupPretIds = groupPrets
-      .filter(gp => gp.statut === 'actif')
-      .map(gp => gp.pret_id)
-    
-    // Calculer le montant bloqué uniquement pour les prêts actifs
-    return transactions.reduce((sum, t) => {
-      if (t.is_blocked) {
-        const isForActivePret = 
-          (t.blocked_for_pret_id && activePretIds.includes(t.blocked_for_pret_id)) ||
-          (t.blocked_for_group_pret_id && activeGroupPretIds.includes(t.blocked_for_group_pret_id))
-        
-        if (isForActivePret) {
-          return sum + Number(t.montant || 0)
-        }
-      }
-      return sum
-    }, 0)
-  }, [transactions, prets, groupPrets, selectedMembreId])
-
   // Solde disponible pour retrait = solde total - montant de garantie des prêts actifs
   const soldeDisponiblePourRetrait = useMemo(() => {
-    return Math.max(0, solde - montantGarantieActive)
-  }, [solde, montantGarantieActive])
+    return Math.max(0, solde - soldeBloque)
+  }, [solde, soldeBloque])
 
   // Fonction helper pour vérifier si un agent peut modifier/supprimer une transaction
   // Les agents peuvent modifier/supprimer seulement les transactions du jour même
@@ -175,9 +174,11 @@ function EpargnePageContent() {
   useEffect(() => {
     if (selectedMembreId) {
       loadTransactions(selectedMembreId)
+      loadCollaterals(selectedMembreId)
       loadPretsForMember(selectedMembreId)
     } else {
       setTransactions([])
+      setCollaterals([])
       setPrets([])
       setGroupPrets([])
     }
@@ -347,10 +348,13 @@ function EpargnePageContent() {
   async function loadTransactions(membreId: string) {
     try {
       setErrorMessage(null)
+      // Charger uniquement les dépôts et retraits (pas les collaterals)
+      // Les collaterals sont maintenant uniquement dans la table collaterals
       const { data, error } = await supabase
         .from('epargne_transactions')
         .select('*')
         .eq('membre_id', membreId)
+        .or('is_blocked.is.null,is_blocked.eq.false') // Ne charger que les transactions non bloquées (dépôts et retraits normaux)
         .order('date_operation', { ascending: false })
 
       if (error) {
@@ -372,6 +376,26 @@ function EpargnePageContent() {
       console.error('Erreur chargement opérations épargne:', error)
       setErrorMessage('Erreur lors du chargement des opérations.')
       setTransactions([])
+    }
+  }
+
+  async function loadCollaterals(membreId: string) {
+    try {
+      // Charger les collaterals depuis la table collaterals
+      const { data, error } = await supabase
+        .from('collaterals')
+        .select('*')
+        .eq('membre_id', membreId)
+        .order('created_at', { ascending: false })
+
+      if (error && (error as any).code !== '42P01' && (error as any).code !== 'PGRST116') {
+        console.error('Erreur chargement collaterals:', error)
+      }
+
+      setCollaterals((data || []) as Collateral[])
+    } catch (error) {
+      console.error('Erreur chargement collaterals:', error)
+      setCollaterals([])
     }
   }
 
@@ -618,120 +642,18 @@ function EpargnePageContent() {
 
       if (editingTransaction) {
         // Mise à jour d'une transaction existante
-        // Si c'est un collateral, le type doit être 'retrait' avec is_blocked: true
-        const transactionType = formData.type === 'collateral' ? 'retrait' : formData.type
-        const isBlocked = formData.type === 'collateral' || editingTransaction.is_blocked
-        const blockedForPretId = formData.type === 'collateral' && formData.collateralType === 'individual' 
-          ? formData.collateralPretId 
-          : formData.type !== 'collateral' && editingTransaction.is_blocked
-          ? editingTransaction.blocked_for_pret_id
-          : null
-        const blockedForGroupPretId = formData.type === 'collateral' && formData.collateralType === 'group'
-          ? formData.collateralGroupPretId
-          : formData.type !== 'collateral' && editingTransaction.is_blocked
-          ? editingTransaction.blocked_for_group_pret_id
-          : null
-
-        // Validation : pour le collateral, vérifier que le solde disponible est suffisant
-        if (formData.type === 'collateral' && montant > soldeDisponible) {
-          setErrorMessage(
-            `Le montant de la garantie (${formatCurrency(montant)}) dépasse le solde disponible ` +
-            `(${formatCurrency(soldeDisponible)}). Veuillez réduire le montant ou ajouter des fonds au compte d'épargne.`
-          )
+        // IMPORTANT: Les collaterals ne sont PAS dans epargne_transactions
+        // On ne peut modifier que les dépôts et retraits
+        
+        // Si l'utilisateur essaie de modifier une transaction en collateral, refuser
+        if (formData.type === 'collateral') {
+          setErrorMessage('Les garanties (collaterals) ne peuvent pas être modifiées depuis cette page. Elles sont gérées dans la table collaterals.')
           setSubmitting(false)
           return
         }
 
-        // Validation : pour le collateral, vérifier que le montant ne dépasse pas le collateral requis (mise à jour)
-        if (formData.type === 'collateral') {
-          try {
-            let montantPret = 0
-            let pretId = ''
-
-            if (formData.collateralType === 'individual' && formData.collateralPretId) {
-              const pret = prets.find(p => p.pret_id === formData.collateralPretId)
-              if (pret) {
-                montantPret = Number(pret.montant_pret || 0)
-                pretId = formData.collateralPretId
-              }
-            } else if (formData.collateralType === 'group' && formData.collateralGroupPretId) {
-              const groupPret = groupPrets.find(gp => gp.pret_id === formData.collateralGroupPretId)
-              if (groupPret) {
-                pretId = formData.collateralGroupPretId
-                
-                // Pour les prêts de groupe, calculer le montant individuel du membre
-                // en additionnant les principaux de tous ses remboursements pour ce prêt
-                const { data: groupRemboursements, error: rembError } = await supabase
-                  .from('group_remboursements')
-                  .select('principal')
-                  .eq('pret_id', pretId)
-                  .eq('membre_id', selectedMembreId)
-                
-                if (rembError && rembError.code !== '42P01' && rembError.code !== 'PGRST116') {
-                  console.error('Erreur lors du chargement des remboursements de groupe:', rembError)
-                  setErrorMessage('Erreur lors de la récupération du montant individuel du membre pour ce prêt de groupe.')
-                  setSubmitting(false)
-                  return
-                }
-                
-                if (groupRemboursements && groupRemboursements.length > 0) {
-                  // Calculer le montant individuel en additionnant tous les principaux
-                  montantPret = groupRemboursements.reduce((sum, r) => sum + Number(r.principal || 0), 0)
-                } else {
-                  // Si aucun remboursement trouvé, utiliser le montant total du prêt divisé par le nombre de membres
-                  // (fallback si les remboursements ne sont pas encore créés)
-                  const { data: groupMembersData, error: groupMembersError } = await supabase
-                    .from('membre_group_members')
-                    .select('membre_id')
-                    .eq('group_id', groupPret.group_id)
-                  
-                  if (groupMembersError) {
-                    console.error('Erreur lors du chargement des membres du groupe:', groupMembersError)
-                    // En cas d'erreur, utiliser 1 comme nombre de membres par défaut
-                    montantPret = Number(groupPret.montant_pret || 0)
-                  } else {
-                    const nombreMembres = groupMembersData?.length || 1
-                    montantPret = Number(groupPret.montant_pret || 0) / nombreMembres
-                  }
-                }
-              }
-            }
-
-            if (montantPret > 0) {
-              // Calculer le montant de collateral requis sur le montant individuel du membre
-              const montantCollateralRequis = await calculateCollateralAmount(montantPret)
-
-              // Calculer le montant déjà bloqué pour ce prêt (en excluant la transaction en cours d'édition)
-              const montantDejaBloque = transactions
-                .filter(t => 
-                  t.id !== editingTransaction.id && (
-                    (formData.collateralType === 'individual' && t.blocked_for_pret_id === pretId) ||
-                    (formData.collateralType === 'group' && t.blocked_for_group_pret_id === pretId)
-                  )
-                )
-                .reduce((sum, t) => sum + Number(t.montant || 0), 0)
-
-              // Vérifier que le montant à bloquer + ce qui est déjà bloqué ne dépasse pas le requis
-              const montantTotalApresBlocage = montantDejaBloque + montant
-              if (montantTotalApresBlocage > montantCollateralRequis) {
-                const montantMaximum = Math.max(0, montantCollateralRequis - montantDejaBloque)
-                setErrorMessage(
-                  `Le montant de garantie à bloquer (${formatCurrency(montant)}) dépasse le montant requis.\n\n` +
-                  `Montant requis pour ce prêt: ${formatCurrency(montantCollateralRequis)}\n` +
-                  `Montant déjà bloqué: ${formatCurrency(montantDejaBloque)}\n` +
-                  `Montant maximum pouvant être bloqué: ${formatCurrency(montantMaximum)}`
-                )
-                setSubmitting(false)
-                return
-              }
-            }
-          } catch (error) {
-            console.error('Erreur lors de la vérification du collateral requis:', error)
-            setErrorMessage('Erreur lors de la vérification du montant de garantie requis. Veuillez réessayer.')
-            setSubmitting(false)
-            return
-          }
-        }
+        // Mise à jour uniquement pour les dépôts et retraits
+        const transactionType = formData.type // 'depot' ou 'retrait' uniquement
 
         const { error } = await supabase
           .from('epargne_transactions')
@@ -739,9 +661,9 @@ function EpargnePageContent() {
             type: transactionType,
             montant,
             date_operation: formData.date_operation,
-            is_blocked: isBlocked,
-            blocked_for_pret_id: blockedForPretId,
-            blocked_for_group_pret_id: blockedForGroupPretId,
+            is_blocked: false, // Les transactions dans epargne_transactions ne sont jamais bloquées
+            blocked_for_pret_id: null,
+            blocked_for_group_pret_id: null,
           })
           .eq('id', editingTransaction.id)
 
@@ -752,8 +674,26 @@ function EpargnePageContent() {
           return
         }
 
-        // Si c'est une transaction de type collateral, mettre à jour l'enregistrement dans la table collaterals
+        setEditingTransaction(null)
+        alert('Opération mise à jour avec succès.')
+      } else {
+        // Création d'une nouvelle transaction
+        // IMPORTANT: Les collaterals ne sont PAS créés dans epargne_transactions
+        // Ils sont uniquement dans la table collaterals
+        
+        // Si c'est un collateral, créer uniquement dans la table collaterals (PAS dans epargne_transactions)
         if (formData.type === 'collateral') {
+          // Validation : pour le collateral, vérifier que le solde disponible est suffisant
+          if (montant > soldeDisponible) {
+            setErrorMessage(
+              `Le montant de la garantie (${formatCurrency(montant)}) dépasse le solde disponible ` +
+              `(${formatCurrency(soldeDisponible)}). Veuillez réduire le montant ou ajouter des fonds au compte d'épargne.`
+            )
+            setSubmitting(false)
+            return
+          }
+
+          // Créer/mettre à jour uniquement dans la table collaterals
           try {
             let montantPret = 0
             let pretId = ''
@@ -761,50 +701,67 @@ function EpargnePageContent() {
 
             if (formData.collateralType === 'individual' && formData.collateralPretId) {
               const pret = prets.find(p => p.pret_id === formData.collateralPretId)
-              if (pret) {
-                montantPret = Number(pret.montant_pret || 0)
-                pretId = formData.collateralPretId
-                montantGarantieRequis = await calculateCollateralAmount(montantPret)
+              if (!pret) {
+                setErrorMessage('Prêt individuel introuvable.')
+                setSubmitting(false)
+                return
               }
+              montantPret = Number(pret.montant_pret || 0)
+              pretId = formData.collateralPretId
+              montantGarantieRequis = await calculateCollateralAmount(montantPret)
             } else if (formData.collateralType === 'group' && formData.collateralGroupPretId) {
               const groupPret = groupPrets.find(gp => gp.pret_id === formData.collateralGroupPretId)
-              if (groupPret) {
-                pretId = formData.collateralGroupPretId
-                
-                // Pour les prêts de groupe, calculer le montant individuel du membre
-                const { data: groupRemboursements, error: rembError } = await supabase
-                  .from('group_remboursements')
-                  .select('principal')
-                  .eq('pret_id', pretId)
-                  .eq('membre_id', selectedMembreId)
-                
-                if (!rembError && groupRemboursements && groupRemboursements.length > 0) {
-                  montantPret = groupRemboursements.reduce((sum, r) => sum + Number(r.principal || 0), 0)
-                } else {
-                  // Fallback: diviser le montant total par le nombre de membres
-                  const { data: groupMembersData } = await supabase
-                    .from('membre_group_members')
-                    .select('membre_id')
-                    .eq('group_id', groupPret.group_id)
-                  
-                  const nombreMembres = groupMembersData?.length || 1
-                  montantPret = Number(groupPret.montant_pret || 0) / nombreMembres
-                }
-                
-                montantGarantieRequis = await calculateCollateralAmount(montantPret)
+              if (!groupPret) {
+                setErrorMessage('Prêt de groupe introuvable.')
+                setSubmitting(false)
+                return
               }
+              pretId = formData.collateralGroupPretId
+              
+              // Pour les prêts de groupe, calculer le montant individuel du membre
+              const { data: groupRemboursements, error: rembError } = await supabase
+                .from('group_remboursements')
+                .select('principal')
+                .eq('pret_id', pretId)
+                .eq('membre_id', selectedMembreId)
+              
+              if (!rembError && groupRemboursements && groupRemboursements.length > 0) {
+                montantPret = groupRemboursements.reduce((sum, r) => sum + Number(r.principal || 0), 0)
+              } else {
+                // Fallback: diviser le montant total par le nombre de membres
+                const { data: groupMembersData } = await supabase
+                  .from('membre_group_members')
+                  .select('membre_id')
+                  .eq('group_id', groupPret.group_id)
+                
+                const nombreMembres = groupMembersData?.length || 1
+                montantPret = Number(groupPret.montant_pret || 0) / nombreMembres
+              }
+              
+              montantGarantieRequis = await calculateCollateralAmount(montantPret)
             }
 
             if (pretId && montantGarantieRequis > 0) {
-              // Calculer le montant total déjà bloqué pour ce prêt (en excluant la transaction en cours d'édition)
-              const montantTotalBloque = transactions
-                .filter(t => 
-                  t.id !== editingTransaction.id && (
-                    (formData.collateralType === 'individual' && t.blocked_for_pret_id === pretId) ||
-                    (formData.collateralType === 'group' && t.blocked_for_group_pret_id === pretId)
-                  )
+              // Calculer le montant déjà bloqué pour ce prêt depuis la table collaterals
+              const existingCollateral = collaterals.find(c => 
+                (formData.collateralType === 'individual' && c.pret_id === pretId) ||
+                (formData.collateralType === 'group' && c.group_pret_id === pretId)
+              )
+              const montantDejaBloque = existingCollateral ? Number(existingCollateral.montant_depose || 0) : 0
+              
+              // Vérifier que le montant à bloquer + ce qui est déjà bloqué ne dépasse pas le requis
+              const montantTotalApresBlocage = montantDejaBloque + montant
+              if (montantTotalApresBlocage > montantGarantieRequis) {
+                const montantMaximum = Math.max(0, montantGarantieRequis - montantDejaBloque)
+                setErrorMessage(
+                  `Le montant de garantie à bloquer (${formatCurrency(montant)}) dépasse le montant requis.\n\n` +
+                  `Montant requis pour ce prêt: ${formatCurrency(montantGarantieRequis)}\n` +
+                  `Montant déjà bloqué: ${formatCurrency(montantDejaBloque)}\n` +
+                  `Montant maximum pouvant être bloqué: ${formatCurrency(montantMaximum)}`
                 )
-                .reduce((sum, t) => sum + Number(t.montant || 0), 0) + montant
+                setSubmitting(false)
+                return
+              }
 
               // Vérifier si un collateral existe déjà
               const collateralQuery = formData.collateralType === 'individual'
@@ -822,34 +779,42 @@ function EpargnePageContent() {
                     .eq('membre_id', selectedMembreId)
                     .maybeSingle()
 
-              const { data: existingCollateral, error: collateralCheckError } = await collateralQuery
+              const { data: existingCollateralRecord, error: collateralCheckError } = await collateralQuery
 
               if (collateralCheckError && collateralCheckError.code !== 'PGRST116') {
                 console.error('Erreur lors de la vérification du collateral:', collateralCheckError)
-              } else if (existingCollateral) {
+                setErrorMessage('Erreur lors de la vérification du collateral existant.')
+                setSubmitting(false)
+                return
+              }
+
+              if (existingCollateralRecord) {
                 // Mettre à jour le collateral existant
                 const { error: updateCollateralError } = await supabase
                   .from('collaterals')
                   .update({
-                    montant_depose: montantTotalBloque,
-                    montant_restant: Math.max(0, montantGarantieRequis - montantTotalBloque),
-                    statut: montantTotalBloque >= montantGarantieRequis ? 'complet' : 'partiel',
-                    date_depot: montantTotalBloque >= montantGarantieRequis ? formData.date_operation : null,
+                    montant_depose: montantTotalApresBlocage,
+                    montant_restant: Math.max(0, montantGarantieRequis - montantTotalApresBlocage),
+                    statut: montantTotalApresBlocage >= montantGarantieRequis ? 'complet' : 'partiel',
+                    date_depot: montantTotalApresBlocage >= montantGarantieRequis ? formData.date_operation : null,
                   })
-                  .eq('id', existingCollateral.id)
+                  .eq('id', existingCollateralRecord.id)
 
                 if (updateCollateralError) {
                   console.error('Erreur lors de la mise à jour du collateral:', updateCollateralError)
+                  setErrorMessage('Erreur lors de la mise à jour du collateral.')
+                  setSubmitting(false)
+                  return
                 }
               } else {
-                // Créer un nouveau collateral si il n'existe pas
+                // Créer un nouveau collateral
                 const collateralData: any = {
                   membre_id: selectedMembreId,
                   montant_requis: montantGarantieRequis,
-                  montant_depose: montantTotalBloque,
-                  montant_restant: Math.max(0, montantGarantieRequis - montantTotalBloque),
-                  statut: montantTotalBloque >= montantGarantieRequis ? 'complet' : 'partiel',
-                  date_depot: montantTotalBloque >= montantGarantieRequis ? formData.date_operation : null,
+                  montant_depose: montantTotalApresBlocage,
+                  montant_restant: Math.max(0, montantGarantieRequis - montantTotalApresBlocage),
+                  statut: montantTotalApresBlocage >= montantGarantieRequis ? 'complet' : 'partiel',
+                  date_depot: montantTotalApresBlocage >= montantGarantieRequis ? formData.date_operation : null,
                 }
 
                 if (formData.collateralType === 'individual') {
@@ -866,129 +831,40 @@ function EpargnePageContent() {
 
                 if (createCollateralError) {
                   console.error('Erreur lors de la création du collateral:', createCollateralError)
-                }
-              }
-            }
-          } catch (collateralError) {
-            console.error('Erreur lors de la gestion du collateral:', collateralError)
-            // Ne pas bloquer l'opération si la mise à jour du collateral échoue
-          }
-        }
-
-        setEditingTransaction(null)
-        alert('Opération mise à jour avec succès.')
-      } else {
-        // Création d'une nouvelle transaction
-        // Pour les garanties (collateral), créer un RETRAIT bloqué pour déduire du solde disponible
-        const transactionType = formData.type === 'collateral' ? 'retrait' : formData.type
-        const isBlocked = formData.type === 'collateral'
-        const blockedForPretId = formData.type === 'collateral' && formData.collateralType === 'individual' 
-          ? formData.collateralPretId 
-          : null
-        const blockedForGroupPretId = formData.type === 'collateral' && formData.collateralType === 'group'
-          ? formData.collateralGroupPretId
-          : null
-
-        // Validation : pour le collateral, vérifier que le solde disponible est suffisant
-        if (formData.type === 'collateral' && montant > soldeDisponible) {
-          setErrorMessage(
-            `Le montant de la garantie (${formatCurrency(montant)}) dépasse le solde disponible ` +
-            `(${formatCurrency(soldeDisponible)}). Veuillez réduire le montant ou ajouter des fonds au compte d'épargne.`
-          )
-          setSubmitting(false)
-          return
-        }
-
-        // Validation : pour le collateral, vérifier que le montant ne dépasse pas le collateral requis (création)
-        if (formData.type === 'collateral') {
-          try {
-            let montantPret = 0
-            let pretId = ''
-
-            if (formData.collateralType === 'individual' && formData.collateralPretId) {
-              const pret = prets.find(p => p.pret_id === formData.collateralPretId)
-              if (pret) {
-                montantPret = Number(pret.montant_pret || 0)
-                pretId = formData.collateralPretId
-              }
-            } else if (formData.collateralType === 'group' && formData.collateralGroupPretId) {
-              const groupPret = groupPrets.find(gp => gp.pret_id === formData.collateralGroupPretId)
-              if (groupPret) {
-                pretId = formData.collateralGroupPretId
-                
-                // Pour les prêts de groupe, calculer le montant individuel du membre
-                // en additionnant les principaux de tous ses remboursements pour ce prêt
-                const { data: groupRemboursements, error: rembError } = await supabase
-                  .from('group_remboursements')
-                  .select('principal')
-                  .eq('pret_id', pretId)
-                  .eq('membre_id', selectedMembreId)
-                
-                if (rembError && rembError.code !== '42P01' && rembError.code !== 'PGRST116') {
-                  console.error('Erreur lors du chargement des remboursements de groupe:', rembError)
-                  setErrorMessage('Erreur lors de la récupération du montant individuel du membre pour ce prêt de groupe.')
+                  setErrorMessage('Erreur lors de la création du collateral.')
                   setSubmitting(false)
                   return
                 }
-                
-                if (groupRemboursements && groupRemboursements.length > 0) {
-                  // Calculer le montant individuel en additionnant tous les principaux
-                  montantPret = groupRemboursements.reduce((sum, r) => sum + Number(r.principal || 0), 0)
-                } else {
-                  // Si aucun remboursement trouvé, utiliser le montant total du prêt divisé par le nombre de membres
-                  // (fallback si les remboursements ne sont pas encore créés)
-                  const { data: groupMembersData, error: groupMembersError } = await supabase
-                    .from('membre_group_members')
-                    .select('membre_id')
-                    .eq('group_id', groupPret.group_id)
-                  
-                  if (groupMembersError) {
-                    console.error('Erreur lors du chargement des membres du groupe:', groupMembersError)
-                    // En cas d'erreur, utiliser 1 comme nombre de membres par défaut
-                    montantPret = Number(groupPret.montant_pret || 0)
-                  } else {
-                    const nombreMembres = groupMembersData?.length || 1
-                    montantPret = Number(groupPret.montant_pret || 0) / nombreMembres
-                  }
-                }
               }
-            }
 
-            if (montantPret > 0) {
-              // Calculer le montant de collateral requis sur le montant individuel du membre
-              const montantCollateralRequis = await calculateCollateralAmount(montantPret)
-
-              // Calculer le montant déjà bloqué pour ce prêt
-              const montantDejaBloque = transactions
-                .filter(t => 
-                  (formData.collateralType === 'individual' && t.blocked_for_pret_id === pretId) ||
-                  (formData.collateralType === 'group' && t.blocked_for_group_pret_id === pretId)
-                )
-                .reduce((sum, t) => sum + Number(t.montant || 0), 0)
-
-              // Vérifier que le montant à bloquer + ce qui est déjà bloqué ne dépasse pas le requis
-              const montantTotalApresBlocage = montantDejaBloque + montant
-              if (montantTotalApresBlocage > montantCollateralRequis) {
-                const montantMaximum = Math.max(0, montantCollateralRequis - montantDejaBloque)
-                setErrorMessage(
-                  `Le montant de garantie à bloquer (${formatCurrency(montant)}) dépasse le montant requis.\n\n` +
-                  `Montant requis pour ce prêt: ${formatCurrency(montantCollateralRequis)}\n` +
-                  `Montant déjà bloqué: ${formatCurrency(montantDejaBloque)}\n` +
-                  `Montant maximum pouvant être bloqué: ${formatCurrency(montantMaximum)}`
-                )
-                setSubmitting(false)
-                return
-              }
+              // Recharger les collaterals après création/mise à jour
+              await loadCollaterals(selectedMembreId)
+              alert('Garantie enregistrée avec succès.')
+              setFormData({
+                type: 'depot',
+                montant: '',
+                date_operation: new Date().toISOString().split('T')[0],
+                notes: '',
+                collateralPretId: '',
+                collateralGroupPretId: '',
+                collateralType: '',
+              })
+              setSubmitting(false)
+              return
             }
           } catch (error) {
-            console.error('Erreur lors de la vérification du collateral requis:', error)
-            setErrorMessage('Erreur lors de la vérification du montant de garantie requis. Veuillez réessayer.')
+            console.error('Erreur lors de la création du collateral:', error)
+            setErrorMessage('Erreur lors de la création de la garantie. Veuillez réessayer.')
             setSubmitting(false)
             return
           }
         }
 
-        const { data: insertedTransaction, error } = await supabase
+        // Pour les dépôts et retraits, créer dans epargne_transactions
+        // Les collaterals ne sont PAS créés ici, ils sont déjà créés ci-dessus
+        const transactionType = formData.type // 'depot' ou 'retrait' uniquement
+
+        const { error } = await supabase
           .from('epargne_transactions')
           .insert([{
             membre_id: selectedMembreId,
@@ -996,13 +872,11 @@ function EpargnePageContent() {
             type: transactionType,
             montant,
             date_operation: formData.date_operation,
-            is_blocked: isBlocked,
-            blocked_for_pret_id: blockedForPretId,
-            blocked_for_group_pret_id: blockedForGroupPretId,
+            is_blocked: false, // Les transactions dans epargne_transactions ne sont jamais bloquées
+            blocked_for_pret_id: null,
+            blocked_for_group_pret_id: null,
             // Note: La colonne 'notes' n'existe pas dans la table epargne_transactions
           }])
-          .select()
-          .single()
 
         if (error) {
           console.error('Erreur lors de l\'enregistrement de l\'opération d\'épargne:', error)
@@ -1078,128 +952,9 @@ function EpargnePageContent() {
           return
         }
 
-        // Si c'est une transaction de type collateral, créer/mettre à jour l'enregistrement dans la table collaterals
-        if (formData.type === 'collateral' && insertedTransaction) {
-          try {
-            let montantPret = 0
-            let pretId = ''
-            let montantGarantieRequis = 0
-
-            if (formData.collateralType === 'individual' && formData.collateralPretId) {
-              const pret = prets.find(p => p.pret_id === formData.collateralPretId)
-              if (pret) {
-                montantPret = Number(pret.montant_pret || 0)
-                pretId = formData.collateralPretId
-                montantGarantieRequis = await calculateCollateralAmount(montantPret)
-              }
-            } else if (formData.collateralType === 'group' && formData.collateralGroupPretId) {
-              const groupPret = groupPrets.find(gp => gp.pret_id === formData.collateralGroupPretId)
-              if (groupPret) {
-                pretId = formData.collateralGroupPretId
-                
-                // Pour les prêts de groupe, calculer le montant individuel du membre
-                const { data: groupRemboursements, error: rembError } = await supabase
-                  .from('group_remboursements')
-                  .select('principal')
-                  .eq('pret_id', pretId)
-                  .eq('membre_id', selectedMembreId)
-                
-                if (!rembError && groupRemboursements && groupRemboursements.length > 0) {
-                  montantPret = groupRemboursements.reduce((sum, r) => sum + Number(r.principal || 0), 0)
-                } else {
-                  // Fallback: diviser le montant total par le nombre de membres
-                  const { data: groupMembersData } = await supabase
-                    .from('membre_group_members')
-                    .select('membre_id')
-                    .eq('group_id', groupPret.group_id)
-                  
-                  const nombreMembres = groupMembersData?.length || 1
-                  montantPret = Number(groupPret.montant_pret || 0) / nombreMembres
-                }
-                
-                montantGarantieRequis = await calculateCollateralAmount(montantPret)
-              }
-            }
-
-            if (pretId && montantGarantieRequis > 0) {
-              // Calculer le montant total déjà bloqué pour ce prêt (y compris la transaction qu'on vient de créer)
-              const montantTotalBloque = transactions
-                .filter(t => 
-                  (formData.collateralType === 'individual' && t.blocked_for_pret_id === pretId) ||
-                  (formData.collateralType === 'group' && t.blocked_for_group_pret_id === pretId)
-                )
-                .reduce((sum, t) => sum + Number(t.montant || 0), 0) + montant
-
-              // Vérifier si un collateral existe déjà
-              const collateralQuery = formData.collateralType === 'individual'
-                ? supabase
-                    .from('collaterals')
-                    .select('id')
-                    .eq('pret_id', pretId)
-                    .eq('membre_id', selectedMembreId)
-                    .is('group_pret_id', null)
-                    .maybeSingle()
-                : supabase
-                    .from('collaterals')
-                    .select('id')
-                    .eq('group_pret_id', pretId)
-                    .eq('membre_id', selectedMembreId)
-                    .maybeSingle()
-
-              const { data: existingCollateral, error: collateralCheckError } = await collateralQuery
-
-              if (collateralCheckError && collateralCheckError.code !== 'PGRST116') {
-                console.error('Erreur lors de la vérification du collateral:', collateralCheckError)
-              } else if (existingCollateral) {
-                // Mettre à jour le collateral existant
-                const { error: updateCollateralError } = await supabase
-                  .from('collaterals')
-                  .update({
-                    montant_depose: montantTotalBloque,
-                    montant_restant: Math.max(0, montantGarantieRequis - montantTotalBloque),
-                    statut: montantTotalBloque >= montantGarantieRequis ? 'complet' : 'partiel',
-                    date_depot: montantTotalBloque >= montantGarantieRequis ? formData.date_operation : null,
-                  })
-                  .eq('id', existingCollateral.id)
-
-                if (updateCollateralError) {
-                  console.error('Erreur lors de la mise à jour du collateral:', updateCollateralError)
-                }
-              } else {
-                // Créer un nouveau collateral
-                const collateralData: any = {
-                  membre_id: selectedMembreId,
-                  montant_requis: montantGarantieRequis,
-                  montant_depose: montantTotalBloque,
-                  montant_restant: Math.max(0, montantGarantieRequis - montantTotalBloque),
-                  statut: montantTotalBloque >= montantGarantieRequis ? 'complet' : 'partiel',
-                  date_depot: montantTotalBloque >= montantGarantieRequis ? formData.date_operation : null,
-                }
-
-                if (formData.collateralType === 'individual') {
-                  collateralData.pret_id = pretId
-                  collateralData.group_pret_id = null
-                } else {
-                  collateralData.pret_id = null
-                  collateralData.group_pret_id = pretId
-                }
-
-                const { error: createCollateralError } = await supabase
-                  .from('collaterals')
-                  .insert(collateralData)
-
-                if (createCollateralError) {
-                  console.error('Erreur lors de la création du collateral:', createCollateralError)
-                }
-              }
-            }
-          } catch (collateralError) {
-            console.error('Erreur lors de la gestion du collateral:', collateralError)
-            // Ne pas bloquer l'opération si la création du collateral échoue
-            // La transaction a déjà été créée avec succès
-          }
-        }
-
+        // Les collaterals sont déjà créés/mis à jour ci-dessus si c'était un collateral
+        // Pour les dépôts et retraits, la transaction a été créée dans epargne_transactions ci-dessus
+        
         alert('Opération enregistrée avec succès.')
       }
 
@@ -1222,17 +977,17 @@ function EpargnePageContent() {
   }
 
   function handleEdit(transaction: EpargneTransaction) {
+    // IMPORTANT: Les transactions dans epargne_transactions ne sont jamais bloquées
+    // Seuls les dépôts et retraits peuvent être modifiés
     setEditingTransaction(transaction)
-    // Si la transaction est bloquée, on la traite comme une garantie
-    const transactionType: TransactionType = transaction.is_blocked ? 'collateral' : transaction.type
     setFormData({
-      type: transactionType,
+      type: transaction.type as TransactionType, // 'depot' ou 'retrait' uniquement
       montant: transaction.montant.toString(),
       date_operation: transaction.date_operation,
       notes: transaction.notes || '',
-      collateralPretId: transaction.blocked_for_pret_id || '',
-      collateralGroupPretId: transaction.blocked_for_group_pret_id || '',
-      collateralType: transaction.blocked_for_pret_id ? 'individual' : transaction.blocked_for_group_pret_id ? 'group' : '',
+      collateralPretId: '',
+      collateralGroupPretId: '',
+      collateralType: '',
     })
   }
 
@@ -1252,66 +1007,10 @@ function EpargnePageContent() {
   async function handleDelete(transaction: EpargneTransaction) {
     if (!confirm('Supprimer cette transaction ?')) return
     try {
-      // Si c'est une transaction collateral, mettre à jour le collateral correspondant avant de supprimer
-      if (transaction.is_blocked && (transaction.blocked_for_pret_id || transaction.blocked_for_group_pret_id)) {
-        try {
-          const pretId = transaction.blocked_for_pret_id || transaction.blocked_for_group_pret_id
-          const isGroupPret = !!transaction.blocked_for_group_pret_id
-
-          // Calculer le montant total encore bloqué après suppression (excluant cette transaction)
-          const montantRestantBloque = transactions
-            .filter(t => 
-              t.id !== transaction.id && (
-                (isGroupPret && t.blocked_for_group_pret_id === pretId) ||
-                (!isGroupPret && t.blocked_for_pret_id === pretId)
-              )
-            )
-            .reduce((sum, t) => sum + Number(t.montant || 0), 0)
-
-          // Trouver le collateral correspondant
-          const collateralQuery = isGroupPret
-            ? supabase
-                .from('collaterals')
-                .select('id, montant_requis')
-                .eq('group_pret_id', pretId)
-                .eq('membre_id', selectedMembreId)
-                .maybeSingle()
-            : supabase
-                .from('collaterals')
-                .select('id, montant_requis')
-                .eq('pret_id', pretId)
-                .eq('membre_id', selectedMembreId)
-                .is('group_pret_id', null)
-                .maybeSingle()
-
-          const { data: collateral, error: collateralError } = await collateralQuery
-
-          if (!collateralError && collateral) {
-            const montantRequis = Number(collateral.montant_requis || 0)
-            const montantRestant = Math.max(0, montantRequis - montantRestantBloque)
-            const nouveauStatut = montantRestantBloque >= montantRequis ? 'complet' : 'partiel'
-
-            // Mettre à jour le collateral
-            const { error: updateError } = await supabase
-              .from('collaterals')
-              .update({
-                montant_depose: montantRestantBloque,
-                montant_restant: montantRestant,
-                statut: nouveauStatut,
-                date_depot: nouveauStatut === 'complet' && montantRestantBloque > 0 ? new Date().toISOString().split('T')[0] : null,
-              })
-              .eq('id', collateral.id)
-
-            if (updateError) {
-              console.error('Erreur lors de la mise à jour du collateral après suppression:', updateError)
-            }
-          }
-        } catch (collateralUpdateError) {
-          console.error('Erreur lors de la gestion du collateral après suppression:', collateralUpdateError)
-          // Continuer avec la suppression même si la mise à jour du collateral échoue
-        }
-      }
-
+      // IMPORTANT: Les transactions dans epargne_transactions ne sont jamais bloquées
+      // Seuls les dépôts et retraits peuvent être supprimés
+      // Les collaterals sont dans la table collaterals et doivent être supprimés depuis là
+      
       const { error } = await supabase
         .from('epargne_transactions')
         .delete()
@@ -1325,60 +1024,10 @@ function EpargnePageContent() {
     }
   }
 
+  // Cette fonction n'est plus nécessaire car les collaterals ne sont plus dans epargne_transactions
+  // Les collaterals sont gérés uniquement dans la table collaterals
   async function handleToggleBlock(transaction: EpargneTransaction) {
-    if (!transaction.is_blocked) {
-      // Bloquer la transaction
-      const pretId = prompt('Entrez l\'ID du prêt pour lequel bloquer cette garantie (ou laissez vide pour un prêt de groupe):')
-      if (pretId === null) return // User cancelled
-      
-      const groupPretId = pretId === '' ? prompt('Entrez l\'ID du prêt de groupe:') : null
-      if (pretId === '' && groupPretId === null) return // User cancelled
-
-      try {
-        setSubmitting(true)
-        const { error } = await supabase
-          .from('epargne_transactions')
-          .update({
-            is_blocked: true,
-            blocked_for_pret_id: pretId || null,
-            blocked_for_group_pret_id: groupPretId || null,
-          })
-          .eq('id', transaction.id)
-
-        if (error) throw error
-        alert('Garantie bloquée avec succès.')
-        await loadTransactions(selectedMembreId)
-      } catch (err: any) {
-        console.error(err)
-        setErrorMessage('Impossible de bloquer la garantie: ' + (err.message || 'Erreur inconnue'))
-      } finally {
-        setSubmitting(false)
-      }
-    } else {
-      // Débloquer la transaction
-      if (!confirm(`Débloquer cette garantie pour le prêt ${transaction.blocked_for_pret_id || transaction.blocked_for_group_pret_id || 'inconnu'} ?`)) return
-      
-      try {
-        setSubmitting(true)
-        const { error } = await supabase
-          .from('epargne_transactions')
-          .update({
-            is_blocked: false,
-            blocked_for_pret_id: null,
-            blocked_for_group_pret_id: null,
-          })
-          .eq('id', transaction.id)
-
-        if (error) throw error
-        alert('Garantie débloquée avec succès.')
-        await loadTransactions(selectedMembreId)
-      } catch (err: any) {
-        console.error(err)
-        setErrorMessage('Impossible de débloquer la garantie: ' + (err.message || 'Erreur inconnue'))
-      } finally {
-        setSubmitting(false)
-      }
-    }
+    alert('Les garanties (collaterals) sont maintenant gérées uniquement dans la table collaterals. Utilisez l\'option "Collateral (Garantie)" pour créer une garantie.')
   }
 
   async function handleRunMigration() {
@@ -1624,47 +1273,62 @@ function EpargnePageContent() {
                 Solde total
               </label>
               <div className="px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-800">
-                {formatCurrency(solde)}
+                {formatCurrency(selectedMembreId ? soldeDisponible + soldeBloque : 0)}
               </div>
+              {selectedMembreId && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Solde total = Solde disponible ({formatCurrency(soldeDisponible)}) + Solde bloqué ({formatCurrency(soldeBloque)})
+                </p>
+              )}
             </div>
 
             {selectedMembreId && (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-                    Solde disponible
-                    {realtimeConnected && (
-                      <span className="inline-flex items-center gap-1 text-xs text-gray-500 font-normal">
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                        </span>
-                        <span>Temps réel</span>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
+                  Solde disponible
+                  {realtimeConnected && (
+                    <span className="inline-flex items-center gap-1 text-xs text-gray-500 font-normal">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                       </span>
-                    )}
-                  </label>
-                  <div 
-                    className={`px-3 py-2 border rounded-lg font-semibold transition-all duration-500 ease-in-out ${
-                      soldeChanged 
-                        ? 'bg-green-100 text-green-900 border-green-400 shadow-lg scale-[1.02] ring-2 ring-green-200' 
-                        : 'bg-green-50 text-green-800 border-gray-200'
-                    }`}
-                  >
-                    <span className={`inline-block ${soldeChanged ? 'animate-pulse' : ''}`}>
-                      {formatCurrency(soldeDisponible)}
+                      <span>Temps réel</span>
                     </span>
-                  </div>
+                  )}
+                </label>
+                <div 
+                  className={`px-3 py-2 border rounded-lg font-semibold transition-all duration-500 ease-in-out ${
+                    soldeChanged 
+                      ? 'bg-green-100 text-green-900 border-green-400 shadow-lg scale-[1.02] ring-2 ring-green-200' 
+                      : 'bg-green-50 text-green-800 border-gray-200'
+                  }`}
+                >
+                  <span className={`inline-block ${soldeChanged ? 'animate-pulse' : ''}`}>
+                    {formatCurrency(soldeDisponible)}
+                  </span>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Solde bloqué (garantie)
-                  </label>
-                  <div className="px-3 py-2 border border-gray-200 rounded-lg bg-amber-50 text-amber-800 font-semibold">
-                    {formatCurrency(soldeBloque)}
-                  </div>
-                </div>
-              </>
+              </div>
             )}
+
+            {/* Toujours afficher le solde bloqué (garantie), même si aucun membre n'est sélectionné */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Solde bloqué (garantie)
+              </label>
+              <div className="px-3 py-2 border border-gray-200 rounded-lg bg-amber-50 text-amber-800 font-semibold">
+                {formatCurrency(soldeBloque)}
+              </div>
+              {selectedMembreId && soldeBloque > 0 && (
+                <p className="text-xs text-amber-600 mt-1">
+                  ⚠️ Ce montant est bloqué comme garantie pour les prêts actifs et ne peut pas être retiré.
+                </p>
+              )}
+              {selectedMembreId && soldeBloque === 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Aucune garantie bloquée pour ce membre.
+                </p>
+              )}
+            </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1946,17 +1610,18 @@ function EpargnePageContent() {
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <span
                           className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                            t.type === 'depot'
-                              ? t.is_blocked
-                                ? 'bg-purple-100 text-purple-800'
-                                : 'bg-green-100 text-green-800'
-                              : 'bg-amber-100 text-amber-800'
+                            // Identifier les collaterals : transactions bloquées OU type='retrait' avec is_blocked=true
+                            (t.is_blocked === true || (t.type === 'retrait' && (t.blocked_for_pret_id || t.blocked_for_group_pret_id)))
+                              ? 'bg-purple-100 text-purple-800' // Collateral
+                              : t.type === 'depot'
+                              ? 'bg-green-100 text-green-800' // Dépôt
+                              : 'bg-amber-100 text-amber-800' // Retrait normal
                           }`}
                         >
-                          {t.type === 'depot' 
-                            ? 'Dépôt'
-                            : t.type === 'retrait' && t.is_blocked
+                          {(t.is_blocked === true || (t.type === 'retrait' && (t.blocked_for_pret_id || t.blocked_for_group_pret_id)))
                             ? 'Collateral'
+                            : t.type === 'depot' 
+                            ? 'Dépôt'
                             : 'Retrait'}
                         </span>
                       </td>
@@ -1964,10 +1629,10 @@ function EpargnePageContent() {
                         {formatCurrency(t.montant)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        {t.is_blocked ? (
+                        {(t.is_blocked === true || (t.type === 'retrait' && (t.blocked_for_pret_id || t.blocked_for_group_pret_id))) ? (
                           <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
-                            Bloqué
-                            {t.blocked_for_pret_id && ` (${t.blocked_for_pret_id})`}
+                            Bloqué (Collateral)
+                            {t.blocked_for_pret_id && ` (Prêt: ${t.blocked_for_pret_id})`}
                             {t.blocked_for_group_pret_id && ` (Groupe: ${t.blocked_for_group_pret_id})`}
                           </span>
                         ) : (
@@ -1998,28 +1663,8 @@ function EpargnePageContent() {
                             >
                               <Pencil className="w-4 h-4" />
                             </button>
-                            {(t.type === 'depot' || (t.type === 'retrait' && t.is_blocked)) && (userProfile?.role === 'agent' || userProfile?.role === 'manager' || userProfile?.role === 'admin') && (
-                              <button
-                                onClick={() => handleToggleBlock(t)}
-                                disabled={submitting}
-                                className={`p-2 rounded ${
-                                  submitting
-                                    ? 'text-gray-400 cursor-not-allowed'
-                                    : t.is_blocked
-                                    ? 'text-green-600 hover:bg-green-50'
-                                    : 'text-orange-600 hover:bg-orange-50'
-                                }`}
-                                title={
-                                  t.is_blocked
-                                    ? 'Débloquer la garantie'
-                                    : t.type === 'depot'
-                                    ? 'Bloquer comme garantie'
-                                    : 'Cette transaction est déjà un collateral'
-                                }
-                              >
-                                {t.is_blocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-                              </button>
-                            )}
+                            {/* Les collaterals ne sont plus dans epargne_transactions, donc pas besoin de bouton de blocage */}
+                            {/* Si une transaction bloquée apparaît encore (données anciennes), elle est identifiée comme Collateral */}
                             <button
                               onClick={() => handleDelete(t)}
                               disabled={!canAgentModifyTransaction(t)}
