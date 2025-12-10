@@ -63,6 +63,7 @@ export default function LoginPage() {
               onChange={(e) => setEmail(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               placeholder="votre@email.com"
+              suppressHydrationWarning
             />
           </div>
 
@@ -77,6 +78,7 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               placeholder="••••••••"
+              suppressHydrationWarning
             />
           </div>
 
@@ -84,6 +86,7 @@ export default function LoginPage() {
             type="submit"
             disabled={loading}
             className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            suppressHydrationWarning
           >
             {loading ? 'Connexion...' : 'Se connecter'}
           </button>

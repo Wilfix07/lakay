@@ -19,6 +19,7 @@ import {
   CheckCircle2,
   FileText,
   History as HistoryIcon,
+  Shield,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -145,6 +146,12 @@ export function Sidebar({ userProfile, onSignOut }: SidebarProps) {
       title: 'Historique des Prêts',
       href: '/historique-prets',
       icon: HistoryIcon,
+      roles: ['admin', 'manager', 'agent'] as UserRole[],
+    },
+    {
+      title: 'Historique des Collaterals',
+      href: '/historique-collaterals',
+      icon: Shield,
       roles: ['admin', 'manager', 'agent'] as UserRole[],
     },
     {
