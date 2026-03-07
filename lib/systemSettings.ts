@@ -11,7 +11,7 @@ export const DEFAULT_SETTINGS = {
     autoGenerate: true,
   },
   interestRates: {
-    baseInterestRate: 0.15, // 15%
+    baseInterestRate: 0.2701, // 27.01%
     penaltyRate: 0.02, // 2%
     commissionRate: 0.30, // 30%
     lateFeePerDay: 0, // Montant par jour de retard (HTG)

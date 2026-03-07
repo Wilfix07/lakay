@@ -54,7 +54,7 @@ const DEFAULT_SCHEDULE: ScheduleSettings = {
 }
 
 const DEFAULT_INTEREST: InterestSettings = {
-  baseInterestRate: 15,
+  baseInterestRate: 27.01,
   penaltyRate: 2,
   commissionRate: 30,
   lateFeePerDay: 0,
