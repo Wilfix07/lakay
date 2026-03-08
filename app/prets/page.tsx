@@ -144,8 +144,6 @@ function PretsPageContent() {
     count: number,
     decaissementDate: string,
   ): LoanPlan {
-    // Utilise le taux d'intérêt chargé depuis les paramètres système
-    const interestRate = systemInterestRate
     const schedule: LoanScheduleEntry[] = []
     let dateDecaissement = new Date(decaissementDate)
     if (Number.isNaN(dateDecaissement.getTime())) {
@@ -166,17 +164,19 @@ function PretsPageContent() {
       }
     }
 
+    // Taux fixe de 4,5 % appliqué sur le montant total
+    const fixedRate = 0.045
+
     let paymentDate = getInitialPaymentDate(dateDecaissement, frequency)
-    const basePrincipal = amount / count
-    const basePrincipalRounded = Math.round(basePrincipal * 100) / 100
-    let remainingPrincipal = Math.round(amount * 100) / 100
+    const basePrincipalRaw = amount / count
+    const basePrincipal = Number(basePrincipalRaw.toFixed(2))
+    const interestPerInstallmentRaw = (amount * fixedRate) / count
+    const interestPerInstallment = Number(interestPerInstallmentRaw.toFixed(2))
 
     for (let i = 1; i <= count; i++) {
-      let principal = i === count ? Math.round(remainingPrincipal * 100) / 100 : basePrincipalRounded
-      principal = Math.max(principal, 0)
-      remainingPrincipal = Math.round((remainingPrincipal - principal) * 100) / 100
-      const interest = Math.round(principal * interestRate * 100) / 100
-      const installmentAmount = Math.round((principal + interest) * 100) / 100
+      const principal = Math.max(basePrincipal, 0)
+      const interest = Math.max(interestPerInstallment, 0)
+      const installmentAmount = Number((principal + interest).toFixed(2))
 
       schedule.push({
         numero: i,
@@ -192,7 +192,7 @@ function PretsPageContent() {
     }
 
     const montantEcheance =
-      schedule[0]?.montant ?? Math.round((basePrincipalRounded * (1 + interestRate)) * 100) / 100
+      schedule[0]?.montant ?? Number((basePrincipal + interestPerInstallment).toFixed(2))
     const totalRemboursement =
       Math.round(schedule.reduce((sum, entry) => sum + entry.montant, 0) * 100) / 100
     const interetTotal =
