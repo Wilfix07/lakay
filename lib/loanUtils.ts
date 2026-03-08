@@ -1,5 +1,4 @@
 import { addDays, addMonths, getDay } from 'date-fns'
-import { getInterestRates } from './systemSettings'
 
 export type FrequenceRemboursement = 'journalier' | 'hebdomadaire' | 'mensuel'
 
@@ -9,6 +8,8 @@ export interface LoanScheduleEntry {
   principal: number
   interet: number
   date: Date
+  /** Capital restant dû après ce paiement (pour tableau d'amortissement) */
+  capitalRestantDu?: number
 }
 
 export interface LoanPlan {
@@ -106,28 +107,40 @@ export async function calculateLoanPlan(
     }
   }
 
-  // Taux fixe de 4,5 % appliqué sur le montant total
-  const fixedRate = 0.045
+  // Taux de base 4,5 % (baseInterestRate)
+  const taux = 0.045
+
+  // Intérêt total = Capital × Taux × Nombre d'échéances
+  const interetTotal = Number((amount * taux * count).toFixed(2))
+  // Total à rembourser = Capital + Intérêt total
+  const totalToRepay = Number((amount + interetTotal).toFixed(2))
+  // Montant de chaque échéance = Total à rembourser / Nombre d'échéances
+  const montantEcheance = Number((totalToRepay / count).toFixed(2))
 
   let paymentDate = getInitialPaymentDate(dateDecaissement, frequency)
-  const basePrincipalRaw = amount / count
-  const basePrincipal = Number(basePrincipalRaw.toFixed(2))
-  const interestPerInstallmentRaw = (amount * fixedRate) / count
-  const interestPerInstallment = Number(interestPerInstallmentRaw.toFixed(2))
+  let capitalRestantDu = Number(amount.toFixed(2))
 
-  // Générer l'échéancier
+  // Générer le tableau d'amortissement (principal et intérêt par échéance, capital restant dû)
   for (let i = 1; i <= count; i++) {
-    // Capital fixe et intérêt fixe à chaque échéance
-    const principal = Math.max(basePrincipal, 0)
-    const interest = Math.max(interestPerInstallment, 0)
-    const installmentAmount = Number((principal + interest).toFixed(2))
+    const isLast = i === count
+    const principal = isLast
+      ? Number((capitalRestantDu).toFixed(2))
+      : Number((amount / count).toFixed(2))
+    const interest = isLast
+      ? Number((montantEcheance - principal).toFixed(2))
+      : Number((interetTotal / count).toFixed(2))
+    const montant = montantEcheance
+
+    capitalRestantDu = Number((capitalRestantDu - principal).toFixed(2))
+    if (capitalRestantDu < 0) capitalRestantDu = 0
 
     schedule.push({
       numero: i,
-      montant: installmentAmount,
+      montant,
       principal,
       interet: interest,
       date: new Date(paymentDate),
+      capitalRestantDu,
     })
 
     if (i < count) {
@@ -135,12 +148,8 @@ export async function calculateLoanPlan(
     }
   }
 
-  const montantEcheance =
-    schedule[0]?.montant ?? Number((basePrincipal + interestPerInstallment).toFixed(2))
   const totalRemboursement =
     Math.round(schedule.reduce((sum, entry) => sum + entry.montant, 0) * 100) / 100
-  const interetTotal =
-    Math.round(schedule.reduce((sum, entry) => sum + entry.interet, 0) * 100) / 100
 
   // Calculer la date de fin (dernière échéance)
   const dateFin = schedule.length > 0 ? schedule[schedule.length - 1].date : paymentDate

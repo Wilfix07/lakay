@@ -164,26 +164,39 @@ function PretsPageContent() {
       }
     }
 
-    // Taux fixe de 4,5 % appliqué sur le montant total
-    const fixedRate = 0.045
+    // Taux de base 4,5 % (baseInterestRate)
+    const taux = 0.045
+
+    // Intérêt total = Capital × Taux × Nombre d'échéances
+    const interetTotal = Number((amount * taux * count).toFixed(2))
+    // Total à rembourser = Capital + Intérêt total
+    const totalToRepay = Number((amount + interetTotal).toFixed(2))
+    // Montant de chaque échéance = Total à rembourser / Nombre d'échéances
+    const montantEcheance = Number((totalToRepay / count).toFixed(2))
 
     let paymentDate = getInitialPaymentDate(dateDecaissement, frequency)
-    const basePrincipalRaw = amount / count
-    const basePrincipal = Number(basePrincipalRaw.toFixed(2))
-    const interestPerInstallmentRaw = (amount * fixedRate) / count
-    const interestPerInstallment = Number(interestPerInstallmentRaw.toFixed(2))
+    let capitalRestantDu = Number(amount.toFixed(2))
 
     for (let i = 1; i <= count; i++) {
-      const principal = Math.max(basePrincipal, 0)
-      const interest = Math.max(interestPerInstallment, 0)
-      const installmentAmount = Number((principal + interest).toFixed(2))
+      const isLast = i === count
+      const principal = isLast
+        ? Number((capitalRestantDu).toFixed(2))
+        : Number((amount / count).toFixed(2))
+      const interest = isLast
+        ? Number((montantEcheance - principal).toFixed(2))
+        : Number((interetTotal / count).toFixed(2))
+      const montant = montantEcheance
+
+      capitalRestantDu = Number((capitalRestantDu - principal).toFixed(2))
+      if (capitalRestantDu < 0) capitalRestantDu = 0
 
       schedule.push({
         numero: i,
-        montant: installmentAmount,
+        montant,
         principal,
         interet: interest,
         date: new Date(paymentDate),
+        capitalRestantDu,
       })
 
       if (i < count) {
@@ -191,12 +204,8 @@ function PretsPageContent() {
       }
     }
 
-    const montantEcheance =
-      schedule[0]?.montant ?? Number((basePrincipal + interestPerInstallment).toFixed(2))
     const totalRemboursement =
       Math.round(schedule.reduce((sum, entry) => sum + entry.montant, 0) * 100) / 100
-    const interetTotal =
-      Math.round(schedule.reduce((sum, entry) => sum + entry.interet, 0) * 100) / 100
 
     // Calculer la date de fin (dernière échéance)
     const dateFin = schedule.length > 0 ? schedule[schedule.length - 1].date : paymentDate
@@ -2158,6 +2167,41 @@ function PretsPageContent() {
                       <p className="text-green-600">
                         <strong>Intérêt total:</strong> {formatCurrency(loanPreview.interetTotal)}
                       </p>
+                      {loanPreview.schedule.length > 0 && (
+                        <div className="mt-3 border border-gray-200 rounded-lg overflow-hidden">
+                          <p className="text-xs font-semibold text-gray-700 bg-gray-50 px-2 py-1.5 border-b">
+                            Tableau d'amortissement
+                          </p>
+                          <div className="max-h-48 overflow-y-auto">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="bg-gray-100 text-left">
+                                  <th className="px-2 py-1 font-medium">N°</th>
+                                  <th className="px-2 py-1 font-medium">Date</th>
+                                  <th className="px-2 py-1 font-medium">Montant</th>
+                                  <th className="px-2 py-1 font-medium">Principal</th>
+                                  <th className="px-2 py-1 font-medium">Intérêt</th>
+                                  <th className="px-2 py-1 font-medium">Capital restant dû</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {loanPreview.schedule.map((entry) => (
+                                  <tr key={entry.numero} className="border-t border-gray-100">
+                                    <td className="px-2 py-1">{entry.numero}</td>
+                                    <td className="px-2 py-1">{formatDate(entry.date)}</td>
+                                    <td className="px-2 py-1">{formatCurrency(entry.montant)}</td>
+                                    <td className="px-2 py-1">{formatCurrency(entry.principal)}</td>
+                                    <td className="px-2 py-1">{formatCurrency(entry.interet)}</td>
+                                    <td className="px-2 py-1">
+                                      {entry.capitalRestantDu != null ? formatCurrency(entry.capitalRestantDu) : '—'}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
